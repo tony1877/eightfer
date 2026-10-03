@@ -1,0 +1,8 @@
+build*/
+out/
+.vs/
+*.gguf
+*.bin
+*.safetensors
+experiments/**/w/
+experiments/nested_quant/nested
