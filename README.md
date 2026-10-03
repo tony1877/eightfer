@@ -12,11 +12,45 @@ Speculative sampling makes the result lossless relative to the ≈Q8 model.
 For the 176B Flash-Next, experts stream from NVMe through a VRAM/RAM heat cache.
 Its 51B n-gram table is read straight from disk at full BF16 precision.
 
-Status: **design phase**.
-
 - [`docs/DESIGN.md`](docs/DESIGN.md) — design, memory budgets, estimates, milestones.
 - [`experiments/nested_quant`](experiments/nested_quant) — first measurement on real Qwen3.8-27B weights.
   An IQ4_XS base plus a Q4_K residual has 0.89× the weight error of Q8_0.
 
-Kernels come from [ggml](https://github.com/ggml-org/llama.cpp) (MIT). The runtime, scheduling, storage tiers
-and split-precision format are eightfer's.
+Status: **M1**. `eightfer bench` measures the numbers the design depends on. It doesn't run models yet.
+
+## Build (Windows)
+
+Needs Git, the CUDA Toolkit ≥ 12.8, and **Visual Studio 2022** Build Tools with the C++ workload.
+CUDA 13.0 does not accept VS 2026 as host compiler. Install the Build Tools if `build.ps1` says they're missing:
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Clone to a short path and build. The first build compiles ggml's CUDA kernels and takes several minutes.
+
+```powershell
+git clone --recurse-submodules --shallow-submodules -b claude/qwen-custom-inference-engine-jhydpg https://github.com/tony1877/eightfer C:\src\eightfer
+cd C:\src\eightfer
+.\scripts\build.ps1
+```
+
+## Bench
+
+Close anything holding VRAM first; check with `nvidia-smi`. Then:
+
+```powershell
+.\build\bin\eightfer.exe bench 2>&1 | Tee-Object bench.txt
+```
+
+What it does (about 3–5 minutes):
+
+- RAM read bandwidth, then ggml matrix-vector speed on the CPU and the GPU, 1 to 16 tokens per pass.
+- Pins up to 16 GiB of RAM, then measures GPU upload/download speed, alone and while the CPU is also reading RAM.
+- On every fixed drive, writes a 4 GiB temp file to `X:\eightfer_bench_tmp\`, measures unbuffered reads, and
+  deletes the file.
+- `--disk D:\some\folder` limits the disk test to chosen drives.
+- `eightfer bench --help` lists all options.
+
+Kernels come from [ggml](https://github.com/ggml-org/llama.cpp) (MIT), pinned as a submodule at `836d571`.
+The runtime, scheduling, storage tiers and split-precision format are eightfer's.

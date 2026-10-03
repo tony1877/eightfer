@@ -1,0 +1,84 @@
+<#
+.SYNOPSIS
+  Builds eightfer on Windows: Visual Studio 2022 (MSVC) + CUDA + CMake/Ninja, Release.
+
+.EXAMPLE
+  .\scripts\build.ps1            # build with CUDA for RTX 50xx (sm_120)
+  .\scripts\build.ps1 -Clean     # wipe .\build first
+  .\scripts\build.ps1 -NoCuda    # CPU-only build
+#>
+param(
+    [switch]$Clean,
+    [switch]$NoCuda,
+    [string]$CudaArch = '120a-real'  # Blackwell consumer GPUs (RTX 50xx)
+)
+
+$ErrorActionPreference = 'Stop'
+$root  = Split-Path -Parent $PSScriptRoot
+$build = Join-Path $root 'build'
+
+function Fail([string]$msg) {
+    Write-Host "ERROR: $msg" -ForegroundColor Red
+    exit 1
+}
+
+$installVs = 'winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
+
+# 1. Visual Studio 2022 with the x64 C++ toolset. CUDA 13.0 supports VS 2019/2022 as host compiler, not VS 2026.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path $vswhere)) {
+    Fail "Visual Studio Installer not found. Install the C++ Build Tools:`n  $installVs"
+}
+$vs = & $vswhere -products * -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -latest -property installationPath
+if (-not $vs) {
+    Fail "No Visual Studio 2022 with the C++ x64 toolset found. Install it:`n  $installVs"
+}
+$devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+
+# 2. Load the MSVC x64 environment into this session (via a temp .cmd to avoid cmd.exe quoting issues).
+$tmp = Join-Path $env:TEMP ("eightfer_vsenv_{0}.cmd" -f [guid]::NewGuid())
+Set-Content -Path $tmp -Encoding ASCII -Value "@call `"$devcmd`" -arch=x64 -host_arch=x64 -no_logo`r`n@set"
+try {
+    $envDump = & cmd.exe /d /c $tmp
+} finally {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+}
+foreach ($line in $envDump) {
+    if ($line -match '^([^=]+)=(.*)$') {
+        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+    }
+}
+
+# 3. Tools.
+foreach ($tool in 'cl', 'cmake', 'ninja', 'git') {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+        $hint = switch ($tool) {
+            'cmake' { 'Add the "C++ CMake tools for Windows" component, or: winget install Kitware.CMake' }
+            'ninja' { 'Add the "C++ CMake tools for Windows" component, or: winget install Ninja-build.Ninja' }
+            'git'   { 'winget install Git.Git' }
+            default { $installVs }
+        }
+        Fail "$tool not found after loading the VS environment. $hint"
+    }
+}
+if (-not $NoCuda -and -not (Get-Command nvcc -ErrorAction SilentlyContinue)) {
+    Fail 'nvcc not found. Install CUDA Toolkit 12.8 or newer (sm_120 support), or build with -NoCuda.'
+}
+
+# 4. ggml submodule.
+if (-not (Test-Path (Join-Path $root 'third_party\llama.cpp\ggml\CMakeLists.txt'))) {
+    git -C $root submodule update --init --depth 1
+    if ($LASTEXITCODE -ne 0) { Fail 'git submodule update failed' }
+}
+
+# 5. Configure and build. The first CUDA build compiles ggml's kernels and takes several minutes.
+if ($Clean -and (Test-Path $build)) {
+    Remove-Item -Recurse -Force $build
+}
+$cuda = if ($NoCuda) { 'OFF' } else { 'ON' }
+cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DEIGHTFER_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+if ($LASTEXITCODE -ne 0) { Fail 'cmake configure failed (see above)' }
+cmake --build $build --config Release
+if ($LASTEXITCODE -ne 0) { Fail 'build failed (see above)' }
+
+Write-Host "Built: $(Join-Path $build 'bin\eightfer.exe')" -ForegroundColor Green

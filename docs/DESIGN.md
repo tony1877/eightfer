@@ -10,14 +10,17 @@ measured on the target box before we rely on it.
 
 ## 1. Target box
 
+Parts as reported by your `nvidia-smi`, `Get-PhysicalDisk`, `Win32_PhysicalMemory` and `nvcc` output:
+
 | Part | Spec | Number we plan with |
 |---|---|---|
-| OS | Windows 11 | — |
-| GPU | RTX 5080 16 GB GDDR7, PCIe 5.0 x16, sm_120 | ~770 GB/s effective VRAM read [est.], ~15.5 GB free VRAM [measure] |
+| OS | Windows 11, PowerShell 7.6 | — |
+| GPU | RTX 5080 16 GB GDDR7, PCIe **Gen5 x16** (no lane sharing), sm_120, driver 616.56 | ~770 GB/s effective VRAM read [est.], ~15.5 GB free VRAM [measure] |
 | CPU | Ryzen 7 9800X3D, 8C/16T Zen 5, AVX-512, single CCD | ~60 GB/s RAM read from cores (single-CCD fabric cap) [est.] |
-| RAM | 32 GB DDR5 | ~22 GB usable for model data [est.] |
-| PCIe | 5.0 x16 | ~45–50 GB/s pinned H2D [measure] |
-| Disks | NVMe + SATA SSDs | 7 GB/s per Gen4 NVMe, 12–14 GB/s per Gen5 NVMe, 0.55 GB/s SATA [measure] |
+| RAM | 2 × 16 GB DDR5-5600 CL30 | ~22 GB usable for model data [est.] |
+| NVMe | WD_BLACK SN850X 1 TB (Gen4), Samsung 980 PRO 500 GB (Gen4) | ~7 GB/s each; ~14 GB/s striped only if they sit on separate lanes [measure] |
+| SATA | Micron 5400 3.84 TB + 7.68 TB | ~0.55 GB/s each; fine for sparse 4 KiB reads [measure] |
+| Toolchain | CUDA 13.0; no Visual Studio 2022 found by `vswhere` | CUDA 13.0 accepts VS 2019/2022 as host compiler, not VS 2026 |
 
 ## 2. The models [verified: HF `config.json`, transformers `modeling_qwen4_exp.py`]
 
@@ -131,8 +134,8 @@ Placement [est.]:
 |---|---|
 | VRAM ~15.5 GB | Non-expert weights (attention, GDN, shared expert, routers, hyper-connections, lm_head) at Q8_0 ≈ 4.5 GB; KV ≈ 0.8 GB (64K, q8_0); GDN state 0.11 GB; **expert cache ≈ 9.5 GB ≈ 3,600 experts (15%)** |
 | RAM ~22 GB pinned | **Expert cache ≈ 8,400 experts (34%)**. The CPU computes RAM hits directly. |
-| NVMe | Expert store: B and R as separate files, 4 KiB-aligned, expert-major (one read per expert), striped across drives in proportion to each drive's measured bandwidth |
-| Any SSD (SATA OK) | N-gram table at **BF16** (102 GB), lossless. It is read sparsely, so full precision costs disk space only. |
+| NVMe (SN850X + 980 PRO) | Expert base store B (64 GB at IQ4_XS): 4 KiB-aligned, expert-major (one read per expert), striped across both drives in proportion to measured bandwidth |
+| SATA (Micron 5400s) | N-gram table at **BF16** (102 GB), lossless, read sparsely. Expert residuals R: hot ones load once at startup. Download/source files. |
 
 Mechanisms:
 
@@ -149,11 +152,14 @@ Mechanisms:
 I/O ceiling [est.]. This is not a speed prediction; compute and sync come on top.
 Misses per token = 480 × (1 − h) × 2.61 MB.
 
-| Cache hit rate h | 1× Gen4 (7 GB/s) | 1× Gen5 (12 GB/s) | Gen5 + Gen4 striped (19 GB/s) |
-|---|---|---|---|
-| 0.5 | 11 tok/s | 19 tok/s | 30 tok/s |
-| 0.6 | 14 tok/s | 24 tok/s | 38 tok/s |
-| 0.7 | 19 tok/s | 32 tok/s | 51 tok/s |
+| Cache hit rate h | 1× Gen4 (7 GB/s) | SN850X + 980 PRO striped (14 GB/s) |
+|---|---|---|
+| 0.5 | 11 tok/s | 22 tok/s |
+| 0.6 | 14 tok/s | 28 tok/s |
+| 0.7 | 19 tok/s | 37 tok/s |
+
+Striping only doubles the rate if the two drives don't share the chipset uplink (PCIe 4.0 x4, ~7 GB/s).
+The bench's "all drives at once" line answers this.
 
 Speculation for Flash-Next is optional. MTP or cache-constrained self-drafting amortizes per-token sync and shared
 experts. Whether it pays off under I/O load is an M5 measurement.
@@ -183,7 +189,7 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 | # | Deliverable | Done when |
 |---|---|---|
 | M0 | This design + nested-quant measurement | ✅ |
-| M1 | Skeleton + `eightfer bench` | Builds on Windows (MSVC+CUDA). Bench reports VRAM BW, RAM BW, pinned H2D/D2H, per-drive unbuffered read BW at QD 1–64, free VRAM. You paste the output. |
+| M1 | Skeleton + `eightfer bench` | Code done: builds and runs on Linux (CPU), Windows `.exe` cross-built and run under Wine. **Waiting for:** a native build plus bench output from your box. |
 | M2 | qwen35 graph + GGUF loader (B-only) | Tiny random-weight model on CPU matches transformers logits. Real 27B GGUF perplexity matches llama.cpp on your box. |
 | M3 | `eightfer pack` + B+R verify + self-speculation | KLD of B+R vs BF16 ≤ Q8_0's. Acceptance α measured. tok/s measured. |
 | M4 | qwen4exp graph (B-only, mmap) | Tiny random model on CPU matches transformers, including n-gram hashing and hyper-connections. |
@@ -194,14 +200,17 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 
 - Draft acceptance α: IQ4_XS draft vs B+R target.
 - CPU GEMV throughput for Q4_K with k+1 ≤ 9 columns on the 9800X3D.
+  Early hint, from the 4-core build sandbox rather than your box: 9 columns took 3.7× longer per pass than 1 column
+  (5.6 vs 20.7 GB/s, `CPU_REPACK`), so the CPU ran out of compute before it ran out of bandwidth.
+  If the 9800X3D shows the same shape, the verify step streams R to the GPU over PCIe (~14.4 GB at ~50 GB/s ≈ 0.3 s)
+  instead of computing it on the CPU. The plan doesn't change, only where R gets multiplied.
 - Pinned-memory limits and allocation time for ~20 GB under Windows WDDM.
 - Effective H2D bandwidth under WDDM.
 - Combined DRAM bandwidth when the cores and GPU DMA read concurrently. Hypothesis: DMA bypasses the CCD link, so the
   total can exceed ~60 GB/s.
 - Expert routing locality → cache hit rate h on real prompts.
 - Sustained NVMe bandwidth, thermal throttling, and sector alignment per drive.
-- Board lane sharing: on some AM5 boards, populating certain M.2 slots drops the GPU to x8.
-  Check the manual or `nvidia-smi --query-gpu=pcie.link.width.max --format=csv`.
+- Whether the two NVMe drives share the chipset uplink. The GPU link is confirmed Gen5 x16.
 
 ## 9. Non-goals (for now)
 
