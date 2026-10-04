@@ -1,0 +1,41 @@
+
+w/10.mlp.down_proj.weight.bin  n=89.1M
+  H(sign)=1.000  H(exp)=2.552 (8 raw)  H(mantissa)=6.972 (7 raw)  H(full 16-bit symbol)=10.474 bits -> order-0 lossless 10.47 bpw (65%)
+  exponent range used: 94..125, top-8 exponents hold 98.6%
+  head e8m0: entropy-coded 3.55 bpw | rel RMSE trunc 0.3129 round 0.1965 | exact tail 7 bits (H=6.97) | head+tail 10.55 bpw
+  head e8m1: entropy-coded 4.50 bpw | rel RMSE trunc 0.1810 round 0.1035 | exact tail 6 bits (H=5.99) | head+tail 10.50 bpw
+  head e8m2: entropy-coded 5.48 bpw | rel RMSE trunc 0.0964 round 0.0527 | exact tail 5 bits (H=5.00) | head+tail 10.48 bpw
+  head e8m3: entropy-coded 6.48 bpw | rel RMSE trunc 0.0489 round 0.0266 | exact tail 4 bits (H=4.00) | head+tail 10.48 bpw
+  head e8m4: entropy-coded 7.47 bpw | rel RMSE trunc 0.0237 round 0.0135 | exact tail 3 bits (H=3.00) | head+tail 10.47 bpw
+  MXINT3 (shared exp/32): 3.25 bpw rel RMSE 0.2489
+  MXINT4 (shared exp/32): 4.25 bpw rel RMSE 0.1239
+  MXINT5 (shared exp/32): 5.25 bpw rel RMSE 0.0618
+  MXINT8 (shared exp/32): 8.25 bpw rel RMSE 0.0081
+
+w/10.linear_attn.in_proj_qkv.weight.bin  n=52.4M
+  H(sign)=1.000  H(exp)=2.564 (8 raw)  H(mantissa)=6.972 (7 raw)  H(full 16-bit symbol)=10.486 bits -> order-0 lossless 10.49 bpw (66%)
+  exponent range used: 90..125, top-8 exponents hold 98.7%
+  head e8m0: entropy-coded 3.56 bpw | rel RMSE trunc 0.3119 round 0.1948 | exact tail 7 bits (H=6.97) | head+tail 10.56 bpw
+  head e8m1: entropy-coded 4.51 bpw | rel RMSE trunc 0.1803 round 0.1037 | exact tail 6 bits (H=5.99) | head+tail 10.51 bpw
+  head e8m2: entropy-coded 5.49 bpw | rel RMSE trunc 0.0965 round 0.0529 | exact tail 5 bits (H=5.00) | head+tail 10.49 bpw
+  head e8m3: entropy-coded 6.49 bpw | rel RMSE trunc 0.0490 round 0.0266 | exact tail 4 bits (H=4.00) | head+tail 10.49 bpw
+  head e8m4: entropy-coded 7.49 bpw | rel RMSE trunc 0.0237 round 0.0135 | exact tail 3 bits (H=3.00) | head+tail 10.49 bpw
+  MXINT3 (shared exp/32): 3.25 bpw rel RMSE 0.2669
+  MXINT4 (shared exp/32): 4.25 bpw rel RMSE 0.1331
+  MXINT5 (shared exp/32): 5.25 bpw rel RMSE 0.0664
+  MXINT8 (shared exp/32): 8.25 bpw rel RMSE 0.0086
+
+w/11.self_attn.q_proj.weight.bin  n=62.9M
+  H(sign)=1.000  H(exp)=2.575 (8 raw)  H(mantissa)=6.972 (7 raw)  H(full 16-bit symbol)=10.499 bits -> order-0 lossless 10.50 bpw (66%)
+  exponent range used: 96..126, top-8 exponents hold 98.7%
+  head e8m0: entropy-coded 3.57 bpw | rel RMSE trunc 0.3120 round 0.1950 | exact tail 7 bits (H=6.97) | head+tail 10.57 bpw
+  head e8m1: entropy-coded 4.52 bpw | rel RMSE trunc 0.1804 round 0.1037 | exact tail 6 bits (H=5.99) | head+tail 10.52 bpw
+  head e8m2: entropy-coded 5.51 bpw | rel RMSE trunc 0.0965 round 0.0528 | exact tail 5 bits (H=5.00) | head+tail 10.51 bpw
+  head e8m3: entropy-coded 6.50 bpw | rel RMSE trunc 0.0490 round 0.0266 | exact tail 4 bits (H=4.00) | head+tail 10.50 bpw
+  head e8m4: entropy-coded 7.50 bpw | rel RMSE trunc 0.0237 round 0.0135 | exact tail 3 bits (H=3.00) | head+tail 10.50 bpw
+  MXINT3 (shared exp/32): 3.25 bpw rel RMSE 0.2663
+  MXINT4 (shared exp/32): 4.25 bpw rel RMSE 0.1328
+  MXINT5 (shared exp/32): 5.25 bpw rel RMSE 0.0663
+  MXINT8 (shared exp/32): 8.25 bpw rel RMSE 0.0086
+
+reference (measured earlier, same tensors): IQ4_XS 4.25bpw 0.077-0.078 | Q4_K 4.5 0.072 | Q5_K 5.5 0.036 | Q6_K 6.56 0.018 | Q8_0 8.5 0.0054
