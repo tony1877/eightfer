@@ -1,6 +1,6 @@
 # eightfer — design v0
 
-Status: design + first measurement. No engine code yet.
+Status: M2 done (B-only qwen35 engine matches transformers and llama.cpp). M3 in progress.
 
 Legend: **[verified]** = checked against source/data in this repo or upstream files.
 **[est.]** = arithmetic from bandwidth figures, not measured. **[measure]** = must be
@@ -194,7 +194,7 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 |---|---|---|
 | M0 | This design + nested-quant measurement | ✅ |
 | M1 | Skeleton + `eightfer bench` | ✅ Native Windows build and bench on the target box, 2026-10-04 ([results](../bench/results/2026-10-04-rtx5080-9800x3d/README.md)). |
-| M2 | qwen35 graph + GGUF loader (B-only) | 🟡 27B GGUF vs llama.cpp (same ggml, 36 GPU layers, ctx 512): batch 512 exact (mean KLD 0.000000, PPL 3.5378 both); batch 128 identical to llama.cpp `-ub 128`; batch 1 mean KLD 0.0011 vs llama.cpp `-ub 1` (llama.cpp's own ub1-vs-ub512 KLD is 0.0067; not repack, not the fused-GDN choice; grows with position, cause open). Still to do: tiny random model vs transformers (needs torch). |
+| M2 | qwen35 graph + GGUF loader (B-only) | ✅ 2026-10-04. Tiny random model (8 layers, F32, CPU) vs transformers 5.18 (`tests/tiny/run.py`): batch 1–2 with F32 KV rel.err 8e-7, KLD 1e-12; batch ≥32 rel.err 9e-4, KLD 4e-7 (ggml's tiled CPU kernels). 27B Q5_K_M vs llama.cpp (36 GPU layers, ctx 512): batch 512 exact (PPL 3.5378 both, KLD 0.000000); batch 128 identical to llama.cpp `-ub 128`; batch 1 KLD 0.0011 vs llama.cpp `-ub 1` (llama.cpp's own ub1-vs-ub512 KLD is 0.0067; not repack, not fused-GDN). |
 | M3 | `eightfer pack` + B+R verify + self-speculation | KLD of B+R vs BF16 ≤ Q8_0's. Acceptance α measured. tok/s measured. |
 | M4 | qwen4exp graph (B-only, mmap) | Tiny random model on CPU matches transformers, including n-gram hashing and hyper-connections. |
 | M5 | Expert store, heat cache, IOCP streaming, prefetch | Hit rate and tok/s from real traces. Planner picks the residual budget. |

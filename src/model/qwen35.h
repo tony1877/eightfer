@@ -40,7 +40,11 @@ struct Qwen35Hparams {
     int64_t bos = -1, eos = -1;
     bool    add_bos = false;
 
-    bool    is_recurrent(int64_t il) const { return (il + 1) % full_attn_interval != 0; }
+    std::vector<bool> recurrent;  // attention.recurrent_layers when the GGUF has it (newer converters)
+
+    bool is_recurrent(int64_t il) const {
+        return il < (int64_t) recurrent.size() ? recurrent[(size_t) il] : (il + 1) % full_attn_interval != 0;
+    }
     int64_t conv_channels() const { return ssm_d_inner + 2 * ssm_n_k * ssm_d_state; }
 
     // Fills from a GGUF with general.architecture == "qwen35". Returns false with err set.

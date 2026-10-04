@@ -84,9 +84,9 @@ bool Qwen35Hparams::load(const GgufFile & f, std::string & err) {
     for (size_t i = 0; i < 4 && i < sec.size(); i++) {
         rope_sections[i] = (int) sec[i];
     }
-    if (f.has(key(a, "attention.recurrent_layers"))) {
-        err = "attention.recurrent_layers layouts are not supported yet";
-        return false;
+    recurrent.clear();
+    for (int64_t v : f.i64_arr(key(a, "attention.recurrent_layers"))) {
+        recurrent.push_back(v != 0);
     }
     const ggml_tensor * emb = f.tensor("token_embd.weight");
     n_vocab                 = emb ? emb->ne[1] : 0;

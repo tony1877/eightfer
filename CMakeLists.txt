@@ -39,6 +39,7 @@ target_link_libraries(e8_model PUBLIC ggml)
 add_executable(eightfer
     src/main.cpp
     src/cli/info.cpp
+    src/cli/logits.cpp
     src/cli/ppl.cpp
     src/cli/selftest.cpp
     src/bench/bench.cpp

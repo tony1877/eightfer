@@ -10,3 +10,5 @@ experiments/nested_quant/nested
 # local scratch
 /build-ref/
 /*.txt
+/.venv/
+/tests/tiny/out/

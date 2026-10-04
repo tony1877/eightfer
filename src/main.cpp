@@ -113,6 +113,9 @@ int main(int argc, char ** argv) {
     if (args[1] == "ppl") {
         return e8::cli::ppl(args);
     }
+    if (args[1] == "logits") {
+        return e8::cli::logits(args);
+    }
     if (args[1] == "selftest") {
         return e8::cli::selftest(args);
     }
