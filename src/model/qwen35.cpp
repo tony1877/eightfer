@@ -522,6 +522,8 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
     ggml_set_input(inp_pos);
     inp_mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, n_kv, n, 1, 1);
     ggml_set_input(inp_mask);
+    inp_kvidx_ = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n);
+    ggml_set_input(inp_kvidx_);
 
     auto norm = [&](ggml_tensor * x, ggml_tensor * w) { return ggml_mul(ctx, ggml_rms_norm(ctx, x, eps), w); };
 
@@ -577,10 +579,8 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
             ggml_tensor * kc = k_cache_[(size_t) il];
             ggml_tensor * vc = v_cache_[(size_t) il];
             const int64_t row = hd * h.n_head_kv;
-            ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, Kc, row, n),
-                                                   ggml_view_2d(ctx, kc, row, n, kc->nb[1], kc->nb[1] * n_past_)));
-            ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, Vc, row, n),
-                                                   ggml_view_2d(ctx, vc, row, n, vc->nb[1], vc->nb[1] * n_past_)));
+            ggml_build_forward_expand(gf, ggml_set_rows(ctx, kc, ggml_reshape_2d(ctx, Kc, row, n), inp_kvidx_));
+            ggml_build_forward_expand(gf, ggml_set_rows(ctx, vc, ggml_reshape_2d(ctx, Vc, row, n), inp_kvidx_));
             ggml_tensor * K = ggml_view_3d(ctx, kc, hd, h.n_head_kv, n_kv, ggml_row_size(kc->type, hd), kc->nb[1], 0);
             ggml_tensor * V = ggml_view_3d(ctx, vc, hd, h.n_head_kv, n_kv, ggml_row_size(vc->type, hd), vc->nb[1], 0);
 
@@ -687,6 +687,11 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
         for (int j = 0; j < n_kv; j++) {
             mask[(size_t) i * n_kv + j] = j <= n_past_ + i ? zero : ninf;
         }
+    }
+    if (inp_kvidx_->buffer) {
+        std::vector<int64_t> rows((size_t) n);
+        for (int i = 0; i < n; i++) rows[(size_t) i] = n_past_ + i;
+        ggml_backend_tensor_set(inp_kvidx_, rows.data(), 0, rows.size() * sizeof(int64_t));
     }
     if (inp_mask->buffer) {
         ggml_backend_tensor_set(inp_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));

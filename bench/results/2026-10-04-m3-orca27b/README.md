@@ -74,3 +74,15 @@ Before the sampled draft, a greedy draft under temp 1.0 accepted only 0.55-0.77 
 Remaining: drafting is 24 ms/token (13.7 GB at ~570 GB/s vs 822 GB/s measured), and the GPU idles during the
 ~400 ms residual pass; drafting the next cycle during the verify would hide ~280 ms per cycle when all drafts are
 accepted.
+
+## CUDA graphs + graph-stable KV writes (2026-10-05)
+
+eightfer's ggml build had CUDA graphs off, and the KV write was a view at offset n_past, which changes the graph every
+token so graphs could not replay. With both fixed, drafting went from 24 to 19.4 ms/token:
+
+| Prompt (temp 1.0, top-p 0.95, top-k 20, `--spec auto`) | tok/s | acceptance |
+|---|---|---|
+| code | 15.75 | 0.90 |
+| reasoning | 15.88 | 0.94 |
+| prose | 13.96 | 0.81 |
+| explain | 15.64 | 0.90 |

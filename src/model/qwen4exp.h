@@ -101,6 +101,9 @@ private:
         ggml_tensor * embd = nullptr, * pos = nullptr, * mask = nullptr, * ple = nullptr;
         // QSA (sparse batches only)
         ggml_tensor * bvis = nullptr, * tail = nullptr, * pool_pos = nullptr;
+        // rows written by this eval, and the blocks re-pooled (always the blocks touched by this batch, so a
+        // single-token graph has the same shape every step and CUDA graphs replay)
+        ggml_tensor * kvidx = nullptr, * pool_rows = nullptr, * pool_blk = nullptr;
     };
     ggml_cgraph * build_graph(ggml_context * ctx, int n, int n_kv, bool sparse, Inputs & in, ggml_tensor *& out);
     ggml_tensor * hc_mix(ggml_context * ctx, ggml_tensor * x, ggml_tensor * wn, ggml_tensor * wd, ggml_tensor * wu,

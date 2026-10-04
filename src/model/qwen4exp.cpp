@@ -423,22 +423,22 @@ ggml_tensor * Qwen4Exp::attn(ggml_context * ctx, ggml_cgraph * gf, int64_t il, g
         const int64_t d = h.idx_dim, r = kpool_;
         ggml_tensor * raw  = idx_raw_[(size_t) il];
         ggml_tensor * pool = idx_pool_[(size_t) il];
-        ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_mul_mat(ctx, L.idx_k, cur),
-                                               ggml_view_2d(ctx, raw, d, n, raw->nb[1], raw->nb[1] * (size_t) n_past_)));
-        const int64_t b0 = n_past_ / r, b1 = (n_past_ + n) / r, nnew = b1 - b0;
-        if (nnew > 0) {
-            ggml_tensor * rows = ggml_view_3d(ctx, raw, d, r, nnew, raw->nb[1], raw->nb[1] * r, raw->nb[1] * (size_t) (r * b0));
-            ggml_tensor * sum  = ggml_cont(ctx, ggml_view_2d(ctx, rows, d, nnew, rows->nb[2], 0));
+        ggml_build_forward_expand(gf, ggml_set_rows(ctx, raw, ggml_mul_mat(ctx, L.idx_k, cur), in.kvidx));
+        {
+            // re-pool every block this batch touches (an incomplete one gets a provisional key that is masked until
+            // the block completes and is pooled again)
+            const int64_t np   = in.pool_blk->ne[0];
+            ggml_tensor * rows = ggml_reshape_3d(ctx, ggml_get_rows(ctx, raw, in.pool_rows), d, r, np);
+            ggml_tensor * sum  = ggml_cont(ctx, ggml_view_2d(ctx, rows, d, np, rows->nb[2], 0));
             for (int64_t i = 1; i < r; i++) {
-                sum = ggml_add(ctx, sum, ggml_view_2d(ctx, rows, d, nnew, rows->nb[2], (size_t) i * rows->nb[1]));
+                sum = ggml_add(ctx, sum, ggml_view_2d(ctx, rows, d, np, rows->nb[2], (size_t) i * rows->nb[1]));
             }
             ggml_tensor * pk = norm(ggml_scale(ctx, sum, 1.0f / (float) r), L.idx_k_norm);
-            pk               = rope(ggml_reshape_3d(ctx, pk, d, 1, nnew), in.pool_pos);
-            ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, pk, d, nnew),
-                                                   ggml_view_2d(ctx, pool, d, nnew, pool->nb[1], pool->nb[1] * (size_t) b0)));
+            pk               = rope(ggml_reshape_3d(ctx, pk, d, 1, np), in.pool_pos);
+            ggml_build_forward_expand(gf, ggml_set_rows(ctx, pool, ggml_reshape_2d(ctx, pk, d, np), in.pool_blk));
         }
         if (sparse) {
-            const int64_t H = h.idx_n_head, NB = b1, K = h.idx_budget / r;
+            const int64_t H = h.idx_n_head, NB = n_kv / r, K = h.idx_budget / r;
             ggml_tensor * q = norm(ggml_reshape_3d(ctx, ggml_mul_mat(ctx, L.idx_q, cur), d, H, n), L.idx_q_norm);
             q               = rope(q, in.pos);
             ggml_tensor * s = ggml_mul_mat(ctx, ggml_view_2d(ctx, pool, d, NB, pool->nb[1], 0), ggml_reshape_2d(ctx, q, d, H * n));
@@ -479,8 +479,8 @@ ggml_tensor * Qwen4Exp::attn(ggml_context * ctx, ggml_cgraph * gf, int64_t il, g
     ggml_tensor * kc  = k_cache_[(size_t) il];
     ggml_tensor * vc  = v_cache_[(size_t) il];
     const int64_t row = hd * h.n_head_kv;
-    ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, Kc, row, n), ggml_view_2d(ctx, kc, row, n, kc->nb[1], kc->nb[1] * (size_t) n_past_)));
-    ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, Vc, row, n), ggml_view_2d(ctx, vc, row, n, vc->nb[1], vc->nb[1] * (size_t) n_past_)));
+    ggml_build_forward_expand(gf, ggml_set_rows(ctx, kc, ggml_reshape_2d(ctx, Kc, row, n), in.kvidx));
+    ggml_build_forward_expand(gf, ggml_set_rows(ctx, vc, ggml_reshape_2d(ctx, Vc, row, n), in.kvidx));
     ggml_tensor * K = ggml_view_3d(ctx, kc, hd, h.n_head_kv, n_kv, ggml_row_size(kc->type, hd), kc->nb[1], 0);
     ggml_tensor * V = ggml_view_3d(ctx, vc, hd, h.n_head_kv, n_kv, ggml_row_size(vc->type, hd), vc->nb[1], 0);
     ggml_tensor * a = ggml_flash_attn_ext(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), ggml_permute(ctx, K, 0, 2, 1, 3),
@@ -870,18 +870,22 @@ ggml_cgraph * Qwen4Exp::build_graph(ggml_context * ctx, int n, int n_kv, bool sp
     ggml_set_input(in.pos);
     in.mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_kv, n);
     ggml_set_input(in.mask);
+    in.kvidx = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n);
+    ggml_set_input(in.kvidx);
     if (std::find(h.ple_layer.begin(), h.ple_layer.end(), true) != h.ple_layer.end()) {
         in.ple = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, n);
         ggml_set_input(in.ple);
     }
     if (kpool_ > 0) {
-        const int64_t nnew = (n_past_ + n) / kpool_ - n_past_ / kpool_;
-        if (nnew > 0) {
-            in.pool_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * nnew);
-            ggml_set_input(in.pool_pos);
-        }
+        const int64_t np = (n_past_ + n - 1) / kpool_ - n_past_ / kpool_ + 1;
+        in.pool_pos      = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * np);
+        ggml_set_input(in.pool_pos);
+        in.pool_rows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, np * kpool_);
+        ggml_set_input(in.pool_rows);
+        in.pool_blk = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, np);
+        ggml_set_input(in.pool_blk);
         if (sparse) {
-            in.bvis = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, (n_past_ + n) / kpool_, n);
+            in.bvis = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv / kpool_, n);
             ggml_set_input(in.bvis);
             in.tail = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, n);
             ggml_set_input(in.tail);
@@ -980,11 +984,23 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
         ple_rows(tokens, n, pr);
         set(in.ple, pr.data(), pr.size() * sizeof(float));
     }
-    if (in.pool_pos) {  // each new pooled key is rotated to its block's first position
-        const int64_t        b0 = n_past_ / kpool_, nnew = in.pool_pos->ne[0] / 4;
-        std::vector<int32_t> pp((size_t) (4 * nnew), 0);
-        for (int64_t i = 0; i < nnew; i++) pp[(size_t) i] = pp[(size_t) (nnew + i)] = pp[(size_t) (2 * nnew + i)] = (int32_t) ((b0 + i) * kpool_);
+    {
+        std::vector<int64_t> rows((size_t) n);
+        for (int i = 0; i < n; i++) rows[(size_t) i] = n_past_ + i;
+        set(in.kvidx, rows.data(), rows.size() * sizeof(int64_t));
+    }
+    if (in.pool_pos) {  // re-pooled blocks: member rows, block ids, rotation to each block's first position
+        const int64_t        b0 = n_past_ / kpool_, np = in.pool_blk->ne[0];
+        std::vector<int32_t> pp((size_t) (4 * np), 0), pr((size_t) (np * kpool_));
+        std::vector<int64_t> pb((size_t) np);
+        for (int64_t i = 0; i < np; i++) {
+            pp[(size_t) i] = pp[(size_t) (np + i)] = pp[(size_t) (2 * np + i)] = (int32_t) ((b0 + i) * kpool_);
+            pb[(size_t) i] = b0 + i;
+            for (int64_t j = 0; j < kpool_; j++) pr[(size_t) (i * kpool_ + j)] = (int32_t) ((b0 + i) * kpool_ + j);
+        }
         set(in.pool_pos, pp.data(), pp.size() * sizeof(int32_t));
+        set(in.pool_rows, pr.data(), pr.size() * sizeof(int32_t));
+        set(in.pool_blk, pb.data(), pb.size() * sizeof(int64_t));
     }
     if (in.bvis) {
         const int64_t      NB = in.bvis->ne[0];

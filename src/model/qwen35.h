@@ -180,6 +180,9 @@ private:
     int         debug_layer_ = -1;
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context
+    // KV rows written by this eval (I64 [n]): an input, not a view offset, so the graph is the same from token to
+    // token and CUDA graphs can be replayed
+    ggml_tensor *        inp_kvidx_ = nullptr;
 };
 
 } // namespace e8::model

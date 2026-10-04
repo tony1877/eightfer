@@ -1,0 +1,4 @@
+loaded in 12.2 s: weights 13.70 GB GPU + 2.54 GB CPU, residual 14.40 GB
+speculative: prefill 34 tok in 0.88 s (38.7 tok/s); decode 257 tok in 16.43 s = 15.64 tok/s
+  22 cycles, acceptance 0.900 (235/261), 11.68 tokens/cycle; per cycle: draft 232.4 ms, verify 504.9 ms, rollback 1.2 ms
+  k used: 9 x1 12 x21

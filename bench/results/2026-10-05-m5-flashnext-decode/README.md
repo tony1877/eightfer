@@ -12,8 +12,9 @@ SN850X (C:). Greedy decode after the 81-token `bench/prompts/reasoning.txt` prom
 | + CUDA graphs (were off in eightfer's ggml build) | 14.5 | 17.1 |
 | + background prefetch thread, **lookahead off (default)** | **15.7** | **20.2** |
 | same, lookahead prefetch on (`E8_LOOKAHEAD=1`) | 15.2 | 15.5 |
+| + graph-stable KV/indexer writes (`set_rows` with row inputs, so CUDA graphs replay every token) | **18.8** | **24.3** |
 
-Expert cache hit rate: 77% of the 480 expert uses per token served from VRAM (heat-based admission, LFU with
+With the last row: 2.0x llama.cpp overall, 2.5x warm. Expert cache hit rate: 77% of the 480 expert uses per token served from VRAM (heat-based admission, LFU with
 decay). Per decode token (default config): graph build + alloc + inputs 5 ms, compute 53 ms (CPU expert ops 19 ms,
 GPU + 96 GPU/CPU split boundaries the rest), cache update 6 ms.
 
