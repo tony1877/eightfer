@@ -12,3 +12,4 @@ experiments/nested_quant/nested
 /*.txt
 /.venv/
 /tests/tiny/out/
+/tests/tiny/out4/

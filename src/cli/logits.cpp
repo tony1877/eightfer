@@ -3,6 +3,7 @@
 // row-major. Used to compare against reference implementations (tests/tiny).
 
 #include "cli/commands.h"
+#include "model/causal_lm.h"
 #include "model/qwen35.h"
 
 #include <algorithm>
@@ -62,13 +63,14 @@ int logits(const std::vector<std::string> & args) {
     o.n_ubatch     = batch;
     o.kv_type      = kv == "f32" ? GGML_TYPE_F32 : GGML_TYPE_F16;
     o.residual_path = res_path;
-    model::Qwen35 m;
-    std::string   err;
-    if (!m.load(model, o, err)) {
+    std::string err;
+    auto        mp = model::load_causal_lm(model, o, err);
+    if (!mp) {
         fprintf(stderr, "load failed: %s\n", err.c_str());
         return 1;
     }
-    const size_t       nv = (size_t) m.hp().n_vocab;
+    model::CausalLM &  m  = *mp;
+    const size_t       nv = (size_t) m.n_vocab();
     std::vector<float> all(toks.size() * nv);
     for (size_t i = 0; i < toks.size(); i += (size_t) batch) {
         const int n = (int) std::min(toks.size() - i, (size_t) batch);

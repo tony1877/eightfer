@@ -13,6 +13,7 @@
 // n_past are masked and get overwritten). An eval with EvalOpts::record keeps the DeltaNet inputs of that batch, so
 // rollback(keep) can restore the snapshot and replay only the first `keep` tokens through the recurrence.
 
+#include "model/causal_lm.h"
 #include "model/gguf_file.h"
 
 #include "ggml-backend.h"
@@ -91,16 +92,16 @@ struct LoadOptions {
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
 };
 
-class Qwen35 {
+class Qwen35 : public CausalLM {
 public:
     Qwen35();
-    ~Qwen35();
+    ~Qwen35() override;
 
     bool load(const std::string & path, const LoadOptions & opt, std::string & err);
 
     // Runs `n` tokens (n <= n_ubatch) at positions [n_past(), n_past() + n). Writes n * n_vocab logits to
     // `logits` (row i = token i) when it is non-null, otherwise only advances the state.
-    bool eval(const int32_t * tokens, int n, float * logits, std::string & err);
+    bool eval(const int32_t * tokens, int n, float * logits, std::string & err) override;
 
     // General form. Writes n (or 1 with last_only) rows of n_vocab logits to `logits`, or with opts.argmax the
     // argmax ids to `ids`. Either output pointer may be null.
@@ -117,17 +118,21 @@ public:
     uint64_t residual_bytes() const { return res_bytes_; }
 
     // Empties the KV cache and zeroes the recurrent state.
-    void reset();
+    void reset() override;
 
     // Debug: when >= 0, eval() stops after this layer and writes its output (n * n_embd floats) instead of logits.
     void set_debug_layer(int il) { debug_layer_ = il; }
 
-    int                   n_past() const { return n_past_; }
-    int                   n_ctx() const { return n_ctx_; }
+    int                   n_past() const override { return n_past_; }
+    int                   n_ctx() const override { return n_ctx_; }
+    int64_t               n_vocab() const override { return hp_.n_vocab; }
+    int64_t               n_layer() const override { return hp_.n_layer; }
+    bool                  add_bos() const override { return hp_.add_bos; }
+    int64_t               bos_token() const override { return hp_.bos; }
     const Qwen35Hparams & hp() const { return hp_; }
     // Weight bytes placed on the GPU and on the CPU.
-    uint64_t gpu_weight_bytes() const { return gpu_bytes_; }
-    uint64_t cpu_weight_bytes() const { return cpu_bytes_; }
+    uint64_t gpu_weight_bytes() const override { return gpu_bytes_; }
+    uint64_t cpu_weight_bytes() const override { return cpu_bytes_; }
 
 private:
     ggml_cgraph * build_graph(ggml_context * ctx, int n, const EvalOpts & o, ggml_tensor *& inp_tok,

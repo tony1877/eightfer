@@ -4,6 +4,7 @@
 // output format matches, so the two can be compared chunk by chunk.
 
 #include "cli/commands.h"
+#include "model/causal_lm.h"
 #include "model/qwen35.h"
 
 #include <algorithm>
@@ -156,19 +157,23 @@ int ppl(const std::vector<std::string> & args) {
     o.kv_type      = kv_type(kv);
     o.n_ubatch     = std::min(n_batch, n_ctx);
     o.residual_path = res_path;
-    model::Qwen35 m;
+    std::unique_ptr<model::CausalLM> mp;
     const auto    t_load = std::chrono::steady_clock::now();
-    if (!m.load(model, o, err)) {
+    if (!(mp = model::load_causal_lm(model, o, err))) {
         fprintf(stderr, "load failed: %s\n", err.c_str());
         return 1;
     }
-    const auto & hp = m.hp();
+    model::CausalLM & m = *mp;
+    struct {
+        int64_t n_layer, n_vocab, bos;
+        bool    add_bos;
+    } hp = { m.n_layer(), m.n_vocab(), m.bos_token(), m.add_bos() };
     fprintf(stderr, "loaded in %.1f s: %lld layers (%d on GPU), weights %.2f GB GPU + %.2f GB CPU, vocab %lld, add_bos %d\n",
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count(), (long long) hp.n_layer,
             gpu_layers, (double) m.gpu_weight_bytes() / 1e9, (double) m.cpu_weight_bytes() / 1e9, (long long) hp.n_vocab,
             hp.add_bos ? 1 : 0);
-    if (m.has_residual()) {
-        fprintf(stderr, "residual: %.2f GB (host)\n", (double) m.residual_bytes() / 1e9);
+    if (auto * q = dynamic_cast<model::Qwen35 *>(&m); q && q->has_residual()) {
+        fprintf(stderr, "residual: %.2f GB (host)\n", (double) q->residual_bytes() / 1e9);
     }
     fprintf(stderr, "perplexity: %zu tokens, %d chunks of %d, batch %d\n", toks.size(), n_chunks, n_ctx, o.n_ubatch);
 

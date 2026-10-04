@@ -94,6 +94,7 @@ def main():
         subprocess.run([a.eightfer, "logits", str(gguf), "--tokens", str(OUT / "tokens.txt"), "--out", str(out),
                         "--batch", str(b), "--kv", a.kv], check=True, stdout=subprocess.DEVNULL)
         e8 = np.fromfile(out, dtype=np.float32).reshape(ref.shape)
+        out.unlink()  # 250 MB per run
         rel = np.linalg.norm(e8 - ref) / np.linalg.norm(ref)
         mx = np.abs(e8 - ref).max()
         lp_r = torch.log_softmax(torch.from_numpy(ref).double(), -1)
