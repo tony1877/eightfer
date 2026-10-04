@@ -256,6 +256,12 @@ Opt-in, quality-gated options:
 - q4_0 far-context KV: 19.3 tok/s at 200k.
 - Cold experts at IQ3_XXS: Flash-Next ~17.5 tok/s.
 
+## 11. Bit-level lossless mode
+
+See [`docs/BITLEVEL.md`](BITLEVEL.md). Exact BF16 = B (4.25 bpw, VRAM) + R (4.5, RAM) + T2 (~3, exact remainder).
+The rebuild was bit-exact on 204.5M real weights. A draft → ≈Q8 → exact cascade gives BF16-exact output at ~18–19 tok/s
+(4k), against ~28 for the default ≈Q8 target. All speeds are estimates.
+
 ## References
 
 - Speculative decoding: Leviathan et al. 2023, *Fast Inference from Transformers via Speculative Decoding*;

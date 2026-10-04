@@ -1,0 +1,33 @@
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/10.linear_attn.in_proj_qkv.weight.bin [10240 x 5120]
+  IQ4_XS index entropy 3.903 bits (stored 4) + scales 0.25 -> H(B) <= 4.153
+  [A  B=IQ4_XS | exact V2 tail] bit-exact mismatches: 0 of 52428800 | out-of-cell escapes 4.55e-04 | dead-block weights (raw inline) 1.90e-04
+      base 4.25 + T1 0.00 + exact-tail 7.179 + escapes 0.022 + offsets 0.062 = 11.513 bpw total | level-2 relRMSE 0.07757 (14.23x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 6.580 (+dead-raw 0.003) -> total 10.917 bpw
+  [C  B=IQ4_XS | T1(4b) | T2 V2] bit-exact mismatches: 0 of 52428800 | out-of-cell escapes 4.55e-04 | dead-block weights (raw inline) 1.90e-04
+      base 4.25 + T1 4.00 + exact-tail 2.917 + escapes 0.022 + offsets 0.062 = 11.251 bpw total | level-2 relRMSE 0.00567 (1.04x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.590 (+dead-raw 0.003) -> total 10.926 bpw
+  [R  B=IQ4_XS | R=Q4_K res | T2 V2] bit-exact mismatches: 0 of 52428800 | out-of-cell escapes 4.57e-04 | dead-block weights (raw inline) 1.90e-04
+      base 8.75 + T1 0.00 + exact-tail 3.042 + escapes 0.022 + offsets 0.062 = 11.877 bpw total | level-2 relRMSE 0.00482 (0.89x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.673 (+dead-raw 0.003) -> total 11.511 bpw
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/11.self_attn.q_proj.weight.bin [12288 x 5120]
+  IQ4_XS index entropy 3.900 bits (stored 4) + scales 0.25 -> H(B) <= 4.150
+  [A  B=IQ4_XS | exact V2 tail] bit-exact mismatches: 0 of 62914560 | out-of-cell escapes 4.27e-04 | dead-block weights (raw inline) 1.53e-06
+      base 4.25 + T1 0.00 + exact-tail 7.183 + escapes 0.021 + offsets 0.062 = 11.516 bpw total | level-2 relRMSE 0.07805 (14.18x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 6.588 (+dead-raw 0.000) -> total 10.921 bpw
+  [C  B=IQ4_XS | T1(4b) | T2 V2] bit-exact mismatches: 0 of 62914560 | out-of-cell escapes 4.27e-04 | dead-block weights (raw inline) 1.53e-06
+      base 4.25 + T1 4.00 + exact-tail 2.929 + escapes 0.021 + offsets 0.062 = 11.262 bpw total | level-2 relRMSE 0.00570 (1.04x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.597 (+dead-raw 0.000) -> total 10.930 bpw
+  [R  B=IQ4_XS | R=Q4_K res | T2 V2] bit-exact mismatches: 0 of 62914560 | out-of-cell escapes 4.30e-04 | dead-block weights (raw inline) 1.53e-06
+      base 8.75 + T1 0.00 + exact-tail 3.043 + escapes 0.021 + offsets 0.062 = 11.876 bpw total | level-2 relRMSE 0.00485 (0.88x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.681 (+dead-raw 0.000) -> total 11.514 bpw
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/10.mlp.down_proj.weight.bin [5120 x 17408]
+  IQ4_XS index entropy 3.907 bits (stored 4) + scales 0.25 -> H(B) <= 4.157
+  [A  B=IQ4_XS | exact V2 tail] bit-exact mismatches: 0 of 89128960 | out-of-cell escapes 1.09e-03 | dead-block weights (raw inline) 0.00e+00
+      base 4.25 + T1 0.00 + exact-tail 7.155 + escapes 0.052 + offsets 0.062 = 11.519 bpw total | level-2 relRMSE 0.07727 (14.28x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 6.567 (+dead-raw 0.000) -> total 10.932 bpw
+  [C  B=IQ4_XS | T1(4b) | T2 V2] bit-exact mismatches: 0 of 89128960 | out-of-cell escapes 1.09e-03 | dead-block weights (raw inline) 0.00e+00
+      base 4.25 + T1 4.00 + exact-tail 2.941 + escapes 0.052 + offsets 0.062 = 11.306 bpw total | level-2 relRMSE 0.00566 (1.05x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.579 (+dead-raw 0.000) -> total 10.943 bpw
+  [R  B=IQ4_XS | R=Q4_K res | T2 V2] bit-exact mismatches: 0 of 89128960 | out-of-cell escapes 1.09e-03 | dead-block weights (raw inline) 0.00e+00
+      base 8.75 + T1 0.00 + exact-tail 2.978 + escapes 0.052 + offsets 0.062 = 11.843 bpw total | level-2 relRMSE 0.00483 (0.89x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.665 (+dead-raw 0.000) -> total 11.530 bpw

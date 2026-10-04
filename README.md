@@ -14,6 +14,8 @@ Its 51B n-gram table is read straight from disk at full BF16 precision.
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — design, memory budgets, estimates, milestones.
 - [`docs/SPEED2X.md`](docs/SPEED2X.md) — plan for ~2x decode speed (lossless) and 200k context on both models.
+- [`docs/BITLEVEL.md`](docs/BITLEVEL.md) — bit-level lossless mode: exact BF16 rebuilt from the 4-bit draft's own bits.
+- [`experiments/exact_tail`](experiments/exact_tail) — the bit-exact rebuild (0 mismatches over 204.5M real weights).
 - [`experiments/nested_quant`](experiments/nested_quant) — first measurement on real Qwen3.8-27B weights.
   An IQ4_XS base plus a Q4_K residual has 0.89× the weight error of Q8_0.
 

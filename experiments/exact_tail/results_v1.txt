@@ -1,0 +1,51 @@
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/10.linear_attn.in_proj_qkv.weight.bin [10240 x 5120]
+  order-0 H(bf16)=10.486  H(exp)=2.564  Huffman(exp)=2.602 -> DF11-style sign+mant+huff = 10.602 bpw
+  H(exp | 32-block max exp)=2.541 + H(maxexp)/32=0.026 -> context-coded exact = 10.567 bpw
+  top-15 exponents cover 0.99968 -> fixed s1+e4+m7=12-bit code, escape rate 3.20e-04
+  bit-prefix head k=0: rel RMSE truncated 0.3119, midpoint 0.2329
+  bit-prefix head k=1: rel RMSE truncated 0.1803, midpoint 0.1099
+  bit-prefix head k=2: rel RMSE truncated 0.0965, midpoint 0.0539
+  bit-prefix head k=3: rel RMSE truncated 0.0490, midpoint 0.0269
+  bit-prefix head k=4: rel RMSE truncated 0.0237, midpoint 0.0136
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/10.linear_attn.in_proj_qkv.weight.bin [10240 x 5120]
+  IQ4_XS index entropy 3.903 bits (stored 4) + scales 0.25 -> H(B) <= 4.153
+  [C  B=IQ4_XS | T1(4b) | T2 V1 fixed-width] bit-exact mismatches: 0 of 52428800 | out-of-cell escapes 4.55e-04 | dead-block weights (raw inline) 1.90e-04
+      base 4.25 + T1 4.00 + exact-tail 2.939 + escapes 0.022 + offsets 0.062 = 11.272 bpw total | level-2 relRMSE 0.00567 (1.04x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.590 (+dead-raw 0.003) -> total 10.926 bpw
+  [R  B=IQ4_XS | R=Q4_K res | T2 V1 fixed-width] bit-exact mismatches: 0 of 52428800 | out-of-cell escapes 4.57e-04 | dead-block weights (raw inline) 1.90e-04
+      base 8.75 + T1 0.00 + exact-tail 3.063 + escapes 0.022 + offsets 0.062 = 11.898 bpw total | level-2 relRMSE 0.00482 (0.89x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.673 (+dead-raw 0.003) -> total 11.511 bpw
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/11.self_attn.q_proj.weight.bin [12288 x 5120]
+  order-0 H(bf16)=10.499  H(exp)=2.575  Huffman(exp)=2.612 -> DF11-style sign+mant+huff = 10.612 bpw
+  H(exp | 32-block max exp)=2.547 + H(maxexp)/32=0.029 -> context-coded exact = 10.576 bpw
+  top-15 exponents cover 0.99977 -> fixed s1+e4+m7=12-bit code, escape rate 2.32e-04
+  bit-prefix head k=0: rel RMSE truncated 0.3120, midpoint 0.2326
+  bit-prefix head k=1: rel RMSE truncated 0.1804, midpoint 0.1098
+  bit-prefix head k=2: rel RMSE truncated 0.0965, midpoint 0.0539
+  bit-prefix head k=3: rel RMSE truncated 0.0490, midpoint 0.0269
+  bit-prefix head k=4: rel RMSE truncated 0.0237, midpoint 0.0136
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/11.self_attn.q_proj.weight.bin [12288 x 5120]
+  IQ4_XS index entropy 3.900 bits (stored 4) + scales 0.25 -> H(B) <= 4.150
+  [C  B=IQ4_XS | T1(4b) | T2 V1 fixed-width] bit-exact mismatches: 0 of 62914560 | out-of-cell escapes 4.27e-04 | dead-block weights (raw inline) 1.53e-06
+      base 4.25 + T1 4.00 + exact-tail 2.950 + escapes 0.021 + offsets 0.062 = 11.283 bpw total | level-2 relRMSE 0.00570 (1.04x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.597 (+dead-raw 0.000) -> total 10.930 bpw
+  [R  B=IQ4_XS | R=Q4_K res | T2 V1 fixed-width] bit-exact mismatches: 0 of 62914560 | out-of-cell escapes 4.30e-04 | dead-block weights (raw inline) 1.53e-06
+      base 8.75 + T1 0.00 + exact-tail 3.064 + escapes 0.021 + offsets 0.062 = 11.897 bpw total | level-2 relRMSE 0.00485 (0.88x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.681 (+dead-raw 0.000) -> total 11.514 bpw
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/10.mlp.down_proj.weight.bin [5120 x 17408]
+  order-0 H(bf16)=10.474  H(exp)=2.552  Huffman(exp)=2.605 -> DF11-style sign+mant+huff = 10.605 bpw
+  H(exp | 32-block max exp)=2.537 + H(maxexp)/32=0.020 -> context-coded exact = 10.557 bpw
+  top-15 exponents cover 0.99983 -> fixed s1+e4+m7=12-bit code, escape rate 1.66e-04
+  bit-prefix head k=0: rel RMSE truncated 0.3129, midpoint 0.2304
+  bit-prefix head k=1: rel RMSE truncated 0.1810, midpoint 0.1095
+  bit-prefix head k=2: rel RMSE truncated 0.0964, midpoint 0.0538
+  bit-prefix head k=3: rel RMSE truncated 0.0489, midpoint 0.0268
+  bit-prefix head k=4: rel RMSE truncated 0.0237, midpoint 0.0135
+/tmp/claude-0/-home-user-eightfer/7f040bef-883f-5f0e-800f-e11857f03d1c/scratchpad/w/10.mlp.down_proj.weight.bin [5120 x 17408]
+  IQ4_XS index entropy 3.907 bits (stored 4) + scales 0.25 -> H(B) <= 4.157
+  [C  B=IQ4_XS | T1(4b) | T2 V1 fixed-width] bit-exact mismatches: 0 of 89128960 | out-of-cell escapes 1.09e-03 | dead-block weights (raw inline) 0.00e+00
+      base 4.25 + T1 4.00 + exact-tail 2.962 + escapes 0.052 + offsets 0.062 = 11.327 bpw total | level-2 relRMSE 0.00566 (1.05x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.579 (+dead-raw 0.000) -> total 10.943 bpw
+  [R  B=IQ4_XS | R=Q4_K res | T2 V1 fixed-width] bit-exact mismatches: 0 of 89128960 | out-of-cell escapes 1.09e-03 | dead-block weights (raw inline) 0.00e+00
+      base 8.75 + T1 0.00 + exact-tail 2.999 + escapes 0.052 + offsets 0.062 = 11.864 bpw total | level-2 relRMSE 0.00483 (0.89x Q8_0)
+      exact tail with ideal value-uniform rANS instead of V2: 2.665 (+dead-raw 0.000) -> total 11.530 bpw
