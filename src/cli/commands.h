@@ -14,6 +14,7 @@ int logits(const std::vector<std::string> & args);
 int pack(const std::vector<std::string> & args);
 int gen(const std::vector<std::string> & args);
 int decode(const std::vector<std::string> & args);
+int serve(const std::vector<std::string> & args);
 
 // Reads whitespace/comma separated token ids.
 std::vector<int32_t> read_token_ids(const std::string & path);

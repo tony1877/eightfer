@@ -38,6 +38,9 @@ public:
 
     // Evaluates the prompt (base + residual) and samples the first token, which is appended to `out`.
     bool prefill(const std::vector<int32_t> & prompt, std::vector<int32_t> & out, std::string & err);
+    // When the caller has evaluated the prompt itself: samples the first token from the last prompt position's
+    // logits and appends it to `out`.
+    void begin(const float * last_logits, std::vector<int32_t> & out);
     // One cycle: appends 1..k+1 tokens to `out`.
     bool step(std::vector<int32_t> & out, std::string & err);
 

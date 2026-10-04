@@ -144,6 +144,13 @@ bool SpecDecoder::prefill(const std::vector<int32_t> & prompt, std::vector<int32
     return true;
 }
 
+void SpecDecoder::begin(const float * last_logits, std::vector<int32_t> & out) {
+    logits_.assign(last_logits, last_logits + m_.hp().n_vocab);
+    last_ = sample(logits_.data(), -1);
+    out.push_back(last_);
+    st_.emitted++;
+}
+
 bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     const int64_t nv = m_.hp().n_vocab;
     const int     k_ = adaptive_ ? choose_k() : this->k_;

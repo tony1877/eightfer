@@ -60,3 +60,16 @@ What it does (about 3–5 minutes):
 
 Kernels come from [ggml](https://github.com/ggml-org/llama.cpp) (MIT), pinned as a submodule at `836d571`.
 The runtime, scheduling, storage tiers and split-precision format are eightfer's.
+
+## Serving (OpenAI-compatible)
+
+```
+eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key-file KEYFILE                --chat-template-file TEMPLATE.jinja --ctx 16384 --kv q8_0 --spec auto
+```
+
+- Qwen3.8-27B: pack it first (`eightfer pack`), then serve the base with `--res`: base + residual quality,
+  self-speculative decoding (14-16 tok/s at temp 1.0 on an RTX 5080 + 9800X3D).
+- Flash-Next: serve the GGUF directly (experts stay memory-mapped; a GPU expert cache takes free VRAM;
+  18.8 tok/s, 24 warm).
+- Requests and responses follow llama-server: `chat_template_kwargs` (e.g. `enable_thinking`), `reasoning_content`,
+  `tools` / `tool_calls`, streaming with usage and timings in the last chunk.

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(eightfer VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)  # llama.cpp's targets; ours switch to 20 below
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
@@ -31,6 +31,7 @@ endforeach()
 set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)  # llama.cpp turns it on; it does not build under MSVC with AVX512_BF16
 add_subdirectory(${E8_LLAMA_DIR} ${CMAKE_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
+set(CMAKE_CXX_STANDARD 20)
 
 if (MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
@@ -61,6 +62,7 @@ add_executable(eightfer
     src/cli/pack.cpp
     src/cli/gen.cpp
     src/cli/decode.cpp
+    src/server/server.cpp
     src/cli/ppl.cpp
     src/cli/selftest.cpp
     src/bench/bench.cpp
@@ -70,9 +72,9 @@ add_executable(eightfer
     src/bench/bench_disk.cpp
     src/sys/sysinfo.cpp
 )
-target_include_directories(eightfer PRIVATE src)
+target_include_directories(eightfer PRIVATE src ${E8_LLAMA_DIR}/vendor/cpp-httplib ${E8_LLAMA_DIR}/vendor)
 target_compile_definitions(eightfer PRIVATE EIGHTFER_VERSION="${PROJECT_VERSION}")
-target_link_libraries(eightfer PRIVATE e8_io e8_model ggml)
+target_link_libraries(eightfer PRIVATE e8_io e8_model ggml llama-common llama cpp-httplib)
 if (WIN32)
     target_link_libraries(eightfer PRIVATE shell32)  # CommandLineToArgvW
 endif()

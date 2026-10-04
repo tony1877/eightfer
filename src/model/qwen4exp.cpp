@@ -276,7 +276,7 @@ bool Qwen4Exp::load(const std::string & path, const LoadOptions & opt, std::stri
 
     // state
     n_ctx_                = std::max(kKvPad, (opt.n_ctx + kKvPad - 1) / kKvPad * kKvPad);
-    ggml_init_params sp   = { ggml_tensor_overhead() * (size_t) (h.n_layer * 8 + 8), nullptr, true };
+    ggml_init_params sp   = { ggml_tensor_overhead() * (size_t) (h.n_layer * 12 + 8), nullptr, true };
     sctx_[0]              = ggml_init(sp);
     sctx_[1]              = ggml_init(sp);
     const size_t nl       = (size_t) h.n_layer;
@@ -287,12 +287,17 @@ bool Qwen4Exp::load(const std::string & path, const LoadOptions & opt, std::stri
     conv_state_.assign(nl, nullptr);
     ssm_state_.assign(nl, nullptr);
     ple_state_.assign(nl, nullptr);
+    conv_ck_.assign(nl, nullptr);
+    ssm_ck_.assign(nl, nullptr);
+    ple_ck_.assign(nl, nullptr);
     for (int64_t il = 0; il < h.n_layer; il++) {
         ggml_context * c = sctx_[layers_[(size_t) il].on_gpu ? 0 : 1];
         const size_t   l = (size_t) il;
         if (h.recurrent[l]) {
             conv_state_[l] = ggml_new_tensor_1d(c, GGML_TYPE_F32, (h.ssm_d_conv - 1) * h.conv_channels());
             ssm_state_[l]  = ggml_new_tensor_1d(c, GGML_TYPE_F32, h.ssm_d_state * h.ssm_d_state * h.ssm_n_v);
+            conv_ck_[l]    = ggml_dup_tensor(c, conv_state_[l]);
+            ssm_ck_[l]     = ggml_dup_tensor(c, ssm_state_[l]);
         } else {
             k_cache_[l] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, n_ctx_);
             v_cache_[l] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, n_ctx_);
@@ -303,6 +308,7 @@ bool Qwen4Exp::load(const std::string & path, const LoadOptions & opt, std::stri
         }
         if (h.ple_layer[l]) {
             ple_state_[l] = ggml_new_tensor_2d(c, GGML_TYPE_F32, (h.ple_conv_kernel - 1) * h.ple_ngram, h.hc * h.n_embd);
+            ple_ck_[l]    = ggml_dup_tensor(c, ple_state_[l]);
         }
     }
     for (int i = 0; i < 2; i++) {
@@ -325,6 +331,36 @@ bool Qwen4Exp::load(const std::string & path, const LoadOptions & opt, std::stri
     sched_ = ggml_backend_sched_new(bes.data(), nullptr, (int) bes.size(), kGraphSize, false, true);
     graph_meta_.resize(ggml_tensor_overhead() * kGraphSize + ggml_graph_overhead_custom(kGraphSize, false));
     return true;
+}
+
+bool Qwen4Exp::eval_last(const int32_t * tokens, int n, float * logits, std::string & err) {
+    last_only_    = true;
+    const bool ok = eval(tokens, n, logits, err);
+    last_only_    = false;
+    return ok;
+}
+
+void Qwen4Exp::checkpoint_save() {
+    for (size_t l = 0; l < conv_state_.size(); l++) {
+        if (conv_state_[l]) {
+            ggml_backend_tensor_copy(conv_state_[l], conv_ck_[l]);
+            ggml_backend_tensor_copy(ssm_state_[l], ssm_ck_[l]);
+        }
+        if (ple_state_[l]) ggml_backend_tensor_copy(ple_state_[l], ple_ck_[l]);
+    }
+    ck_n_past_ = n_past_;
+}
+
+void Qwen4Exp::checkpoint_restore() {
+    for (size_t l = 0; l < conv_state_.size(); l++) {
+        if (conv_state_[l]) {
+            ggml_backend_tensor_copy(conv_ck_[l], conv_state_[l]);
+            ggml_backend_tensor_copy(ssm_ck_[l], ssm_state_[l]);
+        }
+        if (ple_state_[l]) ggml_backend_tensor_copy(ple_ck_[l], ple_state_[l]);
+    }
+    n_past_ = ck_n_past_;
+    history_.resize((size_t) n_past_);
 }
 
 void Qwen4Exp::reset() {
@@ -906,6 +942,9 @@ ggml_cgraph * Qwen4Exp::build_graph(ggml_context * ctx, int n, int n_kv, bool sp
         cur = hc_mix(ctx, res, L.hcf_norm, L.hcf_down, L.hcf_up, L.hcf_inject, &inject);
         cur = moe(ctx, il, cur, n);
         res = hc_combine(ctx, res, cur, inject);
+    }
+    if (last_only_ && n > 1) {  // prompt processing: only the last token's logits
+        res = ggml_view_3d(ctx, res, res->ne[0], res->ne[1], 1, res->nb[1], res->nb[2], res->nb[2] * (size_t) (n - 1));
     }
     // the final mixer is the output norm
     ggml_tensor * cur = hc_mix(ctx, res, out_hc_norm_, out_hc_down_, out_hc_up_, nullptr, nullptr);

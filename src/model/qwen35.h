@@ -121,6 +121,13 @@ public:
 
     // Empties the KV cache and zeroes the recurrent state.
     void reset() override;
+    bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) override {
+        EvalOpts o;
+        o.last_only = true;
+        return eval(tokens, n, o, logits, nullptr, err);
+    }
+    void checkpoint_save() override;
+    void checkpoint_restore() override;
 
     // Debug: when >= 0, eval() stops after this layer and writes its output (n * n_embd floats) instead of logits.
     void set_debug_layer(int il) { debug_layer_ = il; }
@@ -163,7 +170,8 @@ private:
     // per layer: KV cache (attention) or conv/ssm state (DeltaNet); unused entries are nullptr
     std::vector<ggml_tensor *> k_cache_, v_cache_, conv_state_, ssm_state_;
     // snapshot of conv/ssm state, and the recorded DeltaNet inputs of the last recorded eval
-    std::vector<ggml_tensor *> conv_bak_, ssm_bak_, rec_qkv_, rec_g_, rec_beta_;
+    std::vector<ggml_tensor *> conv_bak_, ssm_bak_, rec_qkv_, rec_g_, rec_beta_, conv_ck_, ssm_ck_;
+    int ck_n_past_ = 0;
 
     // residual: base weight -> residual tensor (pinned host memory)
     std::unordered_map<const ggml_tensor *, ggml_tensor *> res_;

@@ -83,6 +83,9 @@ public:
 
     bool eval(const int32_t * tokens, int n, float * logits, std::string & err) override;
     void reset() override;
+    bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) override;
+    void checkpoint_save() override;
+    void checkpoint_restore() override;
 
     int64_t  n_vocab() const override { return hp_.n_vocab; }
     int      n_past() const override { return n_past_; }
@@ -137,6 +140,9 @@ private:
     // state per layer: KV + indexer key caches (attention), conv/ssm state (DeltaNet), PLE conv history
     std::vector<ggml_tensor *> k_cache_, v_cache_, idx_raw_, idx_pool_, conv_state_, ssm_state_, ple_state_;
     std::vector<int32_t>    history_;  // every evaluated token, for the n-gram hash
+    std::vector<ggml_tensor *> conv_ck_, ssm_ck_, ple_ck_;
+    int ck_n_past_ = 0;
+    bool last_only_ = false;
 
     LoadOptions          opt_;
     int                  n_ctx_ = 0, n_past_ = 0, kpool_ = 0;

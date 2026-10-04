@@ -17,6 +17,12 @@ public:
     // Runs `n` tokens at positions [n_past(), n_past() + n); writes n * n_vocab logits when `logits` is non-null.
     virtual bool eval(const int32_t * tokens, int n, float * logits, std::string & err) = 0;
     virtual void reset()                                                                 = 0;
+    // Like eval(), but `logits` receives only the last token's row (prompt processing).
+    virtual bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) = 0;
+    // One saved state (recurrent state, n_past; KV entries past n_past are masked and get overwritten), used to
+    // reuse a prompt prefix across requests.
+    virtual void checkpoint_save()    = 0;
+    virtual void checkpoint_restore() = 0;
 
     virtual int64_t  n_vocab() const          = 0;
     virtual int      n_past() const           = 0;

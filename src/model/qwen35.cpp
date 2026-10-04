@@ -261,7 +261,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
 
     // state: KV cache for attention layers, conv + delta-net state for recurrent layers
     n_ctx_                 = std::max(kKvPad, (opt.n_ctx + kKvPad - 1) / kKvPad * kKvPad);
-    ggml_init_params sp    = { ggml_tensor_overhead() * (size_t) (h.n_layer * 8 + 8), nullptr, true };
+    ggml_init_params sp    = { ggml_tensor_overhead() * (size_t) (h.n_layer * 12 + 8), nullptr, true };
     sctx_[0]               = ggml_init(sp);
     sctx_[1]               = ggml_init(sp);
     k_cache_.assign((size_t) h.n_layer, nullptr);
@@ -273,6 +273,8 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
     rec_qkv_.assign((size_t) h.n_layer, nullptr);
     rec_g_.assign((size_t) h.n_layer, nullptr);
     rec_beta_.assign((size_t) h.n_layer, nullptr);
+    conv_ck_.assign((size_t) h.n_layer, nullptr);
+    ssm_ck_.assign((size_t) h.n_layer, nullptr);
     const int64_t n_rec = std::max(1, opt.max_record);
     for (int64_t il = 0; il < h.n_layer; il++) {
         ggml_context * c = sctx_[layers_[(size_t) il].on_gpu ? 0 : 1];
@@ -281,6 +283,8 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             ssm_state_[(size_t) il]  = ggml_new_tensor_1d(c, GGML_TYPE_F32, h.ssm_d_state * h.ssm_d_state * h.ssm_n_v);
             conv_bak_[(size_t) il]   = ggml_dup_tensor(c, conv_state_[(size_t) il]);
             ssm_bak_[(size_t) il]    = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
+            conv_ck_[(size_t) il]    = ggml_dup_tensor(c, conv_state_[(size_t) il]);
+            ssm_ck_[(size_t) il]     = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
             rec_qkv_[(size_t) il]    = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.conv_channels(), n_rec);
             rec_g_[(size_t) il]      = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
             rec_beta_[(size_t) il]   = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
@@ -407,6 +411,27 @@ void Qwen35::save_state() {
         }
     }
     saved_n_past_ = n_past_;
+}
+
+void Qwen35::checkpoint_save() {
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        if (conv_state_[il]) {
+            ggml_backend_tensor_copy(conv_state_[il], conv_ck_[il]);
+            ggml_backend_tensor_copy(ssm_state_[il], ssm_ck_[il]);
+        }
+    }
+    ck_n_past_ = n_past_;
+}
+
+void Qwen35::checkpoint_restore() {
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        if (conv_state_[il]) {
+            ggml_backend_tensor_copy(conv_ck_[il], conv_state_[il]);
+            ggml_backend_tensor_copy(ssm_ck_[il], ssm_state_[il]);
+        }
+    }
+    n_past_     = ck_n_past_;
+    recorded_n_ = 0;
 }
 
 void Qwen35::restore_state() {
