@@ -1,4 +1,5 @@
 #include "bench/bench.h"
+#include "cli/commands.h"
 #include "sys/sysinfo.h"
 
 #include "ggml.h"
@@ -105,6 +106,15 @@ int main(int argc, char ** argv) {
     }
     if (args[1] == "pinned-probe" && args.size() == 3) {  // internal: run by `bench` in a child process
         e8::bench::pinned_probe(std::atof(args[2].c_str()));
+    }
+    if (args[1] == "info") {
+        return e8::cli::info(args);
+    }
+    if (args[1] == "ppl") {
+        return e8::cli::ppl(args);
+    }
+    if (args[1] == "selftest") {
+        return e8::cli::selftest(args);
     }
     if (args[1] == "bench") {
         e8::bench::Options opt;

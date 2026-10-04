@@ -29,8 +29,18 @@ endif()
 add_library(e8_io STATIC src/io/async_reader.cpp)
 target_include_directories(e8_io PUBLIC src)
 
+add_library(e8_model STATIC
+    src/model/gguf_file.cpp
+    src/model/qwen35.cpp
+)
+target_include_directories(e8_model PUBLIC src)
+target_link_libraries(e8_model PUBLIC ggml)
+
 add_executable(eightfer
     src/main.cpp
+    src/cli/info.cpp
+    src/cli/ppl.cpp
+    src/cli/selftest.cpp
     src/bench/bench.cpp
     src/bench/bench_mem.cpp
     src/bench/bench_gemv.cpp
@@ -40,7 +50,7 @@ add_executable(eightfer
 )
 target_include_directories(eightfer PRIVATE src)
 target_compile_definitions(eightfer PRIVATE EIGHTFER_VERSION="${PROJECT_VERSION}")
-target_link_libraries(eightfer PRIVATE e8_io ggml)
+target_link_libraries(eightfer PRIVATE e8_io e8_model ggml)
 if (WIN32)
     target_link_libraries(eightfer PRIVATE shell32)  # CommandLineToArgvW
 endif()

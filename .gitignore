@@ -6,3 +6,7 @@ out/
 *.safetensors
 experiments/**/w/
 experiments/nested_quant/nested
+
+# local scratch
+/build-ref/
+/*.txt
