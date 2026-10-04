@@ -1,0 +1,4 @@
+loaded in 0.9 s: 2.64 GB GPU, 53.48 GB CPU/mapped
+prefill 81 tok in 18.49 s; decode 384 tok in 36.29 s = 10.58 tok/s (median 81.2 ms, p90 111.4 ms)
+second half: 11.28 tok/s
+expert cache: off

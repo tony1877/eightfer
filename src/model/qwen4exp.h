@@ -15,6 +15,7 @@
 
 #include "model/causal_lm.h"
 #include "model/gguf_set.h"
+#include "kernels/moe_cpu.h"
 #include "model/qwen35.h"  // LoadOptions
 
 #include "ggml-backend.h"
@@ -157,6 +158,7 @@ private:
         ggml_backend_buffer_t                buf = nullptr;
     } ec_;
     std::vector<ggml_tensor *> sel_out_;  // per layer: this eval's selected expert ids [k, n]
+    std::vector<kernels::PrefetchHint> hints_;  // per layer: the next layer's tensors and cache map
     // per-phase time of single-token evals (decode), seconds
     double t_build_ = 0, t_alloc_ = 0, t_inputs_ = 0, t_compute_ = 0, t_update_ = 0;
     int64_t n_timed_ = 0;

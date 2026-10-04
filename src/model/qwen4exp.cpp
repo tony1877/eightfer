@@ -532,10 +532,18 @@ ggml_tensor * Qwen4Exp::moe(ggml_context * ctx, int64_t il, ggml_tensor * cur, i
         ggml_tensor * wc   = ggml_sub(ctx, w, wg);
         // CPU half: only the pairs routed to the CPU (nonzero weight); the sparse kernel skips the others
         static const bool no_cpu = std::getenv("E8_DEBUG_NO_CPU_MOE") != nullptr;  // timing experiments only
+        // opt-in: on Flash-Next IQ3_XXS the mispredicted reads cost more than the hits save (15.2 vs 15.7 tok/s)
+        static const bool no_la  = std::getenv("E8_LOOKAHEAD") == nullptr;
+        // lookahead: the next layer's router applied to this layer's input predicts its selection
+        ggml_tensor * next_ids = nullptr;
+        if (!no_la && l + 1 < layers_.size() && layers_[l + 1].gate_inp && !hints_.empty() && hints_[l].gate) {
+            next_ids = ggml_cont(ctx, ggml_argsort_top_k(ctx, ggml_mul_mat(ctx, layers_[l + 1].gate_inp, cur), (int) k));
+        }
         ggml_tensor * cpu_out = no_cpu ? ggml_scale(ctx, cur, 0.0f)
             : L.gate_up_exps
             ? experts(ctx, L.gate_exps, L.up_exps, L.gate_up_exps, L.down_exps, x3, cids, wc, n)
-            : kernels::moe_cpu_sparse(ctx, cur, cids, ggml_reshape_2d(ctx, wc, k, n), L.gate_exps, L.up_exps, L.down_exps);
+            : kernels::moe_cpu_sparse(ctx, cur, cids, ggml_reshape_2d(ctx, wc, k, n), L.gate_exps, L.up_exps, L.down_exps,
+                                      next_ids, next_ids ? &hints_[l] : nullptr);
         out = ggml_add(ctx, experts(ctx, ec_.gate[l], ec_.up[l], ec_.gate_up[l], ec_.down[l], x3, gids, wg, n), cpu_out);
     } else {
         out = experts(ctx, L.gate_exps, L.up_exps, L.gate_up_exps, L.down_exps, x3, sel, w, n);
@@ -639,6 +647,12 @@ bool Qwen4Exp::init_expert_cache(std::string & err) {
     ec_.expert_in.assign(nl, std::vector<int>((size_t) C, -1));
     ec_.heat.assign(nl, std::vector<float>((size_t) h.n_expert, 0.0f));
     ec_.dummy.assign(nl, 0);
+    hints_.assign(nl, {});
+    for (size_t l = 0; l + 1 < nl; l++) {
+        const auto & N = layers_[l + 1];
+        if (!N.gate_exps || !N.up_exps || !N.down_exps) continue;
+        hints_[l] = { N.gate_exps, N.up_exps, N.down_exps, ec_.gmap[l + 1] ? &ec_.slot_of[l + 1] : nullptr };
+    }
     // empty cache: everything routes to the CPU
     for (size_t l = 0; l < nl; l++) {
         if (!ec_.gmap[l]) continue;

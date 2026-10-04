@@ -4,6 +4,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -48,24 +52,71 @@ std::vector<Pair> active_pairs(const ggml_tensor * ids, const ggml_tensor * w) {
     return p;
 }
 
-// Ask the OS to read the weights of every active expert now, as large concurrent I/Os, instead of letting the
-// compute threads fault them in page by page. Weights already resident cost nothing.
-void prefetch_experts(const std::vector<Pair> & pairs, std::initializer_list<const ggml_tensor *> ts) {
+// Background prefetcher: compute threads only enqueue address ranges; one thread asks the OS to read them as large
+// concurrent I/Os (PrefetchVirtualMemory blocks its caller while it queues the reads).
+struct Range {
+    const void * p;
+    size_t       n;
+};
+class Prefetcher {
+public:
+    void push(std::vector<Range> && r) {
+        if (r.empty()) return;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!th_.joinable()) th_ = std::thread([this] { run(); });
+            q_.push_back(std::move(r));
+            while (q_.size() > 8) q_.pop_front();  // stale requests: the compute has moved on
+        }
+        cv_.notify_one();
+    }
+    ~Prefetcher() {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_ = true;
+        }
+        cv_.notify_one();
+        if (th_.joinable()) th_.join();
+    }
+
+private:
+    void run() {
+        for (;;) {
+            std::vector<Range> r;
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                cv_.wait(lk, [this] { return stop_ || !q_.empty(); });
+                if (stop_) return;
+                r = std::move(q_.front());
+                q_.pop_front();
+            }
 #if defined(_WIN32)
-    std::vector<WIN32_MEMORY_RANGE_ENTRY> r;
-    std::vector<int32_t>                  seen;
+            std::vector<WIN32_MEMORY_RANGE_ENTRY> w;
+            for (const Range & x : r) w.push_back({ (void *) x.p, x.n });
+            PrefetchVirtualMemory(GetCurrentProcess(), w.size(), w.data(), 0);
+#endif
+        }
+    }
+    std::mutex                     mu_;
+    std::condition_variable        cv_;
+    std::deque<std::vector<Range>> q_;
+    std::thread                    th_;
+    bool                           stop_ = false;
+};
+Prefetcher g_prefetcher;
+
+// Queue the weights of every listed expert (deduplicated) for reading. Resident pages cost nothing.
+void prefetch_experts(const std::vector<Pair> & pairs, std::initializer_list<const ggml_tensor *> ts) {
+    std::vector<Range>   r;
+    std::vector<int32_t> seen;
     for (const Pair & p : pairs) {
         if (std::find(seen.begin(), seen.end(), p.e) != seen.end()) continue;
         seen.push_back(p.e);
         for (const ggml_tensor * t : ts) {
-            if (t) r.push_back({ (void *) ((const char *) t->data + (size_t) p.e * t->nb[2]), t->nb[2] });
+            if (t) r.push_back({ (const char *) t->data + (size_t) p.e * t->nb[2], t->nb[2] });
         }
     }
-    if (!r.empty()) PrefetchVirtualMemory(GetCurrentProcess(), r.size(), r.data(), 0);
-#else
-    (void) pairs;
-    (void) ts;
-#endif
+    g_prefetcher.push(std::move(r));
 }
 
 // row range of this thread, in chunks of 16 rows
@@ -76,7 +127,7 @@ void split_rows(int64_t rows, int ith, int nth, int64_t & r0, int64_t & r1) {
 }
 
 // dst H [n_ff, k, n] F32; src: x, ids, w, gate, up
-void gate_up_op(ggml_tensor * dst, int ith, int nth, void *) {
+void gate_up_op(ggml_tensor * dst, int ith, int nth, void * ud) {
     const long long t_start = now_us();
     struct Timer {
         int ith; long long t0;
@@ -87,7 +138,21 @@ void gate_up_op(ggml_tensor * dst, int ith, int nth, void *) {
     int64_t             r0, r1;
     split_rows(ff, ith, nth, r0, r1);
     const auto pairs = active_pairs(ids, w);
-    if (ith == 0) prefetch_experts(pairs, { gate, up, (const ggml_tensor *) dst->src[5] });  // down too: next op
+    if (ith == 0) {
+        prefetch_experts(pairs, { gate, up, (const ggml_tensor *) dst->src[5] });  // down too: next op
+        const auto * hint = (const PrefetchHint *) ud;
+        const ggml_tensor * nids = dst->src[6];
+        if (hint && nids) {  // lookahead: the next layer's predicted, uncached experts
+            std::vector<Pair> next;
+            for (int64_t t = 0; t < nids->ne[1]; t++) {
+                for (int64_t j = 0; j < nids->ne[0]; j++) {
+                    const int32_t e = ((const int32_t *) ((const char *) nids->data + t * nids->nb[1]))[j];
+                    if (e >= 0 && (!hint->slot_of || (*hint->slot_of)[(size_t) e] < 0)) next.push_back({ t, j, e, 1.0f });
+                }
+            }
+            prefetch_experts(next, { hint->gate, hint->up, hint->down });
+        }
+    }
     if (r0 >= r1 || pairs.empty()) return;
 
     const auto * tg = ggml_get_type_traits_cpu(gate->type);
@@ -159,13 +224,14 @@ void down_op(ggml_tensor * dst, int ith, int nth, void *) {
 } // namespace
 
 ggml_tensor * moe_cpu_sparse(ggml_context * ctx, ggml_tensor * x, ggml_tensor * ids, ggml_tensor * w, ggml_tensor * gate,
-                             ggml_tensor * up, ggml_tensor * down) {
+                             ggml_tensor * up, ggml_tensor * down, ggml_tensor * next_ids, const PrefetchHint * hint) {
     if (!ggml_is_contiguous(x)) x = ggml_cont(ctx, x);
     if (!ggml_is_contiguous(ids)) ids = ggml_cont(ctx, ids);
     if (!ggml_is_contiguous(w)) w = ggml_cont(ctx, w);
     const int64_t k = ids->ne[0], n = ids->ne[1];
-    ggml_tensor * a1[6] = { x, ids, w, gate, up, down };  // down only for the prefetch
-    ggml_tensor * H     = ggml_custom_4d(ctx, GGML_TYPE_F32, gate->ne[1], k, n, 1, a1, 6, gate_up_op, GGML_N_TASKS_MAX, nullptr);
+    ggml_tensor * a1[7] = { x, ids, w, gate, up, down, next_ids };  // down and next_ids only for prefetching
+    ggml_tensor * H     = ggml_custom_4d(ctx, GGML_TYPE_F32, gate->ne[1], k, n, 1, a1, next_ids ? 7 : 6, gate_up_op,
+                                         GGML_N_TASKS_MAX, (void *) hint);
     ggml_tensor * a2[4] = { H, ids, w, down };
     return ggml_custom_4d(ctx, GGML_TYPE_F32, x->ne[0], n, 1, 1, a2, 4, down_op, GGML_N_TASKS_MAX, nullptr);
 }

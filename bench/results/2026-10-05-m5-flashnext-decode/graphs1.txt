@@ -1,0 +1,6 @@
+loaded in 2.5 s: 2.64 GB GPU, 53.48 GB CPU/mapped
+prefill 81 tok in 23.48 s; decode 256 tok in 17.69 s = 14.47 tok/s (median 55.7 ms, p90 96.1 ms)
+second half: 17.12 tok/s
+expert cache: 84 slots/layer (9.82 GB), hit rate 77.0% overall, 77.0% recent, 7196 swaps
+per decode token: build 1.1 ms, alloc 2.3 ms, inputs 1.4 ms, compute 58.2 ms, cache update 6.1 ms (graph 97 splits)
+CPU MoE ops, per 48-layer pass: gate/up 21.8 ms, down 2.7 ms (12288 calls)
