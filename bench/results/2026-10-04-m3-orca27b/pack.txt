@@ -1,0 +1,871 @@
+imatrix: 496 entries from E:\eightfer\imatrix-orca27b.gguf
+pack: 866 tensors, 54.64 GB source, base iq4_xs, residual q4_K, 16 threads
+[   1/866] output.weight                        iq4_xs   +q4_K  B 0.0781 B+R 0.0049  28s
+[   2/866] output_norm.weight                   f32       28s
+[   3/866] token_embd.weight                    bf16      31s
+[   4/866] blk.0.attn_gate.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0053  32s
+[   5/866] blk.0.attn_norm.weight               f32       32s
+[   6/866] blk.0.attn_qkv.weight                iq4_xs * +q4_K  B 0.0778 B+R 0.0052  34s
+[   7/866] blk.0.ffn_down.weight                iq4_xs * +q4_K  B 0.0805 B+R 0.0059  36s
+[   8/866] blk.0.ffn_gate.weight                iq4_xs * +q4_K  B 0.0774 B+R 0.0052  39s
+[   9/866] blk.0.ffn_up.weight                  iq4_xs * +q4_K  B 0.0772 B+R 0.0052  41s
+[  10/866] blk.0.post_attention_norm.weight     f32       41s
+[  11/866] blk.0.ssm_a                          f32       41s
+[  12/866] blk.0.ssm_alpha.weight               f32    *  41s
+[  13/866] blk.0.ssm_beta.weight                f32    *  41s
+[  14/866] blk.0.ssm_conv1d.weight              f32       41s
+[  15/866] blk.0.ssm_dt.bias                    f32       41s
+[  16/866] blk.0.ssm_norm.weight                f32       41s
+[  17/866] blk.0.ssm_out.weight                 iq4_xs * +q4_K  B 0.0831 B+R 0.0062  42s
+[  18/866] blk.1.attn_gate.weight               iq4_xs * +q4_K  B 0.0794 B+R 0.0055  43s
+[  19/866] blk.1.attn_norm.weight               f32       43s
+[  20/866] blk.1.attn_qkv.weight                iq4_xs * +q4_K  B 0.0794 B+R 0.0055  44s
+[  21/866] blk.1.ffn_down.weight                iq4_xs * +q4_K  B 0.0790 B+R 0.0054  47s
+[  22/866] blk.1.ffn_gate.weight                iq4_xs * +q4_K  B 0.0770 B+R 0.0051  49s
+[  23/866] blk.1.ffn_up.weight                  iq4_xs * +q4_K  B 0.0770 B+R 0.0051  52s
+[  24/866] blk.1.post_attention_norm.weight     f32       52s
+[  25/866] blk.1.ssm_a                          f32       52s
+[  26/866] blk.1.ssm_alpha.weight               f32    *  52s
+[  27/866] blk.1.ssm_beta.weight                f32    *  52s
+[  28/866] blk.1.ssm_conv1d.weight              f32       52s
+[  29/866] blk.1.ssm_dt.bias                    f32       52s
+[  30/866] blk.1.ssm_norm.weight                f32       52s
+[  31/866] blk.1.ssm_out.weight                 iq4_xs * +q4_K  B 0.0800 B+R 0.0057  53s
+[  32/866] blk.2.attn_gate.weight               iq4_xs * +q4_K  B 0.0786 B+R 0.0054  53s
+[  33/866] blk.2.attn_norm.weight               f32       53s
+[  34/866] blk.2.attn_qkv.weight                iq4_xs * +q4_K  B 0.0788 B+R 0.0054  55s
+[  35/866] blk.2.ffn_down.weight                iq4_xs * +q4_K  B 0.0795 B+R 0.0056  57s
+[  36/866] blk.2.ffn_gate.weight                iq4_xs * +q4_K  B 0.0761 B+R 0.0049  60s
+[  37/866] blk.2.ffn_up.weight                  iq4_xs * +q4_K  B 0.0762 B+R 0.0049  62s
+[  38/866] blk.2.post_attention_norm.weight     f32       62s
+[  39/866] blk.2.ssm_a                          f32       62s
+[  40/866] blk.2.ssm_alpha.weight               f32    *  62s
+[  41/866] blk.2.ssm_beta.weight                f32    *  62s
+[  42/866] blk.2.ssm_conv1d.weight              f32       62s
+[  43/866] blk.2.ssm_dt.bias                    f32       62s
+[  44/866] blk.2.ssm_norm.weight                f32       62s
+[  45/866] blk.2.ssm_out.weight                 iq4_xs * +q4_K  B 0.0797 B+R 0.0056  63s
+[  46/866] blk.3.attn_k.weight                  iq4_xs * +q4_K  B 0.0803 B+R 0.0055  63s
+[  47/866] blk.3.attn_k_norm.weight             f32       63s
+[  48/866] blk.3.attn_norm.weight               f32       63s
+[  49/866] blk.3.attn_output.weight             iq4_xs * +q4_K  B 0.0841 B+R 0.0067  64s
+[  50/866] blk.3.attn_q.weight                  iq4_xs * +q4_K  B 0.0786 B+R 0.0053  66s
+[  51/866] blk.3.attn_q_norm.weight             f32       66s
+[  52/866] blk.3.attn_v.weight                  iq4_xs * +q4_K  B 0.0790 B+R 0.0054  66s
+[  53/866] blk.3.ffn_down.weight                iq4_xs * +q4_K  B 0.0784 B+R 0.0054  69s
+[  54/866] blk.3.ffn_gate.weight                iq4_xs * +q4_K  B 0.0763 B+R 0.0049  71s
+[  55/866] blk.3.ffn_up.weight                  iq4_xs * +q4_K  B 0.0762 B+R 0.0049  74s
+[  56/866] blk.3.post_attention_norm.weight     f32       74s
+[  57/866] blk.4.attn_gate.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0053  74s
+[  58/866] blk.4.attn_norm.weight               f32       74s
+[  59/866] blk.4.attn_qkv.weight                iq4_xs * +q4_K  B 0.0780 B+R 0.0052  76s
+[  60/866] blk.4.ffn_down.weight                iq4_xs * +q4_K  B 0.0782 B+R 0.0053  78s
+[  61/866] blk.4.ffn_gate.weight                iq4_xs * +q4_K  B 0.0764 B+R 0.0049  81s
+[  62/866] blk.4.ffn_up.weight                  iq4_xs * +q4_K  B 0.0763 B+R 0.0049  83s
+[  63/866] blk.4.post_attention_norm.weight     f32       83s
+[  64/866] blk.4.ssm_a                          f32       83s
+[  65/866] blk.4.ssm_alpha.weight               f32    *  83s
+[  66/866] blk.4.ssm_beta.weight                f32    *  83s
+[  67/866] blk.4.ssm_conv1d.weight              f32       83s
+[  68/866] blk.4.ssm_dt.bias                    f32       83s
+[  69/866] blk.4.ssm_norm.weight                f32       83s
+[  70/866] blk.4.ssm_out.weight                 iq4_xs * +q4_K  B 0.0806 B+R 0.0059  84s
+[  71/866] blk.5.attn_gate.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0053  85s
+[  72/866] blk.5.attn_norm.weight               f32       85s
+[  73/866] blk.5.attn_qkv.weight                iq4_xs * +q4_K  B 0.0785 B+R 0.0053  87s
+[  74/866] blk.5.ffn_down.weight                iq4_xs * +q4_K  B 0.0777 B+R 0.0052  89s
+[  75/866] blk.5.ffn_gate.weight                iq4_xs * +q4_K  B 0.0762 B+R 0.0049  91s
+[  76/866] blk.5.ffn_up.weight                  iq4_xs * +q4_K  B 0.0762 B+R 0.0049  94s
+[  77/866] blk.5.post_attention_norm.weight     f32       94s
+[  78/866] blk.5.ssm_a                          f32       94s
+[  79/866] blk.5.ssm_alpha.weight               f32    *  94s
+[  80/866] blk.5.ssm_beta.weight                f32    *  94s
+[  81/866] blk.5.ssm_conv1d.weight              f32       94s
+[  82/866] blk.5.ssm_dt.bias                    f32       94s
+[  83/866] blk.5.ssm_norm.weight                f32       94s
+[  84/866] blk.5.ssm_out.weight                 iq4_xs * +q4_K  B 0.0796 B+R 0.0056  95s
+[  85/866] blk.6.attn_gate.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0053  96s
+[  86/866] blk.6.attn_norm.weight               f32       96s
+[  87/866] blk.6.attn_qkv.weight                iq4_xs * +q4_K  B 0.0786 B+R 0.0053  97s
+[  88/866] blk.6.ffn_down.weight                iq4_xs * +q4_K  B 0.0791 B+R 0.0054  100s
+[  89/866] blk.6.ffn_gate.weight                iq4_xs * +q4_K  B 0.0769 B+R 0.0050  102s
+[  90/866] blk.6.ffn_up.weight                  iq4_xs * +q4_K  B 0.0769 B+R 0.0050  104s
+[  91/866] blk.6.post_attention_norm.weight     f32       104s
+[  92/866] blk.6.ssm_a                          f32       104s
+[  93/866] blk.6.ssm_alpha.weight               f32    *  104s
+[  94/866] blk.6.ssm_beta.weight                f32    *  104s
+[  95/866] blk.6.ssm_conv1d.weight              f32       104s
+[  96/866] blk.6.ssm_dt.bias                    f32       104s
+[  97/866] blk.6.ssm_norm.weight                f32       104s
+[  98/866] blk.6.ssm_out.weight                 iq4_xs * +q4_K  B 0.0796 B+R 0.0056  105s
+[  99/866] blk.7.attn_k.weight                  iq4_xs * +q4_K  B 0.0820 B+R 0.0057  106s
+[ 100/866] blk.7.attn_k_norm.weight             f32       106s
+[ 101/866] blk.7.attn_norm.weight               f32       106s
+[ 102/866] blk.7.attn_output.weight             iq4_xs * +q4_K  B 0.0799 B+R 0.0057  106s
+[ 103/866] blk.7.attn_q.weight                  iq4_xs * +q4_K  B 0.0797 B+R 0.0055  108s
+[ 104/866] blk.7.attn_q_norm.weight             f32       108s
+[ 105/866] blk.7.attn_v.weight                  iq4_xs * +q4_K  B 0.0804 B+R 0.0056  108s
+[ 106/866] blk.7.ffn_down.weight                iq4_xs * +q4_K  B 0.0777 B+R 0.0052  111s
+[ 107/866] blk.7.ffn_gate.weight                iq4_xs * +q4_K  B 0.0761 B+R 0.0049  113s
+[ 108/866] blk.7.ffn_up.weight                  iq4_xs * +q4_K  B 0.0762 B+R 0.0049  116s
+[ 109/866] blk.7.post_attention_norm.weight     f32       116s
+[ 110/866] blk.8.attn_gate.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0053  117s
+[ 111/866] blk.8.attn_norm.weight               f32       117s
+[ 112/866] blk.8.attn_qkv.weight                iq4_xs * +q4_K  B 0.0784 B+R 0.0053  118s
+[ 113/866] blk.8.ffn_down.weight                iq4_xs * +q4_K  B 0.0776 B+R 0.0052  121s
+[ 114/866] blk.8.ffn_gate.weight                iq4_xs * +q4_K  B 0.0761 B+R 0.0049  123s
+[ 115/866] blk.8.ffn_up.weight                  iq4_xs * +q4_K  B 0.0761 B+R 0.0049  126s
+[ 116/866] blk.8.post_attention_norm.weight     f32       126s
+[ 117/866] blk.8.ssm_a                          f32       126s
+[ 118/866] blk.8.ssm_alpha.weight               f32    *  126s
+[ 119/866] blk.8.ssm_beta.weight                f32    *  126s
+[ 120/866] blk.8.ssm_conv1d.weight              f32       126s
+[ 121/866] blk.8.ssm_dt.bias                    f32       126s
+[ 122/866] blk.8.ssm_norm.weight                f32       126s
+[ 123/866] blk.8.ssm_out.weight                 iq4_xs * +q4_K  B 0.0793 B+R 0.0056  127s
+[ 124/866] blk.9.attn_gate.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0053  128s
+[ 125/866] blk.9.attn_norm.weight               f32       128s
+[ 126/866] blk.9.attn_qkv.weight                iq4_xs * +q4_K  B 0.0782 B+R 0.0053  129s
+[ 127/866] blk.9.ffn_down.weight                iq4_xs * +q4_K  B 0.0774 B+R 0.0052  132s
+[ 128/866] blk.9.ffn_gate.weight                iq4_xs * +q4_K  B 0.0761 B+R 0.0049  135s
+[ 129/866] blk.9.ffn_up.weight                  iq4_xs * +q4_K  B 0.0761 B+R 0.0049  137s
+[ 130/866] blk.9.post_attention_norm.weight     f32       137s
+[ 131/866] blk.9.ssm_a                          f32       137s
+[ 132/866] blk.9.ssm_alpha.weight               f32    *  137s
+[ 133/866] blk.9.ssm_beta.weight                f32    *  137s
+[ 134/866] blk.9.ssm_conv1d.weight              f32       137s
+[ 135/866] blk.9.ssm_dt.bias                    f32       137s
+[ 136/866] blk.9.ssm_norm.weight                f32       137s
+[ 137/866] blk.9.ssm_out.weight                 iq4_xs * +q4_K  B 0.0791 B+R 0.0056  138s
+[ 138/866] blk.10.attn_gate.weight              iq4_xs * +q4_K  B 0.0782 B+R 0.0053  139s
+[ 139/866] blk.10.attn_norm.weight              f32       139s
+[ 140/866] blk.10.attn_qkv.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0053  141s
+[ 141/866] blk.10.ffn_down.weight               iq4_xs * +q4_K  B 0.0775 B+R 0.0052  144s
+[ 142/866] blk.10.ffn_gate.weight               iq4_xs * +q4_K  B 0.0764 B+R 0.0049  146s
+[ 143/866] blk.10.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  149s
+[ 144/866] blk.10.post_attention_norm.weight    f32       149s
+[ 145/866] blk.10.ssm_a                         f32       149s
+[ 146/866] blk.10.ssm_alpha.weight              f32    *  149s
+[ 147/866] blk.10.ssm_beta.weight               f32    *  149s
+[ 148/866] blk.10.ssm_conv1d.weight             f32       149s
+[ 149/866] blk.10.ssm_dt.bias                   f32       149s
+[ 150/866] blk.10.ssm_norm.weight               f32       149s
+[ 151/866] blk.10.ssm_out.weight                iq4_xs * +q4_K  B 0.0797 B+R 0.0057  150s
+[ 152/866] blk.11.attn_k.weight                 iq4_xs * +q4_K  B 0.0817 B+R 0.0056  150s
+[ 153/866] blk.11.attn_k_norm.weight            f32       150s
+[ 154/866] blk.11.attn_norm.weight              f32       150s
+[ 155/866] blk.11.attn_output.weight            iq4_xs * +q4_K  B 0.0791 B+R 0.0056  151s
+[ 156/866] blk.11.attn_q.weight                 iq4_xs * +q4_K  B 0.0795 B+R 0.0054  153s
+[ 157/866] blk.11.attn_q_norm.weight            f32       153s
+[ 158/866] blk.11.attn_v.weight                 iq4_xs * +q4_K  B 0.0799 B+R 0.0055  153s
+[ 159/866] blk.11.ffn_down.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0052  156s
+[ 160/866] blk.11.ffn_gate.weight               iq4_xs * +q4_K  B 0.0763 B+R 0.0049  159s
+[ 161/866] blk.11.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  161s
+[ 162/866] blk.11.post_attention_norm.weight    f32       161s
+[ 163/866] blk.12.attn_gate.weight              iq4_xs * +q4_K  B 0.0783 B+R 0.0053  162s
+[ 164/866] blk.12.attn_norm.weight              f32       162s
+[ 165/866] blk.12.attn_qkv.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0053  164s
+[ 166/866] blk.12.ffn_down.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0051  167s
+[ 167/866] blk.12.ffn_gate.weight               iq4_xs * +q4_K  B 0.0764 B+R 0.0049  169s
+[ 168/866] blk.12.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  172s
+[ 169/866] blk.12.post_attention_norm.weight    f32       172s
+[ 170/866] blk.12.ssm_a                         f32       172s
+[ 171/866] blk.12.ssm_alpha.weight              f32    *  172s
+[ 172/866] blk.12.ssm_beta.weight               f32    *  172s
+[ 173/866] blk.12.ssm_conv1d.weight             f32       172s
+[ 174/866] blk.12.ssm_dt.bias                   f32       172s
+[ 175/866] blk.12.ssm_norm.weight               f32       172s
+[ 176/866] blk.12.ssm_out.weight                iq4_xs * +q4_K  B 0.0791 B+R 0.0056  173s
+[ 177/866] blk.13.attn_gate.weight              iq4_xs * +q4_K  B 0.0777 B+R 0.0052  174s
+[ 178/866] blk.13.attn_norm.weight              f32       174s
+[ 179/866] blk.13.attn_qkv.weight               iq4_xs * +q4_K  B 0.0780 B+R 0.0052  176s
+[ 180/866] blk.13.ffn_down.weight               iq4_xs * +q4_K  B 0.0771 B+R 0.0051  178s
+[ 181/866] blk.13.ffn_gate.weight               iq4_xs * +q4_K  B 0.0762 B+R 0.0049  181s
+[ 182/866] blk.13.ffn_up.weight                 iq4_xs * +q4_K  B 0.0762 B+R 0.0049  184s
+[ 183/866] blk.13.post_attention_norm.weight    f32       184s
+[ 184/866] blk.13.ssm_a                         f32       184s
+[ 185/866] blk.13.ssm_alpha.weight              f32    *  184s
+[ 186/866] blk.13.ssm_beta.weight               f32    *  184s
+[ 187/866] blk.13.ssm_conv1d.weight             f32       184s
+[ 188/866] blk.13.ssm_dt.bias                   f32       184s
+[ 189/866] blk.13.ssm_norm.weight               f32       184s
+[ 190/866] blk.13.ssm_out.weight                iq4_xs * +q4_K  B 0.0782 B+R 0.0054  185s
+[ 191/866] blk.14.attn_gate.weight              iq4_xs * +q4_K  B 0.0780 B+R 0.0052  185s
+[ 192/866] blk.14.attn_norm.weight              f32       185s
+[ 193/866] blk.14.attn_qkv.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0053  187s
+[ 194/866] blk.14.ffn_down.weight               iq4_xs * +q4_K  B 0.0770 B+R 0.0051  190s
+[ 195/866] blk.14.ffn_gate.weight               iq4_xs * +q4_K  B 0.0762 B+R 0.0049  192s
+[ 196/866] blk.14.ffn_up.weight                 iq4_xs * +q4_K  B 0.0762 B+R 0.0049  195s
+[ 197/866] blk.14.post_attention_norm.weight    f32       195s
+[ 198/866] blk.14.ssm_a                         f32       195s
+[ 199/866] blk.14.ssm_alpha.weight              f32    *  195s
+[ 200/866] blk.14.ssm_beta.weight               f32    *  195s
+[ 201/866] blk.14.ssm_conv1d.weight             f32       195s
+[ 202/866] blk.14.ssm_dt.bias                   f32       195s
+[ 203/866] blk.14.ssm_norm.weight               f32       195s
+[ 204/866] blk.14.ssm_out.weight                iq4_xs * +q4_K  B 0.0787 B+R 0.0054  196s
+[ 205/866] blk.15.attn_k.weight                 iq4_xs * +q4_K  B 0.0802 B+R 0.0054  196s
+[ 206/866] blk.15.attn_k_norm.weight            f32       196s
+[ 207/866] blk.15.attn_norm.weight              f32       196s
+[ 208/866] blk.15.attn_output.weight            iq4_xs * +q4_K  B 0.0787 B+R 0.0054  197s
+[ 209/866] blk.15.attn_q.weight                 iq4_xs * +q4_K  B 0.0788 B+R 0.0053  199s
+[ 210/866] blk.15.attn_q_norm.weight            f32       199s
+[ 211/866] blk.15.attn_v.weight                 iq4_xs * +q4_K  B 0.0788 B+R 0.0054  199s
+[ 212/866] blk.15.ffn_down.weight               iq4_xs * +q4_K  B 0.0771 B+R 0.0051  202s
+[ 213/866] blk.15.ffn_gate.weight               iq4_xs * +q4_K  B 0.0763 B+R 0.0049  204s
+[ 214/866] blk.15.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  207s
+[ 215/866] blk.15.post_attention_norm.weight    f32       207s
+[ 216/866] blk.16.attn_gate.weight              iq4_xs * +q4_K  B 0.0778 B+R 0.0052  207s
+[ 217/866] blk.16.attn_norm.weight              f32       207s
+[ 218/866] blk.16.attn_qkv.weight               iq4_xs * +q4_K  B 0.0779 B+R 0.0052  209s
+[ 219/866] blk.16.ffn_down.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0051  212s
+[ 220/866] blk.16.ffn_gate.weight               iq4_xs * +q4_K  B 0.0765 B+R 0.0049  214s
+[ 221/866] blk.16.ffn_up.weight                 iq4_xs * +q4_K  B 0.0764 B+R 0.0049  216s
+[ 222/866] blk.16.post_attention_norm.weight    f32       216s
+[ 223/866] blk.16.ssm_a                         f32       216s
+[ 224/866] blk.16.ssm_alpha.weight              f32    *  216s
+[ 225/866] blk.16.ssm_beta.weight               f32    *  216s
+[ 226/866] blk.16.ssm_conv1d.weight             f32       216s
+[ 227/866] blk.16.ssm_dt.bias                   f32       216s
+[ 228/866] blk.16.ssm_norm.weight               f32       216s
+[ 229/866] blk.16.ssm_out.weight                iq4_xs * +q4_K  B 0.0785 B+R 0.0054  217s
+[ 230/866] blk.17.attn_gate.weight              iq4_xs * +q4_K  B 0.0777 B+R 0.0052  218s
+[ 231/866] blk.17.attn_norm.weight              f32       218s
+[ 232/866] blk.17.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0052  220s
+[ 233/866] blk.17.ffn_down.weight               iq4_xs * +q4_K  B 0.0775 B+R 0.0051  222s
+[ 234/866] blk.17.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0050  225s
+[ 235/866] blk.17.ffn_up.weight                 iq4_xs * +q4_K  B 0.0765 B+R 0.0049  227s
+[ 236/866] blk.17.post_attention_norm.weight    f32       227s
+[ 237/866] blk.17.ssm_a                         f32       227s
+[ 238/866] blk.17.ssm_alpha.weight              f32    *  227s
+[ 239/866] blk.17.ssm_beta.weight               f32    *  227s
+[ 240/866] blk.17.ssm_conv1d.weight             f32       227s
+[ 241/866] blk.17.ssm_dt.bias                   f32       227s
+[ 242/866] blk.17.ssm_norm.weight               f32       227s
+[ 243/866] blk.17.ssm_out.weight                iq4_xs * +q4_K  B 0.0781 B+R 0.0053  228s
+[ 244/866] blk.18.attn_gate.weight              iq4_xs * +q4_K  B 0.0779 B+R 0.0052  229s
+[ 245/866] blk.18.attn_norm.weight              f32       229s
+[ 246/866] blk.18.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0052  230s
+[ 247/866] blk.18.ffn_down.weight               iq4_xs * +q4_K  B 0.0792 B+R 0.0054  233s
+[ 248/866] blk.18.ffn_gate.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0051  235s
+[ 249/866] blk.18.ffn_up.weight                 iq4_xs * +q4_K  B 0.0770 B+R 0.0050  238s
+[ 250/866] blk.18.post_attention_norm.weight    f32       238s
+[ 251/866] blk.18.ssm_a                         f32       238s
+[ 252/866] blk.18.ssm_alpha.weight              f32    *  238s
+[ 253/866] blk.18.ssm_beta.weight               f32    *  238s
+[ 254/866] blk.18.ssm_conv1d.weight             f32       238s
+[ 255/866] blk.18.ssm_dt.bias                   f32       238s
+[ 256/866] blk.18.ssm_norm.weight               f32       238s
+[ 257/866] blk.18.ssm_out.weight                iq4_xs * +q4_K  B 0.0795 B+R 0.0056  239s
+[ 258/866] blk.19.attn_k.weight                 iq4_xs * +q4_K  B 0.0816 B+R 0.0055  239s
+[ 259/866] blk.19.attn_k_norm.weight            f32       239s
+[ 260/866] blk.19.attn_norm.weight              f32       239s
+[ 261/866] blk.19.attn_output.weight            iq4_xs * +q4_K  B 0.0786 B+R 0.0053  240s
+[ 262/866] blk.19.attn_q.weight                 iq4_xs * +q4_K  B 0.0789 B+R 0.0054  241s
+[ 263/866] blk.19.attn_q_norm.weight            f32       241s
+[ 264/866] blk.19.attn_v.weight                 iq4_xs * +q4_K  B 0.0820 B+R 0.0056  242s
+[ 265/866] blk.19.ffn_down.weight               iq4_xs * +q4_K  B 0.0782 B+R 0.0053  244s
+[ 266/866] blk.19.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0050  246s
+[ 267/866] blk.19.ffn_up.weight                 iq4_xs * +q4_K  B 0.0766 B+R 0.0050  249s
+[ 268/866] blk.19.post_attention_norm.weight    f32       249s
+[ 269/866] blk.20.attn_gate.weight              iq4_xs * +q4_K  B 0.0776 B+R 0.0052  250s
+[ 270/866] blk.20.attn_norm.weight              f32       250s
+[ 271/866] blk.20.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0052  251s
+[ 272/866] blk.20.ffn_down.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0053  254s
+[ 273/866] blk.20.ffn_gate.weight               iq4_xs * +q4_K  B 0.0763 B+R 0.0049  256s
+[ 274/866] blk.20.ffn_up.weight                 iq4_xs * +q4_K  B 0.0764 B+R 0.0049  259s
+[ 275/866] blk.20.post_attention_norm.weight    f32       259s
+[ 276/866] blk.20.ssm_a                         f32       259s
+[ 277/866] blk.20.ssm_alpha.weight              f32    *  259s
+[ 278/866] blk.20.ssm_beta.weight               f32    *  259s
+[ 279/866] blk.20.ssm_conv1d.weight             f32       259s
+[ 280/866] blk.20.ssm_dt.bias                   f32       259s
+[ 281/866] blk.20.ssm_norm.weight               f32       259s
+[ 282/866] blk.20.ssm_out.weight                iq4_xs * +q4_K  B 0.0799 B+R 0.0057  260s
+[ 283/866] blk.21.attn_gate.weight              iq4_xs * +q4_K  B 0.0776 B+R 0.0051  260s
+[ 284/866] blk.21.attn_norm.weight              f32       260s
+[ 285/866] blk.21.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0052  262s
+[ 286/866] blk.21.ffn_down.weight               iq4_xs * +q4_K  B 0.0779 B+R 0.0053  264s
+[ 287/866] blk.21.ffn_gate.weight               iq4_xs * +q4_K  B 0.0762 B+R 0.0049  267s
+[ 288/866] blk.21.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  269s
+[ 289/866] blk.21.post_attention_norm.weight    f32       269s
+[ 290/866] blk.21.ssm_a                         f32       269s
+[ 291/866] blk.21.ssm_alpha.weight              f32    *  269s
+[ 292/866] blk.21.ssm_beta.weight               f32    *  269s
+[ 293/866] blk.21.ssm_conv1d.weight             f32       269s
+[ 294/866] blk.21.ssm_dt.bias                   f32       269s
+[ 295/866] blk.21.ssm_norm.weight               f32       269s
+[ 296/866] blk.21.ssm_out.weight                iq4_xs * +q4_K  B 0.0811 B+R 0.0059  270s
+[ 297/866] blk.22.attn_gate.weight              iq4_xs * +q4_K  B 0.0771 B+R 0.0051  271s
+[ 298/866] blk.22.attn_norm.weight              f32       271s
+[ 299/866] blk.22.attn_qkv.weight               iq4_xs * +q4_K  B 0.0776 B+R 0.0051  273s
+[ 300/866] blk.22.ffn_down.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0053  275s
+[ 301/866] blk.22.ffn_gate.weight               iq4_xs * +q4_K  B 0.0765 B+R 0.0049  277s
+[ 302/866] blk.22.ffn_up.weight                 iq4_xs * +q4_K  B 0.0766 B+R 0.0049  280s
+[ 303/866] blk.22.post_attention_norm.weight    f32       280s
+[ 304/866] blk.22.ssm_a                         f32       280s
+[ 305/866] blk.22.ssm_alpha.weight              f32    *  280s
+[ 306/866] blk.22.ssm_beta.weight               f32    *  280s
+[ 307/866] blk.22.ssm_conv1d.weight             f32       280s
+[ 308/866] blk.22.ssm_dt.bias                   f32       280s
+[ 309/866] blk.22.ssm_norm.weight               f32       280s
+[ 310/866] blk.22.ssm_out.weight                iq4_xs * +q4_K  B 0.0800 B+R 0.0057  281s
+[ 311/866] blk.23.attn_k.weight                 iq4_xs * +q4_K  B 0.0818 B+R 0.0054  281s
+[ 312/866] blk.23.attn_k_norm.weight            f32       281s
+[ 313/866] blk.23.attn_norm.weight              f32       281s
+[ 314/866] blk.23.attn_output.weight            iq4_xs * +q4_K  B 0.0783 B+R 0.0053  282s
+[ 315/866] blk.23.attn_q.weight                 iq4_xs * +q4_K  B 0.0782 B+R 0.0053  283s
+[ 316/866] blk.23.attn_q_norm.weight            f32       283s
+[ 317/866] blk.23.attn_v.weight                 iq4_xs * +q4_K  B 0.0794 B+R 0.0053  284s
+[ 318/866] blk.23.ffn_down.weight               iq4_xs * +q4_K  B 0.0777 B+R 0.0052  286s
+[ 319/866] blk.23.ffn_gate.weight               iq4_xs * +q4_K  B 0.0762 B+R 0.0049  289s
+[ 320/866] blk.23.ffn_up.weight                 iq4_xs * +q4_K  B 0.0764 B+R 0.0049  291s
+[ 321/866] blk.23.post_attention_norm.weight    f32       291s
+[ 322/866] blk.24.attn_gate.weight              iq4_xs * +q4_K  B 0.0779 B+R 0.0052  292s
+[ 323/866] blk.24.attn_norm.weight              f32       292s
+[ 324/866] blk.24.attn_qkv.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0052  293s
+[ 325/866] blk.24.ffn_down.weight               iq4_xs * +q4_K  B 0.0778 B+R 0.0052  296s
+[ 326/866] blk.24.ffn_gate.weight               iq4_xs * +q4_K  B 0.0763 B+R 0.0049  298s
+[ 327/866] blk.24.ffn_up.weight                 iq4_xs * +q4_K  B 0.0766 B+R 0.0049  301s
+[ 328/866] blk.24.post_attention_norm.weight    f32       301s
+[ 329/866] blk.24.ssm_a                         f32       301s
+[ 330/866] blk.24.ssm_alpha.weight              f32    *  301s
+[ 331/866] blk.24.ssm_beta.weight               f32    *  301s
+[ 332/866] blk.24.ssm_conv1d.weight             f32       301s
+[ 333/866] blk.24.ssm_dt.bias                   f32       301s
+[ 334/866] blk.24.ssm_norm.weight               f32       301s
+[ 335/866] blk.24.ssm_out.weight                iq4_xs * +q4_K  B 0.0791 B+R 0.0055  302s
+[ 336/866] blk.25.attn_gate.weight              iq4_xs * +q4_K  B 0.0777 B+R 0.0052  302s
+[ 337/866] blk.25.attn_norm.weight              f32       302s
+[ 338/866] blk.25.attn_qkv.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0052  304s
+[ 339/866] blk.25.ffn_down.weight               iq4_xs * +q4_K  B 0.0776 B+R 0.0052  306s
+[ 340/866] blk.25.ffn_gate.weight               iq4_xs * +q4_K  B 0.0764 B+R 0.0049  309s
+[ 341/866] blk.25.ffn_up.weight                 iq4_xs * +q4_K  B 0.0767 B+R 0.0049  311s
+[ 342/866] blk.25.post_attention_norm.weight    f32       311s
+[ 343/866] blk.25.ssm_a                         f32       311s
+[ 344/866] blk.25.ssm_alpha.weight              f32    *  311s
+[ 345/866] blk.25.ssm_beta.weight               f32    *  311s
+[ 346/866] blk.25.ssm_conv1d.weight             f32       311s
+[ 347/866] blk.25.ssm_dt.bias                   f32       311s
+[ 348/866] blk.25.ssm_norm.weight               f32       311s
+[ 349/866] blk.25.ssm_out.weight                iq4_xs * +q4_K  B 0.0787 B+R 0.0054  312s
+[ 350/866] blk.26.attn_gate.weight              iq4_xs * +q4_K  B 0.0779 B+R 0.0052  313s
+[ 351/866] blk.26.attn_norm.weight              f32       313s
+[ 352/866] blk.26.attn_qkv.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  315s
+[ 353/866] blk.26.ffn_down.weight               iq4_xs * +q4_K  B 0.0777 B+R 0.0052  317s
+[ 354/866] blk.26.ffn_gate.weight               iq4_xs * +q4_K  B 0.0767 B+R 0.0049  319s
+[ 355/866] blk.26.ffn_up.weight                 iq4_xs * +q4_K  B 0.0771 B+R 0.0050  322s
+[ 356/866] blk.26.post_attention_norm.weight    f32       322s
+[ 357/866] blk.26.ssm_a                         f32       322s
+[ 358/866] blk.26.ssm_alpha.weight              f32    *  322s
+[ 359/866] blk.26.ssm_beta.weight               f32    *  322s
+[ 360/866] blk.26.ssm_conv1d.weight             f32       322s
+[ 361/866] blk.26.ssm_dt.bias                   f32       322s
+[ 362/866] blk.26.ssm_norm.weight               f32       322s
+[ 363/866] blk.26.ssm_out.weight                iq4_xs * +q4_K  B 0.0790 B+R 0.0055  323s
+[ 364/866] blk.27.attn_k.weight                 iq4_xs * +q4_K  B 0.0828 B+R 0.0055  323s
+[ 365/866] blk.27.attn_k_norm.weight            f32       323s
+[ 366/866] blk.27.attn_norm.weight              f32       323s
+[ 367/866] blk.27.attn_output.weight            iq4_xs * +q4_K  B 0.0780 B+R 0.0052  324s
+[ 368/866] blk.27.attn_q.weight                 iq4_xs * +q4_K  B 0.0788 B+R 0.0053  325s
+[ 369/866] blk.27.attn_q_norm.weight            f32       325s
+[ 370/866] blk.27.attn_v.weight                 iq4_xs * +q4_K  B 0.0800 B+R 0.0054  326s
+[ 371/866] blk.27.ffn_down.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0051  328s
+[ 372/866] blk.27.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0049  331s
+[ 373/866] blk.27.ffn_up.weight                 iq4_xs * +q4_K  B 0.0770 B+R 0.0050  333s
+[ 374/866] blk.27.post_attention_norm.weight    f32       333s
+[ 375/866] blk.28.attn_gate.weight              iq4_xs * +q4_K  B 0.0780 B+R 0.0052  334s
+[ 376/866] blk.28.attn_norm.weight              f32       334s
+[ 377/866] blk.28.attn_qkv.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  335s
+[ 378/866] blk.28.ffn_down.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0051  338s
+[ 379/866] blk.28.ffn_gate.weight               iq4_xs * +q4_K  B 0.0767 B+R 0.0049  340s
+[ 380/866] blk.28.ffn_up.weight                 iq4_xs * +q4_K  B 0.0770 B+R 0.0050  343s
+[ 381/866] blk.28.post_attention_norm.weight    f32       343s
+[ 382/866] blk.28.ssm_a                         f32       343s
+[ 383/866] blk.28.ssm_alpha.weight              f32    *  343s
+[ 384/866] blk.28.ssm_beta.weight               f32    *  343s
+[ 385/866] blk.28.ssm_conv1d.weight             f32       343s
+[ 386/866] blk.28.ssm_dt.bias                   f32       343s
+[ 387/866] blk.28.ssm_norm.weight               f32       343s
+[ 388/866] blk.28.ssm_out.weight                iq4_xs * +q4_K  B 0.0783 B+R 0.0053  344s
+[ 389/866] blk.29.attn_gate.weight              iq4_xs * +q4_K  B 0.0776 B+R 0.0051  344s
+[ 390/866] blk.29.attn_norm.weight              f32       344s
+[ 391/866] blk.29.attn_qkv.weight               iq4_xs * +q4_K  B 0.0782 B+R 0.0052  346s
+[ 392/866] blk.29.ffn_down.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0050  348s
+[ 393/866] blk.29.ffn_gate.weight               iq4_xs * +q4_K  B 0.0767 B+R 0.0049  351s
+[ 394/866] blk.29.ffn_up.weight                 iq4_xs * +q4_K  B 0.0770 B+R 0.0050  353s
+[ 395/866] blk.29.post_attention_norm.weight    f32       353s
+[ 396/866] blk.29.ssm_a                         f32       353s
+[ 397/866] blk.29.ssm_alpha.weight              f32    *  353s
+[ 398/866] blk.29.ssm_beta.weight               f32    *  353s
+[ 399/866] blk.29.ssm_conv1d.weight             f32       353s
+[ 400/866] blk.29.ssm_dt.bias                   f32       353s
+[ 401/866] blk.29.ssm_norm.weight               f32       353s
+[ 402/866] blk.29.ssm_out.weight                iq4_xs * +q4_K  B 0.0778 B+R 0.0052  354s
+[ 403/866] blk.30.attn_gate.weight              iq4_xs * +q4_K  B 0.0781 B+R 0.0052  355s
+[ 404/866] blk.30.attn_norm.weight              f32       355s
+[ 405/866] blk.30.attn_qkv.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  357s
+[ 406/866] blk.30.ffn_down.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0050  359s
+[ 407/866] blk.30.ffn_gate.weight               iq4_xs * +q4_K  B 0.0769 B+R 0.0050  361s
+[ 408/866] blk.30.ffn_up.weight                 iq4_xs * +q4_K  B 0.0772 B+R 0.0050  364s
+[ 409/866] blk.30.post_attention_norm.weight    f32       364s
+[ 410/866] blk.30.ssm_a                         f32       364s
+[ 411/866] blk.30.ssm_alpha.weight              f32    *  364s
+[ 412/866] blk.30.ssm_beta.weight               f32    *  364s
+[ 413/866] blk.30.ssm_conv1d.weight             f32       364s
+[ 414/866] blk.30.ssm_dt.bias                   f32       364s
+[ 415/866] blk.30.ssm_norm.weight               f32       364s
+[ 416/866] blk.30.ssm_out.weight                iq4_xs * +q4_K  B 0.0784 B+R 0.0053  365s
+[ 417/866] blk.31.attn_k.weight                 iq4_xs * +q4_K  B 0.0811 B+R 0.0054  365s
+[ 418/866] blk.31.attn_k_norm.weight            f32       365s
+[ 419/866] blk.31.attn_norm.weight              f32       365s
+[ 420/866] blk.31.attn_output.weight            iq4_xs * +q4_K  B 0.0778 B+R 0.0052  366s
+[ 421/866] blk.31.attn_q.weight                 iq4_xs * +q4_K  B 0.0783 B+R 0.0052  367s
+[ 422/866] blk.31.attn_q_norm.weight            f32       367s
+[ 423/866] blk.31.attn_v.weight                 iq4_xs * +q4_K  B 0.0796 B+R 0.0053  368s
+[ 424/866] blk.31.ffn_down.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0050  370s
+[ 425/866] blk.31.ffn_gate.weight               iq4_xs * +q4_K  B 0.0770 B+R 0.0049  373s
+[ 426/866] blk.31.ffn_up.weight                 iq4_xs * +q4_K  B 0.0772 B+R 0.0050  375s
+[ 427/866] blk.31.post_attention_norm.weight    f32       375s
+[ 428/866] blk.32.attn_gate.weight              iq4_xs * +q4_K  B 0.0779 B+R 0.0051  376s
+[ 429/866] blk.32.attn_norm.weight              f32       376s
+[ 430/866] blk.32.attn_qkv.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  378s
+[ 431/866] blk.32.ffn_down.weight               iq4_xs * +q4_K  B 0.0775 B+R 0.0050  380s
+[ 432/866] blk.32.ffn_gate.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0050  382s
+[ 433/866] blk.32.ffn_up.weight                 iq4_xs * +q4_K  B 0.0773 B+R 0.0050  385s
+[ 434/866] blk.32.post_attention_norm.weight    f32       385s
+[ 435/866] blk.32.ssm_a                         f32       385s
+[ 436/866] blk.32.ssm_alpha.weight              f32    *  385s
+[ 437/866] blk.32.ssm_beta.weight               f32    *  385s
+[ 438/866] blk.32.ssm_conv1d.weight             f32       385s
+[ 439/866] blk.32.ssm_dt.bias                   f32       385s
+[ 440/866] blk.32.ssm_norm.weight               f32       385s
+[ 441/866] blk.32.ssm_out.weight                iq4_xs * +q4_K  B 0.0780 B+R 0.0053  386s
+[ 442/866] blk.33.attn_gate.weight              iq4_xs * +q4_K  B 0.0778 B+R 0.0051  387s
+[ 443/866] blk.33.attn_norm.weight              f32       387s
+[ 444/866] blk.33.attn_qkv.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  388s
+[ 445/866] blk.33.ffn_down.weight               iq4_xs * +q4_K  B 0.0777 B+R 0.0051  391s
+[ 446/866] blk.33.ffn_gate.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0050  393s
+[ 447/866] blk.33.ffn_up.weight                 iq4_xs * +q4_K  B 0.0773 B+R 0.0050  395s
+[ 448/866] blk.33.post_attention_norm.weight    f32       395s
+[ 449/866] blk.33.ssm_a                         f32       395s
+[ 450/866] blk.33.ssm_alpha.weight              f32    *  395s
+[ 451/866] blk.33.ssm_beta.weight               f32    *  395s
+[ 452/866] blk.33.ssm_conv1d.weight             f32       395s
+[ 453/866] blk.33.ssm_dt.bias                   f32       395s
+[ 454/866] blk.33.ssm_norm.weight               f32       395s
+[ 455/866] blk.33.ssm_out.weight                iq4_xs * +q4_K  B 0.0777 B+R 0.0051  396s
+[ 456/866] blk.34.attn_gate.weight              iq4_xs * +q4_K  B 0.0782 B+R 0.0051  397s
+[ 457/866] blk.34.attn_norm.weight              f32       397s
+[ 458/866] blk.34.attn_qkv.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  399s
+[ 459/866] blk.34.ffn_down.weight               iq4_xs * +q4_K  B 0.0787 B+R 0.0052  401s
+[ 460/866] blk.34.ffn_gate.weight               iq4_xs * +q4_K  B 0.0785 B+R 0.0051  403s
+[ 461/866] blk.34.ffn_up.weight                 iq4_xs * +q4_K  B 0.0777 B+R 0.0051  406s
+[ 462/866] blk.34.post_attention_norm.weight    f32       406s
+[ 463/866] blk.34.ssm_a                         f32       406s
+[ 464/866] blk.34.ssm_alpha.weight              f32    *  406s
+[ 465/866] blk.34.ssm_beta.weight               f32    *  406s
+[ 466/866] blk.34.ssm_conv1d.weight             f32       406s
+[ 467/866] blk.34.ssm_dt.bias                   f32       406s
+[ 468/866] blk.34.ssm_norm.weight               f32       406s
+[ 469/866] blk.34.ssm_out.weight                iq4_xs * +q4_K  B 0.0789 B+R 0.0054  407s
+[ 470/866] blk.35.attn_k.weight                 iq4_xs * +q4_K  B 0.0807 B+R 0.0054  407s
+[ 471/866] blk.35.attn_k_norm.weight            f32       407s
+[ 472/866] blk.35.attn_norm.weight              f32       407s
+[ 473/866] blk.35.attn_output.weight            iq4_xs * +q4_K  B 0.0776 B+R 0.0051  408s
+[ 474/866] blk.35.attn_q.weight                 iq4_xs * +q4_K  B 0.0784 B+R 0.0052  410s
+[ 475/866] blk.35.attn_q_norm.weight            f32       410s
+[ 476/866] blk.35.attn_v.weight                 iq4_xs * +q4_K  B 0.0806 B+R 0.0053  410s
+[ 477/866] blk.35.ffn_down.weight               iq4_xs * +q4_K  B 0.0780 B+R 0.0052  412s
+[ 478/866] blk.35.ffn_gate.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0050  415s
+[ 479/866] blk.35.ffn_up.weight                 iq4_xs * +q4_K  B 0.0771 B+R 0.0050  417s
+[ 480/866] blk.35.post_attention_norm.weight    f32       417s
+[ 481/866] blk.36.attn_gate.weight              iq4_xs * +q4_K  B 0.0777 B+R 0.0051  418s
+[ 482/866] blk.36.attn_norm.weight              f32       418s
+[ 483/866] blk.36.attn_qkv.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0052  419s
+[ 484/866] blk.36.ffn_down.weight               iq4_xs * +q4_K  B 0.0778 B+R 0.0052  422s
+[ 485/866] blk.36.ffn_gate.weight               iq4_xs * +q4_K  B 0.0770 B+R 0.0049  424s
+[ 486/866] blk.36.ffn_up.weight                 iq4_xs * +q4_K  B 0.0767 B+R 0.0049  427s
+[ 487/866] blk.36.post_attention_norm.weight    f32       427s
+[ 488/866] blk.36.ssm_a                         f32       427s
+[ 489/866] blk.36.ssm_alpha.weight              f32    *  427s
+[ 490/866] blk.36.ssm_beta.weight               f32    *  427s
+[ 491/866] blk.36.ssm_conv1d.weight             f32       427s
+[ 492/866] blk.36.ssm_dt.bias                   f32       427s
+[ 493/866] blk.36.ssm_norm.weight               f32       427s
+[ 494/866] blk.36.ssm_out.weight                iq4_xs * +q4_K  B 0.0796 B+R 0.0056  428s
+[ 495/866] blk.37.attn_gate.weight              iq4_xs * +q4_K  B 0.0776 B+R 0.0051  429s
+[ 496/866] blk.37.attn_norm.weight              f32       429s
+[ 497/866] blk.37.attn_qkv.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0052  430s
+[ 498/866] blk.37.ffn_down.weight               iq4_xs * +q4_K  B 0.0775 B+R 0.0052  432s
+[ 499/866] blk.37.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0049  435s
+[ 500/866] blk.37.ffn_up.weight                 iq4_xs * +q4_K  B 0.0765 B+R 0.0049  437s
+[ 501/866] blk.37.post_attention_norm.weight    f32       437s
+[ 502/866] blk.37.ssm_a                         f32       437s
+[ 503/866] blk.37.ssm_alpha.weight              f32    *  437s
+[ 504/866] blk.37.ssm_beta.weight               f32    *  437s
+[ 505/866] blk.37.ssm_conv1d.weight             f32       437s
+[ 506/866] blk.37.ssm_dt.bias                   f32       437s
+[ 507/866] blk.37.ssm_norm.weight               f32       437s
+[ 508/866] blk.37.ssm_out.weight                iq4_xs * +q4_K  B 0.0805 B+R 0.0057  438s
+[ 509/866] blk.38.attn_gate.weight              iq4_xs * +q4_K  B 0.0769 B+R 0.0050  439s
+[ 510/866] blk.38.attn_norm.weight              f32       439s
+[ 511/866] blk.38.attn_qkv.weight               iq4_xs * +q4_K  B 0.0775 B+R 0.0051  441s
+[ 512/866] blk.38.ffn_down.weight               iq4_xs * +q4_K  B 0.0776 B+R 0.0051  443s
+[ 513/866] blk.38.ffn_gate.weight               iq4_xs * +q4_K  B 0.0767 B+R 0.0049  445s
+[ 514/866] blk.38.ffn_up.weight                 iq4_xs * +q4_K  B 0.0767 B+R 0.0049  448s
+[ 515/866] blk.38.post_attention_norm.weight    f32       448s
+[ 516/866] blk.38.ssm_a                         f32       448s
+[ 517/866] blk.38.ssm_alpha.weight              f32    *  448s
+[ 518/866] blk.38.ssm_beta.weight               f32    *  448s
+[ 519/866] blk.38.ssm_conv1d.weight             f32       448s
+[ 520/866] blk.38.ssm_dt.bias                   f32       448s
+[ 521/866] blk.38.ssm_norm.weight               f32       448s
+[ 522/866] blk.38.ssm_out.weight                iq4_xs * +q4_K  B 0.0787 B+R 0.0054  449s
+[ 523/866] blk.39.attn_k.weight                 iq4_xs * +q4_K  B 0.0818 B+R 0.0053  449s
+[ 524/866] blk.39.attn_k_norm.weight            f32       449s
+[ 525/866] blk.39.attn_norm.weight              f32       449s
+[ 526/866] blk.39.attn_output.weight            iq4_xs * +q4_K  B 0.0778 B+R 0.0051  450s
+[ 527/866] blk.39.attn_q.weight                 iq4_xs * +q4_K  B 0.0778 B+R 0.0052  452s
+[ 528/866] blk.39.attn_q_norm.weight            f32       452s
+[ 529/866] blk.39.attn_v.weight                 iq4_xs * +q4_K  B 0.0800 B+R 0.0052  452s
+[ 530/866] blk.39.ffn_down.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0051  454s
+[ 531/866] blk.39.ffn_gate.weight               iq4_xs * +q4_K  B 0.0763 B+R 0.0049  457s
+[ 532/866] blk.39.ffn_up.weight                 iq4_xs * +q4_K  B 0.0764 B+R 0.0049  459s
+[ 533/866] blk.39.post_attention_norm.weight    f32       459s
+[ 534/866] blk.40.attn_gate.weight              iq4_xs * +q4_K  B 0.0778 B+R 0.0051  460s
+[ 535/866] blk.40.attn_norm.weight              f32       460s
+[ 536/866] blk.40.attn_qkv.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0051  462s
+[ 537/866] blk.40.ffn_down.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0051  464s
+[ 538/866] blk.40.ffn_gate.weight               iq4_xs * +q4_K  B 0.0764 B+R 0.0049  466s
+[ 539/866] blk.40.ffn_up.weight                 iq4_xs * +q4_K  B 0.0765 B+R 0.0049  469s
+[ 540/866] blk.40.post_attention_norm.weight    f32       469s
+[ 541/866] blk.40.ssm_a                         f32       469s
+[ 542/866] blk.40.ssm_alpha.weight              f32    *  469s
+[ 543/866] blk.40.ssm_beta.weight               f32    *  469s
+[ 544/866] blk.40.ssm_conv1d.weight             f32       469s
+[ 545/866] blk.40.ssm_dt.bias                   f32       469s
+[ 546/866] blk.40.ssm_norm.weight               f32       469s
+[ 547/866] blk.40.ssm_out.weight                iq4_xs * +q4_K  B 0.0784 B+R 0.0053  470s
+[ 548/866] blk.41.attn_gate.weight              iq4_xs * +q4_K  B 0.0772 B+R 0.0050  471s
+[ 549/866] blk.41.attn_norm.weight              f32       471s
+[ 550/866] blk.41.attn_qkv.weight               iq4_xs * +q4_K  B 0.0777 B+R 0.0051  472s
+[ 551/866] blk.41.ffn_down.weight               iq4_xs * +q4_K  B 0.0771 B+R 0.0050  474s
+[ 552/866] blk.41.ffn_gate.weight               iq4_xs * +q4_K  B 0.0765 B+R 0.0049  477s
+[ 553/866] blk.41.ffn_up.weight                 iq4_xs * +q4_K  B 0.0766 B+R 0.0049  479s
+[ 554/866] blk.41.post_attention_norm.weight    f32       479s
+[ 555/866] blk.41.ssm_a                         f32       479s
+[ 556/866] blk.41.ssm_alpha.weight              f32    *  479s
+[ 557/866] blk.41.ssm_beta.weight               f32    *  479s
+[ 558/866] blk.41.ssm_conv1d.weight             f32       479s
+[ 559/866] blk.41.ssm_dt.bias                   f32       479s
+[ 560/866] blk.41.ssm_norm.weight               f32       479s
+[ 561/866] blk.41.ssm_out.weight                iq4_xs * +q4_K  B 0.0783 B+R 0.0053  480s
+[ 562/866] blk.42.attn_gate.weight              iq4_xs * +q4_K  B 0.0774 B+R 0.0051  481s
+[ 563/866] blk.42.attn_norm.weight              f32       481s
+[ 564/866] blk.42.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0051  483s
+[ 565/866] blk.42.ffn_down.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0050  485s
+[ 566/866] blk.42.ffn_gate.weight               iq4_xs * +q4_K  B 0.0769 B+R 0.0049  487s
+[ 567/866] blk.42.ffn_up.weight                 iq4_xs * +q4_K  B 0.0769 B+R 0.0049  490s
+[ 568/866] blk.42.post_attention_norm.weight    f32       490s
+[ 569/866] blk.42.ssm_a                         f32       490s
+[ 570/866] blk.42.ssm_alpha.weight              f32    *  490s
+[ 571/866] blk.42.ssm_beta.weight               f32    *  490s
+[ 572/866] blk.42.ssm_conv1d.weight             f32       490s
+[ 573/866] blk.42.ssm_dt.bias                   f32       490s
+[ 574/866] blk.42.ssm_norm.weight               f32       490s
+[ 575/866] blk.42.ssm_out.weight                iq4_xs * +q4_K  B 0.0786 B+R 0.0053  491s
+[ 576/866] blk.43.attn_k.weight                 iq4_xs * +q4_K  B 0.0838 B+R 0.0055  491s
+[ 577/866] blk.43.attn_k_norm.weight            f32       491s
+[ 578/866] blk.43.attn_norm.weight              f32       491s
+[ 579/866] blk.43.attn_output.weight            iq4_xs * +q4_K  B 0.0783 B+R 0.0052  492s
+[ 580/866] blk.43.attn_q.weight                 iq4_xs * +q4_K  B 0.0784 B+R 0.0052  494s
+[ 581/866] blk.43.attn_q_norm.weight            f32       494s
+[ 582/866] blk.43.attn_v.weight                 iq4_xs * +q4_K  B 0.0806 B+R 0.0053  494s
+[ 583/866] blk.43.ffn_down.weight               iq4_xs * +q4_K  B 0.0771 B+R 0.0050  496s
+[ 584/866] blk.43.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0049  499s
+[ 585/866] blk.43.ffn_up.weight                 iq4_xs * +q4_K  B 0.0767 B+R 0.0049  501s
+[ 586/866] blk.43.post_attention_norm.weight    f32       501s
+[ 587/866] blk.44.attn_gate.weight              iq4_xs * +q4_K  B 0.0777 B+R 0.0051  502s
+[ 588/866] blk.44.attn_norm.weight              f32       502s
+[ 589/866] blk.44.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0051  504s
+[ 590/866] blk.44.ffn_down.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0050  506s
+[ 591/866] blk.44.ffn_gate.weight               iq4_xs * +q4_K  B 0.0768 B+R 0.0049  508s
+[ 592/866] blk.44.ffn_up.weight                 iq4_xs * +q4_K  B 0.0767 B+R 0.0049  511s
+[ 593/866] blk.44.post_attention_norm.weight    f32       511s
+[ 594/866] blk.44.ssm_a                         f32       511s
+[ 595/866] blk.44.ssm_alpha.weight              f32    *  511s
+[ 596/866] blk.44.ssm_beta.weight               f32    *  511s
+[ 597/866] blk.44.ssm_conv1d.weight             f32       511s
+[ 598/866] blk.44.ssm_dt.bias                   f32       511s
+[ 599/866] blk.44.ssm_norm.weight               f32       511s
+[ 600/866] blk.44.ssm_out.weight                iq4_xs * +q4_K  B 0.0785 B+R 0.0053  512s
+[ 601/866] blk.45.attn_gate.weight              iq4_xs * +q4_K  B 0.0771 B+R 0.0050  513s
+[ 602/866] blk.45.attn_norm.weight              f32       513s
+[ 603/866] blk.45.attn_qkv.weight               iq4_xs * +q4_K  B 0.0777 B+R 0.0050  514s
+[ 604/866] blk.45.ffn_down.weight               iq4_xs * +q4_K  B 0.0770 B+R 0.0050  517s
+[ 605/866] blk.45.ffn_gate.weight               iq4_xs * +q4_K  B 0.0767 B+R 0.0049  519s
+[ 606/866] blk.45.ffn_up.weight                 iq4_xs * +q4_K  B 0.0767 B+R 0.0049  521s
+[ 607/866] blk.45.post_attention_norm.weight    f32       521s
+[ 608/866] blk.45.ssm_a                         f32       521s
+[ 609/866] blk.45.ssm_alpha.weight              f32    *  521s
+[ 610/866] blk.45.ssm_beta.weight               f32    *  521s
+[ 611/866] blk.45.ssm_conv1d.weight             f32       521s
+[ 612/866] blk.45.ssm_dt.bias                   f32       521s
+[ 613/866] blk.45.ssm_norm.weight               f32       521s
+[ 614/866] blk.45.ssm_out.weight                iq4_xs * +q4_K  B 0.0777 B+R 0.0052  522s
+[ 615/866] blk.46.attn_gate.weight              iq4_xs * +q4_K  B 0.0777 B+R 0.0051  523s
+[ 616/866] blk.46.attn_norm.weight              f32       523s
+[ 617/866] blk.46.attn_qkv.weight               iq4_xs * +q4_K  B 0.0780 B+R 0.0051  525s
+[ 618/866] blk.46.ffn_down.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0050  527s
+[ 619/866] blk.46.ffn_gate.weight               iq4_xs * +q4_K  B 0.0768 B+R 0.0049  530s
+[ 620/866] blk.46.ffn_up.weight                 iq4_xs * +q4_K  B 0.0768 B+R 0.0049  532s
+[ 621/866] blk.46.post_attention_norm.weight    f32       532s
+[ 622/866] blk.46.ssm_a                         f32       532s
+[ 623/866] blk.46.ssm_alpha.weight              f32    *  532s
+[ 624/866] blk.46.ssm_beta.weight               f32    *  532s
+[ 625/866] blk.46.ssm_conv1d.weight             f32       532s
+[ 626/866] blk.46.ssm_dt.bias                   f32       532s
+[ 627/866] blk.46.ssm_norm.weight               f32       532s
+[ 628/866] blk.46.ssm_out.weight                iq4_xs * +q4_K  B 0.0785 B+R 0.0053  533s
+[ 629/866] blk.47.attn_k.weight                 iq4_xs * +q4_K  B 0.0802 B+R 0.0053  533s
+[ 630/866] blk.47.attn_k_norm.weight            f32       533s
+[ 631/866] blk.47.attn_norm.weight              f32       533s
+[ 632/866] blk.47.attn_output.weight            iq4_xs * +q4_K  B 0.0782 B+R 0.0051  534s
+[ 633/866] blk.47.attn_q.weight                 iq4_xs * +q4_K  B 0.0780 B+R 0.0051  536s
+[ 634/866] blk.47.attn_q_norm.weight            f32       536s
+[ 635/866] blk.47.attn_v.weight                 iq4_xs * +q4_K  B 0.0786 B+R 0.0051  536s
+[ 636/866] blk.47.ffn_down.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0051  538s
+[ 637/866] blk.47.ffn_gate.weight               iq4_xs * +q4_K  B 0.0769 B+R 0.0049  541s
+[ 638/866] blk.47.ffn_up.weight                 iq4_xs * +q4_K  B 0.0768 B+R 0.0049  543s
+[ 639/866] blk.47.post_attention_norm.weight    f32       543s
+[ 640/866] blk.48.attn_gate.weight              iq4_xs * +q4_K  B 0.0774 B+R 0.0050  544s
+[ 641/866] blk.48.attn_norm.weight              f32       544s
+[ 642/866] blk.48.attn_qkv.weight               iq4_xs * +q4_K  B 0.0780 B+R 0.0051  546s
+[ 643/866] blk.48.ffn_down.weight               iq4_xs * +q4_K  B 0.0778 B+R 0.0051  548s
+[ 644/866] blk.48.ffn_gate.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0050  550s
+[ 645/866] blk.48.ffn_up.weight                 iq4_xs * +q4_K  B 0.0769 B+R 0.0049  553s
+[ 646/866] blk.48.post_attention_norm.weight    f32       553s
+[ 647/866] blk.48.ssm_a                         f32       553s
+[ 648/866] blk.48.ssm_alpha.weight              f32    *  553s
+[ 649/866] blk.48.ssm_beta.weight               f32    *  553s
+[ 650/866] blk.48.ssm_conv1d.weight             f32       553s
+[ 651/866] blk.48.ssm_dt.bias                   f32       553s
+[ 652/866] blk.48.ssm_norm.weight               f32       553s
+[ 653/866] blk.48.ssm_out.weight                iq4_xs * +q4_K  B 0.0787 B+R 0.0054  554s
+[ 654/866] blk.49.attn_gate.weight              iq4_xs * +q4_K  B 0.0773 B+R 0.0050  555s
+[ 655/866] blk.49.attn_norm.weight              f32       555s
+[ 656/866] blk.49.attn_qkv.weight               iq4_xs * +q4_K  B 0.0780 B+R 0.0051  556s
+[ 657/866] blk.49.ffn_down.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0052  559s
+[ 658/866] blk.49.ffn_gate.weight               iq4_xs * +q4_K  B 0.0777 B+R 0.0050  561s
+[ 659/866] blk.49.ffn_up.weight                 iq4_xs * +q4_K  B 0.0770 B+R 0.0050  563s
+[ 660/866] blk.49.post_attention_norm.weight    f32       563s
+[ 661/866] blk.49.ssm_a                         f32       563s
+[ 662/866] blk.49.ssm_alpha.weight              f32    *  563s
+[ 663/866] blk.49.ssm_beta.weight               f32    *  563s
+[ 664/866] blk.49.ssm_conv1d.weight             f32       563s
+[ 665/866] blk.49.ssm_dt.bias                   f32       563s
+[ 666/866] blk.49.ssm_norm.weight               f32       563s
+[ 667/866] blk.49.ssm_out.weight                iq4_xs * +q4_K  B 0.0783 B+R 0.0052  564s
+[ 668/866] blk.50.attn_gate.weight              iq4_xs * +q4_K  B 0.0776 B+R 0.0051  565s
+[ 669/866] blk.50.attn_norm.weight              f32       565s
+[ 670/866] blk.50.attn_qkv.weight               iq4_xs * +q4_K  B 0.0782 B+R 0.0051  567s
+[ 671/866] blk.50.ffn_down.weight               iq4_xs * +q4_K  B 0.0793 B+R 0.0054  569s
+[ 672/866] blk.50.ffn_gate.weight               iq4_xs * +q4_K  B 0.0785 B+R 0.0051  572s
+[ 673/866] blk.50.ffn_up.weight                 iq4_xs * +q4_K  B 0.0774 B+R 0.0050  574s
+[ 674/866] blk.50.post_attention_norm.weight    f32       574s
+[ 675/866] blk.50.ssm_a                         f32       574s
+[ 676/866] blk.50.ssm_alpha.weight              f32    *  574s
+[ 677/866] blk.50.ssm_beta.weight               f32    *  574s
+[ 678/866] blk.50.ssm_conv1d.weight             f32       574s
+[ 679/866] blk.50.ssm_dt.bias                   f32       574s
+[ 680/866] blk.50.ssm_norm.weight               f32       574s
+[ 681/866] blk.50.ssm_out.weight                iq4_xs * +q4_K  B 0.0794 B+R 0.0054  575s
+[ 682/866] blk.51.attn_k.weight                 iq4_xs * +q4_K  B 0.0808 B+R 0.0053  575s
+[ 683/866] blk.51.attn_k_norm.weight            f32       575s
+[ 684/866] blk.51.attn_norm.weight              f32       575s
+[ 685/866] blk.51.attn_output.weight            iq4_xs * +q4_K  B 0.0790 B+R 0.0053  576s
+[ 686/866] blk.51.attn_q.weight                 iq4_xs * +q4_K  B 0.0780 B+R 0.0052  578s
+[ 687/866] blk.51.attn_q_norm.weight            f32       578s
+[ 688/866] blk.51.attn_v.weight                 iq4_xs * +q4_K  B 0.0830 B+R 0.0054  578s
+[ 689/866] blk.51.ffn_down.weight               iq4_xs * +q4_K  B 0.0793 B+R 0.0055  580s
+[ 690/866] blk.51.ffn_gate.weight               iq4_xs * +q4_K  B 0.0778 B+R 0.0050  583s
+[ 691/866] blk.51.ffn_up.weight                 iq4_xs * +q4_K  B 0.0770 B+R 0.0050  585s
+[ 692/866] blk.51.post_attention_norm.weight    f32       585s
+[ 693/866] blk.52.attn_gate.weight              iq4_xs * +q4_K  B 0.0773 B+R 0.0051  586s
+[ 694/866] blk.52.attn_norm.weight              f32       586s
+[ 695/866] blk.52.attn_qkv.weight               iq4_xs * +q4_K  B 0.0781 B+R 0.0051  588s
+[ 696/866] blk.52.ffn_down.weight               iq4_xs * +q4_K  B 0.0790 B+R 0.0055  590s
+[ 697/866] blk.52.ffn_gate.weight               iq4_xs * +q4_K  B 0.0775 B+R 0.0050  592s
+[ 698/866] blk.52.ffn_up.weight                 iq4_xs * +q4_K  B 0.0769 B+R 0.0050  595s
+[ 699/866] blk.52.post_attention_norm.weight    f32       595s
+[ 700/866] blk.52.ssm_a                         f32       595s
+[ 701/866] blk.52.ssm_alpha.weight              f32    *  595s
+[ 702/866] blk.52.ssm_beta.weight               f32    *  595s
+[ 703/866] blk.52.ssm_conv1d.weight             f32       595s
+[ 704/866] blk.52.ssm_dt.bias                   f32       595s
+[ 705/866] blk.52.ssm_norm.weight               f32       595s
+[ 706/866] blk.52.ssm_out.weight                iq4_xs * +q4_K  B 0.0809 B+R 0.0059  596s
+[ 707/866] blk.53.attn_gate.weight              iq4_xs * +q4_K  B 0.0772 B+R 0.0050  597s
+[ 708/866] blk.53.attn_norm.weight              f32       597s
+[ 709/866] blk.53.attn_qkv.weight               iq4_xs * +q4_K  B 0.0776 B+R 0.0050  598s
+[ 710/866] blk.53.ffn_down.weight               iq4_xs * +q4_K  B 0.0788 B+R 0.0054  601s
+[ 711/866] blk.53.ffn_gate.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0050  603s
+[ 712/866] blk.53.ffn_up.weight                 iq4_xs * +q4_K  B 0.0768 B+R 0.0049  605s
+[ 713/866] blk.53.post_attention_norm.weight    f32       605s
+[ 714/866] blk.53.ssm_a                         f32       605s
+[ 715/866] blk.53.ssm_alpha.weight              f32    *  605s
+[ 716/866] blk.53.ssm_beta.weight               f32    *  605s
+[ 717/866] blk.53.ssm_conv1d.weight             f32       605s
+[ 718/866] blk.53.ssm_dt.bias                   f32       605s
+[ 719/866] blk.53.ssm_norm.weight               f32       605s
+[ 720/866] blk.53.ssm_out.weight                iq4_xs * +q4_K  B 0.0811 B+R 0.0059  606s
+[ 721/866] blk.54.attn_gate.weight              iq4_xs * +q4_K  B 0.0770 B+R 0.0050  607s
+[ 722/866] blk.54.attn_norm.weight              f32       607s
+[ 723/866] blk.54.attn_qkv.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0050  609s
+[ 724/866] blk.54.ffn_down.weight               iq4_xs * +q4_K  B 0.0795 B+R 0.0056  611s
+[ 725/866] blk.54.ffn_gate.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0050  614s
+[ 726/866] blk.54.ffn_up.weight                 iq4_xs * +q4_K  B 0.0768 B+R 0.0049  616s
+[ 727/866] blk.54.post_attention_norm.weight    f32       616s
+[ 728/866] blk.54.ssm_a                         f32       616s
+[ 729/866] blk.54.ssm_alpha.weight              f32    *  616s
+[ 730/866] blk.54.ssm_beta.weight               f32    *  616s
+[ 731/866] blk.54.ssm_conv1d.weight             f32       616s
+[ 732/866] blk.54.ssm_dt.bias                   f32       616s
+[ 733/866] blk.54.ssm_norm.weight               f32       616s
+[ 734/866] blk.54.ssm_out.weight                iq4_xs * +q4_K  B 0.0803 B+R 0.0058  617s
+[ 735/866] blk.55.attn_k.weight                 iq4_xs * +q4_K  B 0.0846 B+R 0.0055  617s
+[ 736/866] blk.55.attn_k_norm.weight            f32       617s
+[ 737/866] blk.55.attn_norm.weight              f32       617s
+[ 738/866] blk.55.attn_output.weight            iq4_xs * +q4_K  B 0.0785 B+R 0.0053  618s
+[ 739/866] blk.55.attn_q.weight                 iq4_xs * +q4_K  B 0.0779 B+R 0.0052  620s
+[ 740/866] blk.55.attn_q_norm.weight            f32       620s
+[ 741/866] blk.55.attn_v.weight                 iq4_xs * +q4_K  B 0.0814 B+R 0.0053  620s
+[ 742/866] blk.55.ffn_down.weight               iq4_xs * +q4_K  B 0.0788 B+R 0.0055  622s
+[ 743/866] blk.55.ffn_gate.weight               iq4_xs * +q4_K  B 0.0768 B+R 0.0049  625s
+[ 744/866] blk.55.ffn_up.weight                 iq4_xs * +q4_K  B 0.0765 B+R 0.0049  627s
+[ 745/866] blk.55.post_attention_norm.weight    f32       627s
+[ 746/866] blk.56.attn_gate.weight              iq4_xs * +q4_K  B 0.0770 B+R 0.0050  628s
+[ 747/866] blk.56.attn_norm.weight              f32       628s
+[ 748/866] blk.56.attn_qkv.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0050  630s
+[ 749/866] blk.56.ffn_down.weight               iq4_xs * +q4_K  B 0.0788 B+R 0.0055  632s
+[ 750/866] blk.56.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0049  634s
+[ 751/866] blk.56.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  637s
+[ 752/866] blk.56.post_attention_norm.weight    f32       637s
+[ 753/866] blk.56.ssm_a                         f32       637s
+[ 754/866] blk.56.ssm_alpha.weight              f32    *  637s
+[ 755/866] blk.56.ssm_beta.weight               f32    *  637s
+[ 756/866] blk.56.ssm_conv1d.weight             f32       637s
+[ 757/866] blk.56.ssm_dt.bias                   f32       637s
+[ 758/866] blk.56.ssm_norm.weight               f32       637s
+[ 759/866] blk.56.ssm_out.weight                iq4_xs * +q4_K  B 0.0810 B+R 0.0059  638s
+[ 760/866] blk.57.attn_gate.weight              iq4_xs * +q4_K  B 0.0769 B+R 0.0050  639s
+[ 761/866] blk.57.attn_norm.weight              f32       639s
+[ 762/866] blk.57.attn_qkv.weight               iq4_xs * +q4_K  B 0.0776 B+R 0.0050  640s
+[ 763/866] blk.57.ffn_down.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0054  643s
+[ 764/866] blk.57.ffn_gate.weight               iq4_xs * +q4_K  B 0.0765 B+R 0.0049  645s
+[ 765/866] blk.57.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  647s
+[ 766/866] blk.57.post_attention_norm.weight    f32       647s
+[ 767/866] blk.57.ssm_a                         f32       647s
+[ 768/866] blk.57.ssm_alpha.weight              f32    *  647s
+[ 769/866] blk.57.ssm_beta.weight               f32    *  647s
+[ 770/866] blk.57.ssm_conv1d.weight             f32       647s
+[ 771/866] blk.57.ssm_dt.bias                   f32       647s
+[ 772/866] blk.57.ssm_norm.weight               f32       647s
+[ 773/866] blk.57.ssm_out.weight                iq4_xs * +q4_K  B 0.0807 B+R 0.0057  648s
+[ 774/866] blk.58.attn_gate.weight              iq4_xs * +q4_K  B 0.0768 B+R 0.0049  649s
+[ 775/866] blk.58.attn_norm.weight              f32       649s
+[ 776/866] blk.58.attn_qkv.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0049  651s
+[ 777/866] blk.58.ffn_down.weight               iq4_xs * +q4_K  B 0.0784 B+R 0.0054  653s
+[ 778/866] blk.58.ffn_gate.weight               iq4_xs * +q4_K  B 0.0765 B+R 0.0049  655s
+[ 779/866] blk.58.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  658s
+[ 780/866] blk.58.post_attention_norm.weight    f32       658s
+[ 781/866] blk.58.ssm_a                         f32       658s
+[ 782/866] blk.58.ssm_alpha.weight              f32    *  658s
+[ 783/866] blk.58.ssm_beta.weight               f32    *  658s
+[ 784/866] blk.58.ssm_conv1d.weight             f32       658s
+[ 785/866] blk.58.ssm_dt.bias                   f32       658s
+[ 786/866] blk.58.ssm_norm.weight               f32       658s
+[ 787/866] blk.58.ssm_out.weight                iq4_xs * +q4_K  B 0.0790 B+R 0.0055  659s
+[ 788/866] blk.59.attn_k.weight                 iq4_xs * +q4_K  B 0.0876 B+R 0.0056  659s
+[ 789/866] blk.59.attn_k_norm.weight            f32       659s
+[ 790/866] blk.59.attn_norm.weight              f32       659s
+[ 791/866] blk.59.attn_output.weight            iq4_xs * +q4_K  B 0.0790 B+R 0.0054  660s
+[ 792/866] blk.59.attn_q.weight                 iq4_xs * +q4_K  B 0.0786 B+R 0.0052  662s
+[ 793/866] blk.59.attn_q_norm.weight            f32       662s
+[ 794/866] blk.59.attn_v.weight                 iq4_xs * +q4_K  B 0.0835 B+R 0.0054  662s
+[ 795/866] blk.59.ffn_down.weight               iq4_xs * +q4_K  B 0.0788 B+R 0.0055  664s
+[ 796/866] blk.59.ffn_gate.weight               iq4_xs * +q4_K  B 0.0766 B+R 0.0049  667s
+[ 797/866] blk.59.ffn_up.weight                 iq4_xs * +q4_K  B 0.0763 B+R 0.0049  669s
+[ 798/866] blk.59.post_attention_norm.weight    f32       669s
+[ 799/866] blk.60.attn_gate.weight              iq4_xs * +q4_K  B 0.0773 B+R 0.0050  670s
+[ 800/866] blk.60.attn_norm.weight              f32       670s
+[ 801/866] blk.60.attn_qkv.weight               iq4_xs * +q4_K  B 0.0778 B+R 0.0050  672s
+[ 802/866] blk.60.ffn_down.weight               iq4_xs * +q4_K  B 0.0793 B+R 0.0056  674s
+[ 803/866] blk.60.ffn_gate.weight               iq4_xs * +q4_K  B 0.0769 B+R 0.0049  676s
+[ 804/866] blk.60.ffn_up.weight                 iq4_xs * +q4_K  B 0.0764 B+R 0.0049  679s
+[ 805/866] blk.60.post_attention_norm.weight    f32       679s
+[ 806/866] blk.60.ssm_a                         f32       679s
+[ 807/866] blk.60.ssm_alpha.weight              f32    *  679s
+[ 808/866] blk.60.ssm_beta.weight               f32    *  679s
+[ 809/866] blk.60.ssm_conv1d.weight             f32       679s
+[ 810/866] blk.60.ssm_dt.bias                   f32       679s
+[ 811/866] blk.60.ssm_norm.weight               f32       679s
+[ 812/866] blk.60.ssm_out.weight                iq4_xs * +q4_K  B 0.0810 B+R 0.0060  680s
+[ 813/866] blk.61.attn_gate.weight              iq4_xs * +q4_K  B 0.0772 B+R 0.0050  681s
+[ 814/866] blk.61.attn_norm.weight              f32       681s
+[ 815/866] blk.61.attn_qkv.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0050  682s
+[ 816/866] blk.61.ffn_down.weight               iq4_xs * +q4_K  B 0.0806 B+R 0.0060  685s
+[ 817/866] blk.61.ffn_gate.weight               iq4_xs * +q4_K  B 0.0772 B+R 0.0049  687s
+[ 818/866] blk.61.ffn_up.weight                 iq4_xs * +q4_K  B 0.0765 B+R 0.0049  689s
+[ 819/866] blk.61.post_attention_norm.weight    f32       689s
+[ 820/866] blk.61.ssm_a                         f32       689s
+[ 821/866] blk.61.ssm_alpha.weight              f32    *  689s
+[ 822/866] blk.61.ssm_beta.weight               f32    *  689s
+[ 823/866] blk.61.ssm_conv1d.weight             f32       690s
+[ 824/866] blk.61.ssm_dt.bias                   f32       690s
+[ 825/866] blk.61.ssm_norm.weight               f32       690s
+[ 826/866] blk.61.ssm_out.weight                iq4_xs * +q4_K  B 0.0802 B+R 0.0058  690s
+[ 827/866] blk.62.attn_gate.weight              iq4_xs * +q4_K  B 0.0781 B+R 0.0050  691s
+[ 828/866] blk.62.attn_norm.weight              f32       691s
+[ 829/866] blk.62.attn_qkv.weight               iq4_xs * +q4_K  B 0.0783 B+R 0.0050  693s
+[ 830/866] blk.62.ffn_down.weight               iq4_xs * +q4_K  B 0.0829 B+R 0.0064  695s
+[ 831/866] blk.62.ffn_gate.weight               iq4_xs * +q4_K  B 0.0773 B+R 0.0049  698s
+[ 832/866] blk.62.ffn_up.weight                 iq4_xs * +q4_K  B 0.0766 B+R 0.0049  700s
+[ 833/866] blk.62.post_attention_norm.weight    f32       700s
+[ 834/866] blk.62.ssm_a                         f32       700s
+[ 835/866] blk.62.ssm_alpha.weight              f32    *  700s
+[ 836/866] blk.62.ssm_beta.weight               f32    *  700s
+[ 837/866] blk.62.ssm_conv1d.weight             f32       700s
+[ 838/866] blk.62.ssm_dt.bias                   f32       700s
+[ 839/866] blk.62.ssm_norm.weight               f32       700s
+[ 840/866] blk.62.ssm_out.weight                iq4_xs * +q4_K  B 0.0826 B+R 0.0062  701s
+[ 841/866] blk.63.attn_k.weight                 iq4_xs * +q4_K  B 0.0890 B+R 0.0056  701s
+[ 842/866] blk.63.attn_k_norm.weight            f32       701s
+[ 843/866] blk.63.attn_norm.weight              f32       701s
+[ 844/866] blk.63.attn_output.weight            iq4_xs * +q4_K  B 0.0843 B+R 0.0062  702s
+[ 845/866] blk.63.attn_q.weight                 iq4_xs * +q4_K  B 0.0787 B+R 0.0051  704s
+[ 846/866] blk.63.attn_q_norm.weight            f32       704s
+[ 847/866] blk.63.attn_v.weight                 iq4_xs * +q4_K  B 0.0840 B+R 0.0053  704s
+[ 848/866] blk.63.ffn_down.weight               iq4_xs * +q4_K  B 0.0863 B+R 0.0070  706s
+[ 849/866] blk.63.ffn_gate.weight               iq4_xs * +q4_K  B 0.0774 B+R 0.0049  709s
+[ 850/866] blk.63.ffn_up.weight                 iq4_xs * +q4_K  B 0.0766 B+R 0.0049  711s
+[ 851/866] blk.63.post_attention_norm.weight    f32       711s
+[ 852/866] blk.64.attn_k.weight                 iq4_xs   +q4_K  B 0.0814 B+R 0.0050  712s
+[ 853/866] blk.64.attn_k_norm.weight            f32       712s
+[ 854/866] blk.64.attn_norm.weight              f32       712s
+[ 855/866] blk.64.attn_output.weight            iq4_xs   +q4_K  B 0.0817 B+R 0.0050  712s
+[ 856/866] blk.64.attn_q.weight                 iq4_xs   +q4_K  B 0.0779 B+R 0.0048  714s
+[ 857/866] blk.64.attn_q_norm.weight            f32       714s
+[ 858/866] blk.64.attn_v.weight                 iq4_xs   +q4_K  B 0.0786 B+R 0.0049  714s
+[ 859/866] blk.64.ffn_down.weight               iq4_xs   +q4_K  B 0.0807 B+R 0.0050  716s
+[ 860/866] blk.64.ffn_gate.weight               iq4_xs   +q4_K  B 0.0772 B+R 0.0048  718s
+[ 861/866] blk.64.ffn_up.weight                 iq4_xs   +q4_K  B 0.0772 B+R 0.0048  720s
+[ 862/866] blk.64.nextn.eh_proj.weight          iq4_xs   +q4_K  B 0.0784 B+R 0.0049  721s
+[ 863/866] blk.64.nextn.enorm.weight            f32       721s
+[ 864/866] blk.64.nextn.hnorm.weight            f32       721s
+[ 865/866] blk.64.nextn.shared_head_norm.weight f32       721s
+[ 866/866] blk.64.post_attention_norm.weight    f32       721s
+
+big matrices: rel. RMSE base 0.0779, base+residual 0.0051
+wrote E:\eightfer\orca27b.base.gguf (16.47 GB data) and E:\eightfer\orca27b.res.gguf (14.63 GB data)

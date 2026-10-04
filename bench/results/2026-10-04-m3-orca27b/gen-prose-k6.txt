@@ -1,0 +1,7 @@
+loaded in 12.1 s: weights 13.70 GB GPU + 2.54 GB CPU, residual 14.40 GB
+speculative: prefill 38 tok in 0.58 s (65.9 tok/s); decode 260 tok in 29.66 s = 8.76 tok/s
+  41 cycles, acceptance 0.890 (219/246), 6.34 tokens/cycle; per cycle: draft 143.3 ms, verify 578.6 ms, rollback 0.8 ms
+plain: prefill 38 tok in 0.33 s (113.6 tok/s); decode 255 tok in 76.95 s = 3.31 tok/s
+  301.7 ms per token
+compare: first difference at generated token 35 (spec 944, plain 3050)
+  logits there (batch-1 replay): spec token 23.58493, plain token 23.55090, max 23.62398

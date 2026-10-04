@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -174,6 +175,39 @@ struct Plan {
     const ggml_tensor * tmpl = nullptr;
 };
 
+// llama.cpp imatrix GGUF (llama-imatrix output): "<weight>.in_sum2" [ne0] and "<weight>.counts" [1] per weight.
+// Importance per input column = in_sum2 / count, as llama-quantize uses it.
+bool load_imatrix(const std::string & path, std::map<std::string, std::vector<float>> & out, std::string & err) {
+    ggml_context *   ctx = nullptr;
+    gguf_init_params gp  = { false, &ctx };
+    gguf_context *   g   = gguf_init_from_file(path.c_str(), gp);
+    if (!g) {
+        err = "cannot read imatrix " + path;
+        return false;
+    }
+    std::map<std::string, std::pair<ggml_tensor *, ggml_tensor *>> sc;
+    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+        std::string n = t->name;
+        if (n.size() > 8 && n.compare(n.size() - 8, 8, ".in_sum2") == 0) sc[n.substr(0, n.size() - 8)].first = t;
+        else if (n.size() > 7 && n.compare(n.size() - 7, 7, ".counts") == 0) sc[n.substr(0, n.size() - 7)].second = t;
+    }
+    for (auto & [name, p] : sc) {
+        if (!p.first || !p.second || p.first->type != GGML_TYPE_F32 || ggml_nelements(p.second) != 1) {
+            continue;  // MoE (per-expert) entries are not used for dense models
+        }
+        const float        cnt = ((const float *) p.second->data)[0];
+        const int64_t      n   = ggml_nelements(p.first);
+        std::vector<float> v((size_t) n, 1.0f);
+        if (cnt > 0) {
+            for (int64_t i = 0; i < n; i++) v[(size_t) i] = ((const float *) p.first->data)[i] / cnt;
+        }
+        out[name] = std::move(v);
+    }
+    gguf_free(g);
+    ggml_free(ctx);
+    return true;
+}
+
 struct Stats {
     double w2 = 0, tmpl_e2 = 0, b_e2 = 0, br_e2 = 0;
 };
@@ -181,7 +215,7 @@ struct Stats {
 } // namespace
 
 int pack(const std::vector<std::string> & args) {
-    std::string src_dir, tmpl_path, out;
+    std::string src_dir, tmpl_path, out, imatrix_path;
     std::string base_s = "iq4_xs", res_s = "q4_K";
     int         threads = (int) std::max(1u, std::thread::hardware_concurrency());
     bool        check   = false;
@@ -195,6 +229,7 @@ int pack(const std::vector<std::string> & args) {
         else if (k == "--res") res_s = val();
         else if (k == "--threads") threads = std::atoi(val().c_str());
         else if (k == "--check") check = true;
+        else if (k == "--imatrix") imatrix_path = val();
         else {
             fprintf(stderr, "unknown option %s\n", k.c_str());
             return 1;
@@ -203,6 +238,7 @@ int pack(const std::vector<std::string> & args) {
     if (src_dir.empty() || tmpl_path.empty() || (out.empty() && !check)) {
         fprintf(stderr, "usage: eightfer pack --src <hf dir> --template <qwen35.gguf> --out <prefix>\n"
                         "                     [--base iq4_xs] [--res q4_K|q3_K|q5_K|q6_K|none] [--threads N] [--check]\n"
+                        "                     [--imatrix <llama-imatrix .gguf>]\n"
                         "  --check without --out only verifies the conversion against the template\n");
         return 1;
     }
@@ -229,6 +265,14 @@ int pack(const std::vector<std::string> & args) {
     if (tmpl.arch() != "qwen35") {
         fprintf(stderr, "template architecture is %s, expected qwen35\n", tmpl.arch().c_str());
         return 1;
+    }
+    std::map<std::string, std::vector<float>> imatrix;
+    if (!imatrix_path.empty()) {
+        if (!load_imatrix(imatrix_path, imatrix, err)) {
+            fprintf(stderr, "%s\n", err.c_str());
+            return 1;
+        }
+        printf("imatrix: %zu entries from %s\n", imatrix.size(), imatrix_path.c_str());
     }
     model::Safetensors st;
     if (!st.open(src_dir, err)) {
@@ -383,6 +427,10 @@ int pack(const std::vector<std::string> & args) {
         const ggml_type_traits * tt_b = ggml_get_type_traits(p.base_type);
         const ggml_type_traits * tt_r = p.split ? ggml_get_type_traits(res_t) : nullptr;
         const ggml_type_traits * tt_t = ggml_get_type_traits(p.tmpl->type);
+        const float *            imat = nullptr;
+        if (auto it = imatrix.find(p.name); it != imatrix.end() && (int64_t) it->second.size() == ncols) {
+            imat = it->second.data();
+        }
 
         auto worker = [&]() {
             std::vector<float>   w, tmp, res, perm, tq;
@@ -448,7 +496,7 @@ int pack(const std::vector<std::string> & args) {
                     }
                     if (p.base_type == GGML_TYPE_F32) std::memcpy(bd, w.data(), ne * 4);
                     else if (p.base_type == GGML_TYPE_BF16) ggml_fp32_to_bf16_row_ref(w.data(), (ggml_bf16_t *) bd, (int64_t) ne);
-                    else ggml_quantize_chunk(p.base_type, w.data(), bd, 0, nr, ncols, nullptr);
+                    else ggml_quantize_chunk(p.base_type, w.data(), bd, 0, nr, ncols, imat);
                     if (p.split) {
                         tmp.resize(ne);
                         tt_b->to_float(bd, tmp.data(), (int64_t) ne);
@@ -463,7 +511,7 @@ int pack(const std::vector<std::string> & args) {
                             rl.resize(rrow * (size_t) nr);
                             rd = rl.data();
                         }
-                        ggml_quantize_chunk(res_t, res.data(), rd, 0, nr, ncols, nullptr);
+                        ggml_quantize_chunk(res_t, res.data(), rd, 0, nr, ncols, imat);
                         tt_r->to_float(rd, tmp.data(), (int64_t) ne);
                         for (size_t i = 0; i < ne; i++) {
                             const double d = (double) res[i] - tmp[i];
@@ -508,7 +556,7 @@ int pack(const std::vector<std::string> & args) {
             total.br_e2 += ts.br_e2;
         }
         const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
-        printf("[%4zu/%zu] %-36s %-7s", pi + 1, plans.size(), p.name.c_str(), ggml_type_name(p.base_type));
+        printf("[%4zu/%zu] %-36s %-7s%s", pi + 1, plans.size(), p.name.c_str(), ggml_type_name(p.base_type), imat ? "*" : " ");
         if (p.split) printf(" +%-5s B %.4f B+R %.4f", ggml_type_name(res_t), std::sqrt(ts.b_e2 / ts.w2), std::sqrt(ts.br_e2 / ts.w2));
         if (check) printf("  vs template(%s) %.4f%s", ggml_type_name(p.tmpl->type), rel_t, rel_t > 0.1 ? "  <-- MISMATCH" : "");
         printf("  %.0fs\n", el);

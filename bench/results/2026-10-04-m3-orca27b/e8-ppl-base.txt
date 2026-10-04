@@ -1,0 +1,8 @@
+loaded in 6.3 s: 64 layers (99 on GPU), weights 13.70 GB GPU + 2.54 GB CPU, vocab 248320, add_bos 0
+perplexity: 4096 tokens, 8 chunks of 512, batch 512
+0.69 seconds per pass - ETA 0.1 minutes
+2040 tokens scored, 4.3 s, 948.3 tokens/s evaluated
+[1]2.6158,[2]3.9108,[3]4.0614,[4]3.5650,[5]3.5955,[6]3.5008,[7]3.7909,[8]4.0430,
+Final estimate: PPL = 4.0430 +/- 0.21878
+vs llama.cpp: base PPL 4.0035, mean KLD 0.057716, max KLD 1.8924 (chunk 1 pos 457), same top-1 91.08%
+mean KLD by position:  256-287: 0.07186  288-319: 0.05140  320-351: 0.05452  352-383: 0.04472  384-415: 0.06148  416-447: 0.04615  448-479: 0.07780  480-511: 0.05368
