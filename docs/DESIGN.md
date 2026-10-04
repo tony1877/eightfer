@@ -178,9 +178,11 @@ eightfer/
 ```
 
 Inputs:
-- A stock GGUF as the base, so bartowski/unsloth files run in B-only mode from day one.
-- An eightfer residual pack (a GGUF of R tensors), built locally from the BF16 safetensors
-  against that exact base: `R = Q(W_bf16 − deq(B_stock))`.
+- A stock GGUF runs in B-only mode from day one (bartowski/unsloth files), at short context.
+- For B+R and for 200k context, `eightfer pack` builds a **pure** IQ4_XS base from the BF16 safetensors
+  (13.61 GB; a stock IQ4_XS GGUF is 13.99–14.10 GB because llama.cpp upgrades output, attn_v and early
+  ffn_down, and that doesn't fit at 200k) plus the residual pack against that exact base:
+  `R = Q(W_bf16 − deq(B))`.
 
 Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and correctness tests.
 
@@ -215,6 +217,44 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 ## 9. Non-goals (for now)
 
 Multi-user batching, training, non-NVIDIA GPUs, Linux io_uring path, vision before M6.
+
+## 10. 2x speed and 200k context
+
+Full plan, memory tables, review outcomes and milestones: [`docs/SPEED2X.md`](SPEED2X.md).
+Models: [`experiments/speed2x/`](../experiments/speed2x/). All numbers are [est.] until the bench runs.
+
+| | 27B @ 4k | 27B @ 200k | Flash-Next @ 4k | Flash-Next @ 200k |
+|---|---|---|---|---|
+| Current design, same assumptions | 13.6 tok/s | 9.4 | 12.7 (both NVMe on separate links) | 11.8 |
+| **New plan, lossless (central)** | **26–27** | **16.1** (17.4 if VRAM allows) | **13.8** | **12.8** |
+| Range over unmeasured inputs | 22–30 | 14–19 | 7.6 (drives share chipset) – 14.3 | 7.0 – 13.3 |
+| 200k-token prompt prefill | | 265–300 s; ~1 s from prefix cache | | ~40–70 s; ~0.4 s from prefix cache |
+
+27B mechanisms, all lossless:
+- **Dual-path verify.** R is split by rows: the CPU multiplies its rows in place while the rest streams over PCIe and is
+  multiplied on the GPU. This fixes the sandbox's "CPU is compute-bound at 9 tokens" problem.
+- **MTP-staged drafting.** The model's own MTP head drafts for the 4-bit base, and the base drafts for B+R
+  (MTP → B → B+R). Draft cost halves, from 18.5 to ~9 ms/token.
+- **Draft during verify.** The GPU keeps drafting while the RAM-bound verify runs.
+- **Up to 3 hedges.** At uncertain positions the drafter also continues from the base's second choice, used only when
+  it matches the target's own correction.
+
+200k context fits for both models:
+- **27B:** q8_0 KV in pinned RAM, read exactly once per verify by a custom split-KV attention kernel. The drafter only
+  sees a recent window plus a hot set. VRAM 15.50/15.5 GB, RAM 21.9/22 GB; the full-speed ceiling is ~203k tokens.
+- **Flash-Next:** QSA KV in pinned RAM. Each step gathers only the 2048 tokens the indexer selected.
+- **Both:** an NVMe prefix cache restores a 200k context in about 1 s instead of re-prefilling.
+
+What is not reachable, stated plainly:
+- **27B at 200k, 2x:** every verify must read ≥21.2 GB (R + KV) from DRAM, which caps it near 26 tok/s even with free
+  drafting.
+- **Flash-Next, software 2x:** there is no software path within 32 GB RAM. New lossless mechanisms add ~1.09x. The
+  only lossless 2x is **2 × 32 GB RAM** (24–28 tok/s).
+
+Opt-in, quality-gated options:
+- Q3_K residual: ~29 tok/s at 4k. Weight error 1.9× Q8_0, still better than Q6_K.
+- q4_0 far-context KV: 19.3 tok/s at 200k.
+- Cold experts at IQ3_XXS: Flash-Next ~17.5 tok/s.
 
 ## References
 
