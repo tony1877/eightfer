@@ -6,10 +6,12 @@
   .\scripts\build.ps1            # build with CUDA for RTX 50xx (sm_120)
   .\scripts\build.ps1 -Clean     # wipe .\build first
   .\scripts\build.ps1 -NoCuda    # CPU-only build
+  .\scripts\build.ps1 -Portable  # no AVX-512 extensions (CPUs older than Zen 4 / Ice Lake)
 #>
 param(
     [switch]$Clean,
     [switch]$NoCuda,
+    [switch]$Portable,
     [string]$CudaArch = '120a-real'  # Blackwell consumer GPUs (RTX 50xx)
 )
 
@@ -76,7 +78,13 @@ if ($Clean -and (Test-Path $build)) {
     Remove-Item -Recurse -Force $build
 }
 $cuda = if ($NoCuda) { 'OFF' } else { 'ON' }
-cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DEIGHTFER_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+# MSVC has no -march=native: ggml's MSVC detection enables AVX-512F but never VNNI, BF16 or VBMI, and MSVC
+# defines no macros for them. Zen 4/5 (the target 9800X3D) and Ice Lake+ have all three, so enable them
+# explicitly. The resulting binary needs such a CPU; -Portable leaves them off.
+$on  = if ($Portable) { 'OFF' } else { 'ON' }
+$isa = @("-DGGML_AVX512_VNNI=$on", "-DGGML_AVX512_BF16=$on", "-DGGML_AVX512_VBMI=$on")
+if (-not $Portable) { $isa += '-DGGML_AVX512=ON' }  # -Portable leaves AVX-512F to ggml's own detection
+cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DEIGHTFER_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch" @isa
 if ($LASTEXITCODE -ne 0) { Fail 'cmake configure failed (see above)' }
 cmake --build $build --config Release
 if ($LASTEXITCODE -ne 0) { Fail 'build failed (see above)' }

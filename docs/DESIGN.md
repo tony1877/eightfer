@@ -15,12 +15,14 @@ Parts as reported by your `nvidia-smi`, `Get-PhysicalDisk`, `Win32_PhysicalMemor
 | Part | Spec | Number we plan with |
 |---|---|---|
 | OS | Windows 11, PowerShell 7.6 | — |
-| GPU | RTX 5080 16 GB GDDR7, PCIe **Gen5 x16** (no lane sharing), sm_120, driver 616.56 | ~770 GB/s effective VRAM read [est.], ~15.5 GB free VRAM [measure] |
-| CPU | Ryzen 7 9800X3D, 8C/16T Zen 5, AVX-512, single CCD | ~60 GB/s RAM read from cores (single-CCD fabric cap) [est.] |
-| RAM | 2 × 16 GB DDR5-5600 CL30 | ~22 GB usable for model data [est.] |
-| NVMe | WD_BLACK SN850X 1 TB (Gen4), Samsung 980 PRO 500 GB (Gen4) | ~7 GB/s each; ~14 GB/s striped only if they sit on separate lanes [measure] |
-| SATA | Micron 5400 3.84 TB + 7.68 TB | ~0.55 GB/s each; fine for sparse 4 KiB reads [measure] |
-| Toolchain | CUDA 13.0; no Visual Studio 2022 found by `vswhere` | CUDA 13.0 accepts VS 2019/2022 as host compiler, not VS 2026 |
+| GPU | RTX 5080 16 GB GDDR7, PCIe **Gen5 x16** (no lane sharing), sm_120, driver 616.56 | **822–864 GB/s** VRAM read, 15.89 GiB total / 14.6 GiB free to ggml [measured]; H2D **57.5 GB/s** pinned, 22.4 pageable [measured] |
+| CPU | Ryzen 7 9800X3D, 8C/16T Zen 5, AVX-512 (+VNNI/BF16/VBMI), single CCD | **62 GB/s** RAM read from cores [measured]; CPU + GPU DMA together **80 GB/s** [measured] |
+| RAM | 2 × 16 GB DDR5-5600 CL30 (runs at 5600) | ~22 GB usable for model data [est.]; **pinned ≤ 15.6 GiB (WDDM: half of RAM)** [measured] |
+| NVMe | WD_BLACK SN850X 1 TB (Gen4), Samsung 980 PRO 500 GB (Gen4), each on its own CPU root port | 7.05 / 5.88 GB/s at 2.5 MiB random; **12.45 GB/s** striped [measured] |
+| SATA | Micron 5400 3.84 TB + 7.68 TB | ~0.55 GB/s each; fine for sparse 4 KiB reads [not measured] |
+| Toolchain | CUDA 13.0, VS 2022 Build Tools (MSVC 19.44) | CUDA 13.0 accepts VS 2019/2022 as host compiler, not VS 2026 |
+
+Bench output and analysis: [`bench/results/2026-10-04-rtx5080-9800x3d`](../bench/results/2026-10-04-rtx5080-9800x3d/README.md).
 
 ## 2. The models [verified: HF `config.json`, transformers `modeling_qwen4_exp.py`]
 
@@ -191,7 +193,7 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 | # | Deliverable | Done when |
 |---|---|---|
 | M0 | This design + nested-quant measurement | ✅ |
-| M1 | Skeleton + `eightfer bench` | Code done: builds and runs on Linux (CPU), Windows `.exe` cross-built and run under Wine. **Waiting for:** a native build plus bench output from your box. |
+| M1 | Skeleton + `eightfer bench` | ✅ Native Windows build and bench on the target box, 2026-10-04 ([results](../bench/results/2026-10-04-rtx5080-9800x3d/README.md)). |
 | M2 | qwen35 graph + GGUF loader (B-only) | Tiny random-weight model on CPU matches transformers logits. Real 27B GGUF perplexity matches llama.cpp on your box. |
 | M3 | `eightfer pack` + B+R verify + self-speculation | KLD of B+R vs BF16 ≤ Q8_0's. Acceptance α measured. tok/s measured. |
 | M4 | qwen4exp graph (B-only, mmap) | Tiny random model on CPU matches transformers, including n-gram hashing and hyper-connections. |
@@ -201,18 +203,17 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 ## 8. Unknowns to measure (not assume)
 
 - Draft acceptance α: IQ4_XS draft vs B+R target.
-- CPU GEMV throughput for Q4_K with k+1 ≤ 9 columns on the 9800X3D.
-  Early hint, from the 4-core build sandbox rather than your box: 9 columns took 3.7× longer per pass than 1 column
-  (5.6 vs 20.7 GB/s, `CPU_REPACK`), so the CPU ran out of compute before it ran out of bandwidth.
-  If the 9800X3D shows the same shape, the verify step streams R to the GPU over PCIe (~14.4 GB at ~50 GB/s ≈ 0.3 s)
-  instead of computing it on the CPU. The plan doesn't change, only where R gets multiplied.
-- Pinned-memory limits and allocation time for ~20 GB under Windows WDDM.
-- Effective H2D bandwidth under WDDM.
-- Combined DRAM bandwidth when the cores and GPU DMA read concurrently. Hypothesis: DMA bypasses the CCD link, so the
-  total can exceed ~60 GB/s.
 - Expert routing locality → cache hit rate h on real prompts.
-- Sustained NVMe bandwidth, thermal throttling, and sector alignment per drive.
-- Whether the two NVMe drives share the chipset uplink. The GPU link is confirmed Gen5 x16.
+- Sustained NVMe bandwidth and thermal throttling (the bench measures 1.5 s bursts).
+
+Measured on 2026-10-04 ([results](../bench/results/2026-10-04-rtx5080-9800x3d/README.md)):
+- CPU GEMV, Q4_K, 9 columns: compute-bound, as the sandbox hinted. Best 54 ms per pass (38.7 GB/s of 62,
+  `CPU_REPACK`, 16 threads). The verify step needs SPEED2X's dual path.
+- Pinned memory: WDDM caps it at half of RAM, 15.6 GiB here, ~113 ms/GiB to allocate. R (14.4 GB) fits; R plus
+  pinned 200k KV does not.
+- H2D under WDDM: 57.5 GB/s pinned at 1 GiB, 50.8 GB/s at 2.5 MiB, 22.4 GB/s pageable.
+- CPU + GPU DMA together: 80.4 GB/s (43.9 + 36.5), above the 62 GB/s CPU-only figure. Hypothesis confirmed.
+- The two NVMe drives sit on separate CPU root ports: 12.45 GB/s together.
 
 ## 9. Non-goals (for now)
 

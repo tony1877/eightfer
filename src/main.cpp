@@ -28,7 +28,8 @@ static void usage() {
            "  --disk PATH     drive/folder (a temp file is written there) or existing big file; repeatable.\n"
            "                  Default on Windows: every fixed drive.\n"
            "  --disk-gb N     temp file size per drive (default 4)\n"
-           "  --pinned-gb N   pinned host memory to try to allocate (default 16)\n"
+           "  --pinned-gb N   pinned host memory to try to allocate (default 16; on Windows at most\n"
+           "                  half of RAM minus 1 GiB, and always leaving 4 GiB of RAM free)\n"
            "  --threads N     CPU threads for GEMV (default: physical cores)\n"
            "  --seconds S     duration of each measurement (default 1.5)\n",
            EIGHTFER_VERSION);
@@ -101,6 +102,9 @@ int main(int argc, char ** argv) {
     if (args[1] == "--version") {
         printf("eightfer %s\n", EIGHTFER_VERSION);
         return 0;
+    }
+    if (args[1] == "pinned-probe" && args.size() == 3) {  // internal: run by `bench` in a child process
+        e8::bench::pinned_probe(std::atof(args[2].c_str()));
     }
     if (args[1] == "bench") {
         e8::bench::Options opt;

@@ -29,6 +29,10 @@ void gemv_gpu(const Options & opt);
 void pcie(const Options & opt, const sys::Info & si);
 void disk(const Options & opt);
 
+// Child-process entry for `eightfer pinned-probe <GiB>`: pins memory in 1 GiB chunks up to the target,
+// prints "PINNED <GiB> <seconds> <refused 0|1>" and exits without freeing (see bench_pcie.cpp).
+[[noreturn]] void pinned_probe(double target_gib);
+
 // Shared helpers.
 double now_s();
 // Streams `bytes` of `buf` with `threads` threads for about `seconds`; returns GB/s.

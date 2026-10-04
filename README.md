@@ -19,7 +19,9 @@ Its 51B n-gram table is read straight from disk at full BF16 precision.
 - [`experiments/nested_quant`](experiments/nested_quant) — first measurement on real Qwen3.8-27B weights.
   An IQ4_XS base plus a Q4_K residual has 0.89× the weight error of Q8_0.
 
-Status: **M1**. `eightfer bench` measures the numbers the design depends on. It doesn't run models yet.
+Status: **M1 done**. `eightfer bench` measures the numbers the design depends on; the target box's results are in
+[`bench/results/2026-10-04-rtx5080-9800x3d`](bench/results/2026-10-04-rtx5080-9800x3d/README.md). It doesn't run
+models yet (M2 next).
 
 ## Build (Windows)
 
@@ -30,7 +32,8 @@ CUDA 13.0 does not accept VS 2026 as host compiler. Install the Build Tools if `
 winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-Clone to a short path and build. The first build compiles ggml's CUDA kernels and takes several minutes.
+Clone to a short path and build. The first build compiles ggml's CUDA kernels and takes several minutes. The build
+enables AVX-512 VNNI/BF16/VBMI for Zen 4/5 and Ice Lake or newer; on an older CPU use `.\scripts\build.ps1 -Portable`.
 
 ```powershell
 git clone --recurse-submodules --shallow-submodules -b claude/qwen-custom-inference-engine-jhydpg https://github.com/tony1877/eightfer C:\src\eightfer

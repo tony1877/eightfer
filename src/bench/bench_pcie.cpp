@@ -10,13 +10,108 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <climits>
+#include <unistd.h>
+#endif
 
 namespace e8::bench {
 
 namespace {
+
+ggml_backend_buffer_type_t pinned_buft() {
+    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    return dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
+}
+
+// Pinned memory in 1 GiB chunks; on refusal ggml silently falls back to an ordinary (pageable)
+// CPU buffer, detected by its type. Returns false when the allocation was refused.
+bool alloc_pinned_gib(ggml_backend_buffer_type_t buft, ggml_backend_buffer_t & out) {
+    out = ggml_backend_buft_alloc_buffer(buft, GiB);
+    if (!out || ggml_backend_buffer_get_type(out) != buft) {
+        if (out) {
+            ggml_backend_buffer_free(out);
+        }
+        out = nullptr;
+        return false;
+    }
+    return true;
+}
+
+std::string self_exe() {
+#if defined(_WIN32)
+    wchar_t w[MAX_PATH * 4];
+    const DWORD n = GetModuleFileNameW(nullptr, w, (DWORD) (sizeof(w) / sizeof(w[0])));
+    const int   u = WideCharToMultiByte(CP_UTF8, 0, w, (int) n, nullptr, 0, nullptr, nullptr);
+    std::string s((size_t) u, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, (int) n, s.data(), u, nullptr, nullptr);
+    return s;
+#else
+    char          p[PATH_MAX];
+    const ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
+    return n > 0 ? std::string(p, (size_t) n) : std::string();
+#endif
+}
+
+struct ProbeResult {
+    bool   ok      = false;
+    double gib     = 0;
+    double seconds = 0;
+    bool   refused = false;
+    int    status  = 0;
+};
+
+// Runs `eightfer pinned-probe <target>` and parses its PINNED line.
+ProbeResult run_probe(double target_gib) {
+    ProbeResult       r;
+    const std::string exe = self_exe();
+    if (exe.empty()) {
+        return r;
+    }
+    char cmd[4096];
+#if defined(_WIN32)
+    // cmd.exe strips the outer quotes of a /c line, hence the extra pair
+    snprintf(cmd, sizeof(cmd), "\"\"%s\" pinned-probe %.1f\"", exe.c_str(), target_gib);
+    const int   wn = MultiByteToWideChar(CP_UTF8, 0, cmd, -1, nullptr, 0);
+    std::wstring wcmd((size_t) wn, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, cmd, -1, wcmd.data(), wn);
+    FILE * p = _wpopen(wcmd.c_str(), L"r");
+#else
+    snprintf(cmd, sizeof(cmd), "'%s' pinned-probe %.1f 2>/dev/null", exe.c_str(), target_gib);
+    FILE * p = popen(cmd, "r");
+#endif
+    if (!p) {
+        return r;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), p)) {
+        int refused = 0;
+        if (sscanf(line, "PINNED %lf %lf %d", &r.gib, &r.seconds, &refused) == 3) {
+            r.ok      = true;
+            r.refused = refused != 0;
+        }
+    }
+#if defined(_WIN32)
+    r.status = _pclose(p);
+#else
+    r.status = pclose(p);
+#endif
+    return r;
+}
 
 enum class Dir { H2D, D2H };
 
@@ -53,35 +148,39 @@ void pcie(const Options & opt, const sys::Info & si) {
     // 1. How much pinned memory can we get, and how fast? (cudaMallocHost in 1 GiB chunks)
     double target_gib = opt.pinned_gib;
     if (si.ram_total) {
+#if defined(_WIN32)
+        // WDDM caps the page-locked memory the GPU may use ("shared GPU memory") at half of system RAM:
+        // on 31.2 GiB the 16th GiB was refused.
+        const double wddm_cap = (double) si.ram_total / GiB / 2.0;
+        target_gib            = std::min(target_gib, wddm_cap);
+        printf("[pcie] Windows pinned-memory limit: half of RAM = %.1f GiB\n", wddm_cap);
+#else
         target_gib = std::min(target_gib, (double) si.ram_total / GiB - 6.0);
+#endif
     }
-    std::vector<ggml_backend_buffer_t> chunks;
-    double                             alloc_s = 0;
-    bool                               refused = false;
-    while ((double) chunks.size() < target_gib) {
-        const double          t0 = now_s();
-        ggml_backend_buffer_t b  = ggml_backend_buft_alloc_buffer(host_buft, GiB);
-        alloc_s += now_s() - t0;
-        // on failure ggml silently falls back to an ordinary (pageable) CPU buffer: detect it by type
-        if (!b || ggml_backend_buffer_get_type(b) != host_buft) {
-            if (b) {
-                ggml_backend_buffer_free(b);
-            }
-            refused = true;
-            break;
-        }
-        chunks.push_back(b);
+    if (si.ram_avail) {
+        // leave the OS and everything else running at least 4 GiB
+        target_gib = std::min(target_gib, (double) si.ram_avail / GiB - 4.0);
     }
-    printf("[pcie] pinned alloc: %zu GiB in %.2f s (%.0f ms/GiB)%s\n", chunks.size(), alloc_s,
-           chunks.empty() ? 0.0 : alloc_s * 1e3 / (double) chunks.size(), refused ? "  <- refused beyond this" : "");
-    if (chunks.empty()) {
+    // The capacity probe runs in a child process. With ~15 GiB pinned on Windows (31 GiB RAM), freeing
+    // the chunks failed - cudaFreeHost returned "out of memory" and ggml aborted the whole bench - even
+    // when no allocation had been refused. The child reports and exits without freeing; the OS reclaims
+    // its pinned memory. The transfer tests below then use one 1 GiB chunk, which frees cleanly.
+    const ProbeResult probe = run_probe(target_gib);
+    if (probe.ok) {
+        printf("[pcie] pinned alloc: %.0f GiB in %.2f s (%.0f ms/GiB)%s\n", probe.gib, probe.seconds,
+               probe.gib > 0 ? probe.seconds * 1e3 / probe.gib : 0.0, probe.refused ? "  <- refused beyond this" : "");
+    } else {
+        printf("[pcie] pinned-capacity probe failed (child exit status %d)\n", probe.status);
+    }
+
+    ggml_backend_buffer_t chunk = nullptr;
+    if (!alloc_pinned_gib(host_buft, chunk)) {
+        printf("[pcie] cannot pin 1 GiB for the transfer tests - skipped\n");
         return;
     }
-    while (chunks.size() > 1) {
-        ggml_backend_buffer_free(chunks.back());
-        chunks.pop_back();
-    }
-    void * pinned = ggml_backend_buffer_get_base(chunks[0]);
+    std::vector<ggml_backend_buffer_t> chunks = { chunk };
+    void *                             pinned = ggml_backend_buffer_get_base(chunks[0]);
     std::memset(pinned, 3, GiB);
 
     // 2. A 1 GiB device tensor to copy into.
@@ -136,6 +235,31 @@ void pcie(const Options & opt, const sys::Info & si) {
     ggml_backend_buffer_free(db);
     ggml_free(ctx);
     ggml_backend_buffer_free(chunks[0]);
+}
+
+void pinned_probe(double target_gib) {
+    ggml_backend_buffer_type_t         buft = pinned_buft();
+    std::vector<ggml_backend_buffer_t> chunks;
+    double                             secs    = 0;
+    bool                               refused = false;
+    while (buft && (double) (chunks.size() + 1) <= target_gib) {
+        const double          t0 = now_s();
+        ggml_backend_buffer_t b  = nullptr;
+        const bool            ok = alloc_pinned_gib(buft, b);
+        secs += now_s() - t0;
+        if (!ok) {
+            refused = true;
+            break;
+        }
+        chunks.push_back(b);
+    }
+    printf("PINNED %zu %.3f %d\n", chunks.size(), secs, refused ? 1 : 0);
+    fflush(stdout);
+    // Exit without freeing: freeing near the pinned limit is what aborted the bench.
+#if defined(_WIN32)
+    TerminateProcess(GetCurrentProcess(), 0);
+#endif
+    _exit(0);
 }
 
 } // namespace e8::bench

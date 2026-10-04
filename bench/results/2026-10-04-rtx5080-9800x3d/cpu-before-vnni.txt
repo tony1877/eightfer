@@ -1,0 +1,17 @@
+eightfer 0.1.0 bench, first build WITHOUT AVX-512 VNNI/BF16 (ggml MSVC default) - cpu section only; the run then aborted in [pcie]
+[cpu] AVX2 1  AVX512 1  AVX512_VNNI 0  AVX512_BF16 0
+[device 0] CUDA0: NVIDIA GeForce RTX 5080, 14.63 / 15.89 GiB free
+[device 1] CPU: AMD Ryzen 7 9800X3D 8-Core Processor           , 20.57 / 31.18 GiB free
+[ram] read bandwidth, 4.0 GiB buffer
+   1 threads    44.1 GB/s
+   2 threads    60.3 GB/s
+   4 threads    61.1 GB/s
+   8 threads    60.2 GB/s
+  16 threads    61.6 GB/s
+[cpu-gemv] ggml CPU kernels, weights [5120 x 17408] per matrix, ~2.15 GB per pass
+  cpu  q4_K    CPU        t=8  N=1     34.14 ms    61.7 GB/s    34.14 ms/token
+  cpu  q4_K    CPU        t=8  N=9    130.47 ms    16.1 GB/s    14.50 ms/token
+  cpu  iq4_xs  CPU        t=8  N=1     34.64 ms    61.5 GB/s    34.64 ms/token
+  cpu  q4_K    CPU_REPACK t=8  N=1     34.57 ms    60.9 GB/s    34.57 ms/token
+  cpu  q4_K    CPU_REPACK t=8  N=9     60.83 ms    34.6 GB/s     6.76 ms/token
+  cpu  q4_K    CPU_REPACK t=16 N=9     54.58 ms    38.6 GB/s     6.06 ms/token

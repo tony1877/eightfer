@@ -1,0 +1,36 @@
+eightfer 0.1.0 bench  (ggml 0.25.3 @ 836d57176)
+[system] Windows 11 build 26200 | AMD Ryzen 7 9800X3D 8-Core Processor | 8 cores / 16 threads | RAM 31.2 GiB (21.9 GiB free)
+[cpu] AVX2 1  AVX512 1  AVX512_VNNI 1  AVX512_BF16 1
+[device 0] CUDA0: NVIDIA GeForce RTX 5080, 14.63 / 15.89 GiB free
+[device 1] CPU: AMD Ryzen 7 9800X3D 8-Core Processor           , 21.82 / 31.18 GiB free
+[ram] read bandwidth, 4.0 GiB buffer
+   1 threads    48.3 GB/s
+   2 threads    61.4 GB/s
+   4 threads    62.1 GB/s
+   8 threads    61.4 GB/s
+  16 threads    62.1 GB/s
+[cpu-gemv] ggml CPU kernels, weights [5120 x 17408] per matrix, ~2.15 GB per pass
+  cpu  q4_K    CPU        t=8  N=1     34.06 ms    61.8 GB/s    34.06 ms/token
+  cpu  q4_K    CPU        t=8  N=9     81.02 ms    26.0 GB/s     9.00 ms/token
+  cpu  iq4_xs  CPU        t=8  N=1     34.59 ms    61.6 GB/s    34.59 ms/token
+  cpu  q4_K    CPU_REPACK t=8  N=1     34.36 ms    61.3 GB/s    34.36 ms/token
+  cpu  q4_K    CPU_REPACK t=8  N=9     60.22 ms    35.0 GB/s     6.69 ms/token
+  cpu  q4_K    CPU_REPACK t=16 N=9     54.39 ms    38.7 GB/s     6.04 ms/token
+[gpu-gemv] NVIDIA GeForce RTX 5080, VRAM free 14.63 / 15.89 GiB
+  gpu  iq4_xs             N=1      2.59 ms   822.0 GB/s     2.59 ms/token
+  gpu  iq4_xs             N=2      2.59 ms   821.7 GB/s     1.30 ms/token
+  gpu  iq4_xs             N=4      2.68 ms   794.0 GB/s     0.67 ms/token
+  gpu  iq4_xs             N=8      3.41 ms   624.0 GB/s     0.43 ms/token
+  gpu  iq4_xs             N=9      3.12 ms   683.8 GB/s     0.35 ms/token
+  gpu  iq4_xs             N=16     3.15 ms   677.4 GB/s     0.20 ms/token
+  gpu  q4_K               N=1      2.52 ms   834.1 GB/s     2.52 ms/token
+  gpu  q4_K               N=9      3.12 ms   675.9 GB/s     0.35 ms/token
+  gpu  q8_0               N=1      2.41 ms   864.3 GB/s     2.41 ms/token
+[pcie] Windows pinned-memory limit: half of RAM = 15.6 GiB
+[pcie] pinned alloc: 15 GiB in 1.69 s (113 ms/GiB)
+  pinned       2.5 MiB  H2D  50.8 GB/s  D2H  51.5 GB/s
+  pinned      64.0 MiB  H2D  55.9 GB/s  D2H  56.1 GB/s
+  pinned    1024.0 MiB  H2D  57.5 GB/s  D2H  57.2 GB/s
+  pageable  1024.0 MiB  H2D  22.4 GB/s
+  concurrent: CPU read 43.9 GB/s (solo 62.4) + H2D 36.5 GB/s (solo 57.6) = 80.4 GB/s from RAM
+[done]

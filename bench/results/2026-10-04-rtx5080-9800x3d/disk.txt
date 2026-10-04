@@ -1,0 +1,14 @@
+eightfer 0.1.0 bench --only pcie,disk --pinned-gb 8 --disk C:\ --disk E:\  (disk section; ggml 0.25.3 @ 836d57176)
+[disk] unbuffered reads, 1.5 s per test
+  C:\  writing 4.0 GiB test file...
+  E:\  writing 4.0 GiB test file...
+  C:\  WD_BLACK SN850X 1000GB [NVMe]  (test file written at 5.83 GB/s)
+    seq 4 MiB      QD8     7.29 GB/s
+    rand 2.5 MiB   QD1   5.24 GB/s (0.50 ms)  QD4   7.04 GB/s QD16  7.08 GB/s QD64  7.05 GB/s
+    rand 4 KiB     QD1     17.5k IOPS (57 us) QD32   227.8k IOPS (108 us)
+  E:\  Samsung SSD 980 PRO 500GB [NVMe]  (test file written at 2.57 GB/s)
+    seq 4 MiB      QD8     6.39 GB/s
+    rand 2.5 MiB   QD1   3.86 GB/s (0.68 ms)  QD4   5.88 GB/s QD16  5.89 GB/s QD64  5.80 GB/s
+    rand 4 KiB     QD1     14.4k IOPS (69 us) QD32   202.3k IOPS (118 us)
+  all drives at once, rand 2.5 MiB QD32 each: 12.45 GB/s total  (C:\ 6.57, E:\ 5.88)
+[done]
