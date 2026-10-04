@@ -16,14 +16,21 @@ if (NOT EXISTS ${E8_LLAMA_DIR}/ggml/CMakeLists.txt)
     message(FATAL_ERROR "ggml submodule missing. Run: git submodule update --init --depth 1")
 endif()
 
-# ggml (tensor library, CPU + CUDA kernels) from the pinned llama.cpp submodule.
-# Static, no tests/examples; only targets we link get built.
+# ggml (tensor library, CPU + CUDA kernels), libllama (tokenizer, vocab only) and llama-common (Jinja chat templates,
+# reasoning / tool-call parsing for the server) from the pinned llama.cpp submodule. Static; none of llama.cpp's
+# tools, tests or examples; only targets we link get built.
 set(BUILD_SHARED_LIBS OFF)
 set(GGML_CUDA ${EIGHTFER_CUDA} CACHE BOOL "" FORCE)
 # CUDA graphs: llama.cpp's top-level CMake defaults them ON, ggml alone defaults OFF. Without them every decode
 # step pays one launch per kernel (thousands per token on WDDM).
 set(GGML_CUDA_GRAPHS ON CACHE BOOL "" FORCE)
-add_subdirectory(${E8_LLAMA_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+foreach (opt LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_EXAMPLES LLAMA_BUILD_SERVER LLAMA_BUILD_APP LLAMA_BUILD_UI
+             LLAMA_OPENSSL LLAMA_SUBPROCESS LLAMA_LLGUIDANCE)
+    set(${opt} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
+set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)  # llama.cpp turns it on; it does not build under MSVC with AVX512_BF16
+add_subdirectory(${E8_LLAMA_DIR} ${CMAKE_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
 
 if (MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
