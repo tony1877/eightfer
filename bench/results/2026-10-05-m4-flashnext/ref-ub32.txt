@@ -1,0 +1,52 @@
+0.00.666.613 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.09.214.186 I cmn          init: llama threadpool init, n_threads = 16
+0.10.116.594 I 
+0.10.116.784 I system_info: n_threads = 16 (n_threads_batch = 16) / 16 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | OPENMP = 1 | REPACK = 1 | 
+0.10.137.604 I kl_divergence: computing over 2 chunks, n_ctx=512, batch_size=512, n_seq=1
+1.87 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1       2.7485 ±    0.4710       0.02614 ±    0.01641       0.01861 ±    0.00291     3.849 ±  0.536 %    97.255 ±  1.025 %
+   2       4.1694 ±    0.5738       0.01279 ±    0.01543       0.03187 ±    0.00361     4.252 ±  0.423 %    95.098 ±  0.957 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :   4.169389 ±   0.573828
+Mean PPL(base)                :   4.116415 ±   0.564431
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.37%
+Mean ln(PPL(Q)/PPL(base))     :   0.012787 ±   0.015434
+Mean PPL(Q)/PPL(base)         :   1.012869 ±   0.015633
+Mean PPL(Q)-PPL(base)         :   0.052974 ±   0.064594
+
+====== KL divergence statistics ======
+Mean    KLD:   0.031871 ±   0.003612
+Maximum KLD:   1.033887
+99.9%   KLD:   0.855565
+99.0%   KLD:   0.343509
+95.0%   KLD:   0.177295
+90.0%   KLD:   0.090572
+Median  KLD:   0.000878
+10.0%   KLD:   0.000003
+ 5.0%   KLD:   0.000000
+ 1.0%   KLD:  -0.000020
+ 0.1%   KLD:  -0.000043
+Minimum KLD:  -0.000047
+
+====== Token probability statistics ======
+Mean    Δp:  0.064 ± 0.188 %
+Maximum Δp: 26.125%
+99.9%   Δp: 25.034%
+99.0%   Δp: 16.191%
+95.0%   Δp:  4.697%
+90.0%   Δp:  1.773%
+75.0%   Δp:  0.072%
+Median  Δp:  0.000%
+25.0%   Δp: -0.059%
+10.0%   Δp: -0.912%
+ 5.0%   Δp: -4.447%
+ 1.0%   Δp: -15.582%
+ 0.1%   Δp: -28.147%
+Minimum Δp: -29.282%
+RMS Δp    :  4.252 ± 0.423 %
+Same top p: 95.098 ± 0.957 %
+
+1.06.513.077 I kl_divergence: 56.37 seconds per pass - ETA 

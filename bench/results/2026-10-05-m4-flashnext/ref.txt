@@ -1,0 +1,12 @@
+0.00.668.127 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.09.235.532 I cmn          init: llama threadpool init, n_threads = 16
+0.09.856.286 I 
+0.09.856.621 I system_info: n_threads = 16 (n_threads_batch = 16) / 16 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | OPENMP = 1 | REPACK = 1 | 
+0.09.856.940 I perplexity: saving all logits to E:\eightfer\flash\ref.kld
+0.09.857.091 I perplexity: tokenizing the input ..
+0.09.916.087 I perplexity: tokenization took 58.989 ms
+0.09.916.246 I perplexity: calculating perplexity over 2 chunks, n_ctx=512, batch_size=512, n_seq=1
+1.23 minutes
+0.47.399.338 I perplexity: 37.44 seconds per pass - ETA 1.12.503.701 I Final estimate: PPL = 4.1164 +/- 0.56443
+[1]2.6776,[2]4.1164,
+
