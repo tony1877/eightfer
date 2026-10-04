@@ -45,6 +45,8 @@ public:
     ggml_tensor *       tensor(int64_t i) const;
     // Absolute file offset of a tensor's data.
     uint64_t            data_offset(const ggml_tensor * t) const;
+    // The underlying gguf context (e.g. to copy all key/values into a new file).
+    const gguf_context * raw() const { return gguf_; }
     uint64_t            file_size() const { return file_size_; }
 
 private:

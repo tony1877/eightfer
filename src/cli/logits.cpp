@@ -35,7 +35,7 @@ std::vector<int32_t> read_token_ids(const std::string & path) {
 }
 
 int logits(const std::vector<std::string> & args) {
-    std::string model, tokens_path, out_path;
+    std::string model, tokens_path, out_path, res_path;
     std::string kv = "f16";
     int         gpu_layers = 0, batch = 512;
     for (size_t i = 2; i < args.size(); i++) {
@@ -46,11 +46,13 @@ int logits(const std::vector<std::string> & args) {
         else if (k == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (k == "--batch") batch = std::atoi(val().c_str());
         else if (k == "--kv") kv = val();
+        else if (k == "--res") res_path = val();
         else if (model.empty() && k[0] != '-') model = k;
     }
     const std::vector<int32_t> toks = read_token_ids(tokens_path);
     if (model.empty() || out_path.empty() || toks.empty() || batch < 1) {
-        fprintf(stderr, "usage: eightfer logits <model.gguf> --tokens <ids.txt> --out <file> [--gpu-layers N] [--batch B]\n");
+        fprintf(stderr, "usage: eightfer logits <model.gguf> --tokens <ids.txt> --out <file> [--gpu-layers N] [--batch B]\n"
+                        "                       [--kv f16|f32] [--res <pack .res.gguf>]\n");
         return 1;
     }
     model::LoadOptions o;
@@ -59,6 +61,7 @@ int logits(const std::vector<std::string> & args) {
     o.n_ctx        = (int) toks.size();
     o.n_ubatch     = batch;
     o.kv_type      = kv == "f32" ? GGML_TYPE_F32 : GGML_TYPE_F16;
+    o.residual_path = res_path;
     model::Qwen35 m;
     std::string   err;
     if (!m.load(model, o, err)) {

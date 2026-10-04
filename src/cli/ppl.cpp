@@ -100,7 +100,7 @@ ggml_type kv_type(const std::string & s) {
 } // namespace
 
 int ppl(const std::vector<std::string> & args) {
-    std::string model, tokens_path, kld_path, kv = "f16";
+    std::string model, tokens_path, kld_path, res_path, kv = "f16";
     int         n_ctx = 512, n_chunks = -1, gpu_layers = 0, threads = 0, n_batch = 512;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & k   = args[i];
@@ -113,6 +113,7 @@ int ppl(const std::vector<std::string> & args) {
         else if (k == "--threads") threads = std::atoi(val().c_str());
         else if (k == "--batch") n_batch = std::atoi(val().c_str());
         else if (k == "--kv") kv = val();
+        else if (k == "--res") res_path = val();
         else if (model.empty() && k[0] != '-') model = k;
         else {
             fprintf(stderr, "unknown option: %s\n", k.c_str());
@@ -121,7 +122,7 @@ int ppl(const std::vector<std::string> & args) {
     }
     if (model.empty() || (tokens_path.empty() && kld_path.empty()) || n_ctx < 16 || n_batch < 1) {
         fprintf(stderr, "usage: eightfer ppl <model.gguf> --tokens <ids.txt> [--ctx 512] [--chunks N] [--gpu-layers N]\n"
-                        "                    [--batch 512] [--kv f16|q8_0|q4_0] [--threads N]\n"
+                        "                    [--batch 512] [--kv f16|q8_0|q4_0] [--threads N] [--res <pack .res.gguf>]\n"
                         "       eightfer ppl <model.gguf> --kld-base <llama-perplexity logits file> [...]\n"
                         "                    (tokens and ctx from the file; adds KL divergence vs llama.cpp)\n");
         return 1;
@@ -154,6 +155,7 @@ int ppl(const std::vector<std::string> & args) {
     o.n_threads    = threads;
     o.kv_type      = kv_type(kv);
     o.n_ubatch     = std::min(n_batch, n_ctx);
+    o.residual_path = res_path;
     model::Qwen35 m;
     const auto    t_load = std::chrono::steady_clock::now();
     if (!m.load(model, o, err)) {
@@ -165,6 +167,9 @@ int ppl(const std::vector<std::string> & args) {
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count(), (long long) hp.n_layer,
             gpu_layers, (double) m.gpu_weight_bytes() / 1e9, (double) m.cpu_weight_bytes() / 1e9, (long long) hp.n_vocab,
             hp.add_bos ? 1 : 0);
+    if (m.has_residual()) {
+        fprintf(stderr, "residual: %.2f GB (host)\n", (double) m.residual_bytes() / 1e9);
+    }
     fprintf(stderr, "perplexity: %zu tokens, %d chunks of %d, batch %d\n", toks.size(), n_chunks, n_ctx, o.n_ubatch);
 
     const int          first = n_ctx / 2;

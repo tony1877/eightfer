@@ -32,6 +32,9 @@ target_include_directories(e8_io PUBLIC src)
 add_library(e8_model STATIC
     src/model/gguf_file.cpp
     src/model/qwen35.cpp
+    src/model/safetensors.cpp
+    src/util/json.cpp
+    src/runtime/spec.cpp
 )
 target_include_directories(e8_model PUBLIC src)
 target_link_libraries(e8_model PUBLIC ggml)
@@ -40,6 +43,8 @@ add_executable(eightfer
     src/main.cpp
     src/cli/info.cpp
     src/cli/logits.cpp
+    src/cli/pack.cpp
+    src/cli/gen.cpp
     src/cli/ppl.cpp
     src/cli/selftest.cpp
     src/bench/bench.cpp
