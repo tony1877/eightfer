@@ -1,11 +1,14 @@
 #include "model/qwen35.h"
 
+#include "kernels/q4k_small.h"
+
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -162,7 +165,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
         err = "cannot initialize the CPU backend";
         return false;
     }
-    int threads = opt.n_threads > 0 ? opt.n_threads : (int) std::max(1u, std::thread::hardware_concurrency() / 2);
+    int threads = opt.n_threads > 0 ? opt.n_threads : (int) std::max(1u, std::thread::hardware_concurrency());
     ggml_backend_cpu_set_n_threads(cpu_, threads);
     if (ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) {
         gpu_ = ggml_backend_dev_init(dev, nullptr);
@@ -385,7 +388,12 @@ ggml_tensor * Qwen35::mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x) {
     if (use_res_) {
         auto it = res_.find(w);
         if (it != res_.end()) {
-            y = ggml_add(ctx, y, ggml_mul_mat(ctx, it->second, x));
+            // small batches (decode, speculative verify): one-pass multi-column Q4_K kernel on the CPU; big batches:
+            // ggml mul_mat, which the scheduler streams to the GPU
+            static const bool small_ok = std::getenv("E8_NO_SMALL_GEMM") == nullptr;
+            ggml_tensor *     r        = it->second;
+            y = ggml_add(ctx, y, small_ok && kernels::q4k_small_supported(r, x) ? kernels::q4k_mul_mat_small(ctx, r, x)
+                                                                                : ggml_mul_mat(ctx, r, x));
         }
     }
     return y;
@@ -507,7 +515,8 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
     const float   eps = h.rms_eps;
     const int64_t hd  = h.head_dim;
 
-    inp_tok = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n);
+    // embeddings are looked up on the host (eval()), so a fully offloaded graph has no CPU split
+    inp_tok = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, n);
     ggml_set_input(inp_tok);
     inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) n * 4);
     ggml_set_input(inp_pos);
@@ -516,7 +525,7 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
 
     auto norm = [&](ggml_tensor * x, ggml_tensor * w) { return ggml_mul(ctx, ggml_rms_norm(ctx, x, eps), w); };
 
-    ggml_tensor * inpL = ggml_get_rows(ctx, tok_embd_, inp_tok);
+    ggml_tensor * inpL = inp_tok;
     int sections[4] = { h.rope_sections[0], h.rope_sections[1], h.rope_sections[2], h.rope_sections[3] };
 
     for (int64_t il = 0; il < h.n_layer; il++) {
@@ -645,7 +654,23 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
         err = "eval: cannot allocate the compute graph";
         return false;
     }
-    ggml_backend_tensor_set(inp_tok, tokens, 0, sizeof(int32_t) * (size_t) n);
+    {
+        const int64_t            ne  = hp_.n_embd;
+        const size_t             rs  = ggml_row_size(tok_embd_->type, ne);
+        const ggml_type_traits * tt  = ggml_get_type_traits(tok_embd_->type);
+        std::vector<float>       emb((size_t) (ne * n));
+        for (int i = 0; i < n; i++) {
+            if (tokens[i] < 0 || tokens[i] >= hp_.n_vocab) {
+                ggml_free(ctx);
+                err = "eval: token id out of range";
+                return false;
+            }
+            const char * row = (const char *) tok_embd_->data + rs * (size_t) tokens[i];
+            if (tok_embd_->type == GGML_TYPE_F32) std::memcpy(emb.data() + (size_t) i * ne, row, sizeof(float) * ne);
+            else tt->to_float(row, emb.data() + (size_t) i * ne, ne);
+        }
+        ggml_backend_tensor_set(inp_tok, emb.data(), 0, emb.size() * sizeof(float));
+    }
     // text-only M-RoPE positions: three identical sections, the fourth zero (llama.cpp llm_graph_input_pos)
     std::vector<int32_t> pos((size_t) n * 4, 0);
     for (int i = 0; i < n; i++) {

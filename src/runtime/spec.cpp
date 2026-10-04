@@ -12,8 +12,32 @@ double now() {
 }
 } // namespace
 
-SpecDecoder::SpecDecoder(model::Qwen35 & m, int k, const SamplerParams & sp) :
-    m_(m), k_(std::max(0, k)), sp_(sp), rng_(sp.seed ? sp.seed : std::random_device{}()) {}
+SpecDecoder::SpecDecoder(model::Qwen35 & m, int k, const SamplerParams & sp, bool adaptive) :
+    m_(m), k_(std::min(std::max(0, k), 15)), adaptive_(adaptive && k > 0), sp_(sp),
+    rng_(sp.seed ? sp.seed : std::random_device{}()) {}
+
+int SpecDecoder::choose_k() const {
+    // per-token acceptance from decayed counts of accepted drafts and first rejections (geometric model)
+    const double alpha = std::clamp(acc_n_ / (acc_n_ + rej_n_), 0.05, 0.995);
+    // verify cost a + b*k; before enough data, assume the measured 27B shape (b ~ 3% of a per token)
+    double a = 350, b = 12;
+    const double det = vs_ * vskk_ - vsk_ * vsk_;
+    if (vs_ > 3 && det > 1e-6) {
+        b = std::max(0.0, (vs_ * vskt_ - vsk_ * vst_) / det);
+        a = std::max(1.0, (vst_ - b * vsk_) / vs_);
+    }
+    int    best = 1;
+    double best_rate = 0;
+    for (int k = 1; k <= k_; k++) {
+        const double tokens = (1 - std::pow(alpha, k + 1)) / (1 - alpha);  // accepted drafts + 1
+        const double rate   = tokens / (k * draft_ms_ + a + b * k);
+        if (rate > best_rate) {
+            best_rate = rate;
+            best      = k;
+        }
+    }
+    return best;
+}
 
 void SpecDecoder::dist(const float * logits, std::vector<std::pair<float, int32_t>> & p) {
     const int32_t nv = (int32_t) m_.hp().n_vocab;
@@ -122,11 +146,13 @@ bool SpecDecoder::prefill(const std::vector<int32_t> & prompt, std::vector<int32
 
 bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     const int64_t nv = m_.hp().n_vocab;
+    const int     k_ = adaptive_ ? choose_k() : this->k_;
     if (m_.n_past() + k_ + 1 > m_.n_ctx()) {
         err = "context full";
         return false;
     }
     st_.cycles++;
+    st_.k_hist[k_]++;
     if (k_ == 0) {
         const double t0 = now();
         if (!m_.eval(&last_, 1, model::EvalOpts{}, logits_.data(), nullptr, err)) return false;
@@ -137,20 +163,40 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         return true;
     }
 
-    // draft k tokens with the base alone, from the committed state
+    // draft k tokens with the base alone, from the committed state. Greedy: argmax on the GPU. Sampling: draw from the
+    // base's own sampling distribution q and keep q for the acceptance test.
     double t0 = now();
     m_.save_state();
     std::vector<int32_t> toks(1, last_);
     model::EvalOpts      dopt;
-    dopt.residual = false;
-    dopt.argmax   = true;
+    dopt.residual          = false;
+    const bool sampled     = sp_.temp > 0;
+    dopt.argmax            = !sampled;
+    using Dist             = std::vector<std::pair<float, int32_t>>;
+    std::vector<Dist> qd(sampled ? (size_t) k_ : 0);
+    std::vector<float> dl(sampled ? (size_t) nv : 0);
     for (int i = 0; i < k_; i++) {
         int32_t id = -1;
-        if (!m_.eval(&toks.back(), 1, dopt, nullptr, &id, err)) return false;
+        if (!m_.eval(&toks.back(), 1, dopt, sampled ? dl.data() : nullptr, &id, err)) return false;
+        if (sampled) {
+            dist(dl.data(), qd[(size_t) i]);
+            std::uniform_real_distribution<double> uq(0.0, 1.0);
+            double r = uq(rng_);
+            id       = qd[(size_t) i].back().second;
+            for (auto & e : qd[(size_t) i]) {
+                r -= e.first;
+                if (r <= 0) {
+                    id = e.second;
+                    break;
+                }
+            }
+        }
         toks.push_back(id);
     }
     m_.restore_state();
-    st_.t_draft += now() - t0;
+    const double td = now() - t0;
+    st_.t_draft += td;
+    draft_ms_ = 0.8 * draft_ms_ + 0.2 * (1e3 * td / k_);
     st_.drafted += k_;
 
     // verify all k + 1 positions with base + residual
@@ -159,20 +205,69 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     model::EvalOpts    vopt;
     vopt.record = true;
     if (!m_.eval(toks.data(), k_ + 1, vopt, lg.data(), nullptr, err)) return false;
-    st_.t_verify += now() - t0;
+    const double tv = 1e3 * (now() - t0);
+    st_.t_verify += tv / 1e3;
+    {
+        const double d = 0.9;  // decayed least squares of verify ms on k
+        vs_   = d * vs_ + 1;
+        vsk_  = d * vsk_ + k_;
+        vskk_ = d * vskk_ + (double) k_ * k_;
+        vst_  = d * vst_ + tv;
+        vskt_ = d * vskt_ + k_ * tv;
+    }
 
     int                                    acc  = 0;
     int32_t                                next = -1;
     std::uniform_real_distribution<double> u(0.0, 1.0);
     for (; acc < k_; acc++) {
-        const float * L  = lg.data() + (size_t) acc * nv;
-        const int32_t d  = toks[(size_t) acc + 1];
-        const double  pd = prob(L, d);
-        if (pd >= 1.0 || (pd > 0 && u(rng_) < pd)) {
+        const float * L = lg.data() + (size_t) acc * nv;
+        const int32_t d = toks[(size_t) acc + 1];
+        if (!sampled) {
+            // deterministic draft (q = delta at d): accept with p(d), else resample from p without d
+            const double pd = prob(L, d);
+            if (pd >= 1.0 || (pd > 0 && u(rng_) < pd)) {
+                out.push_back(d);
+                continue;
+            }
+            next = sample(L, d);
+            break;
+        }
+        // sampled draft: accept with min(1, p(d)/q(d)), else resample from max(0, p - q) normalised
+        Dist pdist;
+        dist(L, pdist);
+        const Dist & q  = qd[(size_t) acc];
+        auto         at = [](const Dist & v, int32_t t) {
+            for (auto & e : v) {
+                if (e.second == t) return (double) e.first;
+            }
+            return 0.0;
+        };
+        const double pd = at(pdist, d), qv = at(q, d);
+        if (qv > 0 && u(rng_) * qv < pd) {
             out.push_back(d);
             continue;
         }
-        next = sample(L, d);  // rejected: resample from p without d
+        std::vector<std::pair<double, int32_t>> resid;
+        double                                  tot = 0;
+        for (auto & e : pdist) {
+            const double r = e.first - at(q, e.second);
+            if (r > 0) {
+                resid.emplace_back(r, e.second);
+                tot += r;
+            }
+        }
+        next = pdist.front().second;
+        if (tot > 0) {
+            double r = u(rng_) * tot;
+            for (auto & e : resid) {
+                r -= e.first;
+                if (r <= 0) {
+                    next = e.second;
+                    break;
+                }
+            }
+            if (r > 0) next = resid.back().second;
+        }
         break;
     }
     if (acc == k_) {
@@ -181,6 +276,8 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     out.push_back(next);
     st_.accepted += acc;
     st_.emitted += acc + 1;
+    acc_n_ = 0.9 * acc_n_ + acc;
+    rej_n_ = 0.9 * rej_n_ + (acc < k_ ? 1 : 0);
 
     t0 = now();
     if (!m_.rollback(acc + 1, err)) return false;  // keep last_ and the accepted drafts

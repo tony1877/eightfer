@@ -48,3 +48,29 @@ Acceptance is at or above the DESIGN's best row (0.95). The verify pass is the g
 against 250 ms estimated, because the CPU matmul over the plain (non-repacked) Q4_K residual is compute-bound and
 scales with the column count. Next: a faster residual GEMM (repacked layout or a custom AVX-512 VNNI kernel), and
 splitting the verify so the GPU base pass and CPU residual pass overlap.
+
+## After the verify fixes (same day)
+
+Changes: a one-pass multi-column Q4_K kernel for the residual (`src/kernels/q4k_small.cpp`, maddubs/madd, two rows
+per pass), 16 CPU threads by default (SMT gains ~10% on the residual pass), host-side embedding lookup, adaptive k
+(`--spec auto`) and sampled drafts for temperature sampling (accept with min(1, p/q), resample from max(0, p - q)).
+
+Verify of 7 tokens: 577 ms -> 383 ms. The residual pass is now at the CPU's all-core AVX-512 ceiling
+(`eightfer selftest --kernel-bench`: ~30 GB/s at 9 columns on 8 threads, ~41 GB/s on 16; it scales linearly to 4
+cores and then flattens, so it is power/clock limited rather than memory limited).
+
+| Prompt | greedy, auto k | temp 1.0 / top-p 0.95 / top-k 20, auto k | acceptance (sampled) | before (greedy, best k) |
+|---|---|---|---|---|
+| code | 14.1 tok/s | **14.4** | 0.90 | 9.8 |
+| reasoning | 14.4 | **15.1** | 0.94 | 10.4 |
+| prose | 11.2 | **13.0** | 0.81 | 9.2 |
+| explain | 13.7 | **14.3** | 0.90 | 9.5 |
+
+Plain base + residual decoding: 3.1 tok/s, so speculation gives 4.0-4.8x. Greedy outputs stay identical to plain
+decoding (`--compare`), apart from near-ties within GPU batch-shape noise.
+
+Before the sampled draft, a greedy draft under temp 1.0 accepted only 0.55-0.77 (7.8-12 tok/s).
+
+Remaining: drafting is 24 ms/token (13.7 GB at ~570 GB/s vs 822 GB/s measured), and the GPU idles during the
+~400 ms residual pass; drafting the next cycle during the verify would hide ~280 ms per cycle when all drafts are
+accepted.

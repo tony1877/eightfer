@@ -7,12 +7,13 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tests" / "tiny" / "out"
+BATCH = int(sys.argv[1]) if len(sys.argv) > 1 else 64
 E8 = str(ROOT / "build" / "bin" / "eightfer.exe")
 
 
 def logits(gguf, extra, tag):
     out = OUT / f"split-{tag}.f32"
-    subprocess.run([E8, "logits", str(gguf), "--tokens", str(OUT / "tokens.txt"), "--out", str(out), "--batch", "64",
+    subprocess.run([E8, "logits", str(gguf), "--tokens", str(OUT / "tokens.txt"), "--out", str(out), "--batch", str(BATCH),
                     *extra], check=True, stdout=subprocess.DEVNULL)
     return np.fromfile(out, dtype=np.float32)
 

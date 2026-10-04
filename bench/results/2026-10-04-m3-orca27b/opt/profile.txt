@@ -1,0 +1,17 @@
+
+== threads 8, k 0
+profile: 1 tokens, base only, argmax: best 23.1 ms, mean 29.6 ms
+profile: 1 tokens, base + residual, logits: best 291.6 ms, mean 299.9 ms
+profile: 1 tokens, base + residual, logits: best 293.5 ms, mean 305.4 ms
+== threads 8, k 6
+profile: 7 tokens, base only, argmax: best 28.0 ms, mean 31.0 ms
+profile: 7 tokens, base + residual, logits: best 407.3 ms, mean 437.8 ms
+profile: 7 tokens, base + residual, logits: best 444.5 ms, mean 457.3 ms
+== threads 16, k 0
+profile: 1 tokens, base only, argmax: best 23.0 ms, mean 29.9 ms
+profile: 1 tokens, base + residual, logits: best 297.9 ms, mean 303.1 ms
+profile: 1 tokens, base + residual, logits: best 304.8 ms, mean 315.0 ms
+== threads 16, k 6
+profile: 7 tokens, base only, argmax: best 28.9 ms, mean 32.9 ms
+profile: 7 tokens, base + residual, logits: best 369.8 ms, mean 391.7 ms
+profile: 7 tokens, base + residual, logits: best 380.6 ms, mean 396.3 ms

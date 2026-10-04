@@ -35,9 +35,10 @@ add_library(e8_model STATIC
     src/model/safetensors.cpp
     src/util/json.cpp
     src/runtime/spec.cpp
+    src/kernels/q4k_small.cpp
 )
 target_include_directories(e8_model PUBLIC src)
-target_link_libraries(e8_model PUBLIC ggml)
+target_link_libraries(e8_model PUBLIC ggml ggml-cpu)
 
 add_executable(eightfer
     src/main.cpp
