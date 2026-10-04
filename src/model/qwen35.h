@@ -90,6 +90,8 @@ struct LoadOptions {
     int       n_ubatch     = 512;   // most tokens per eval() call
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
+    double    expert_cache_gb = -1; // MoE models: VRAM for the GPU expert cache; < 0 = auto, 0 = off
+    bool      experts_gpu  = false; // MoE models: all experts of GPU layers in VRAM (small models / tests)
 };
 
 class Qwen35 : public CausalLM {

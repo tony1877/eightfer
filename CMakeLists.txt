@@ -20,6 +20,9 @@ endif()
 # Static, no tests/examples; only targets we link get built.
 set(BUILD_SHARED_LIBS OFF)
 set(GGML_CUDA ${EIGHTFER_CUDA} CACHE BOOL "" FORCE)
+# CUDA graphs: llama.cpp's top-level CMake defaults them ON, ggml alone defaults OFF. Without them every decode
+# step pays one launch per kernel (thousands per token on WDDM).
+set(GGML_CUDA_GRAPHS ON CACHE BOOL "" FORCE)
 add_subdirectory(${E8_LLAMA_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
 
 if (MSVC)
@@ -39,6 +42,7 @@ add_library(e8_model STATIC
     src/util/json.cpp
     src/runtime/spec.cpp
     src/kernels/q4k_small.cpp
+    src/kernels/moe_cpu.cpp
 )
 target_include_directories(e8_model PUBLIC src)
 target_link_libraries(e8_model PUBLIC ggml ggml-cpu)
@@ -49,6 +53,7 @@ add_executable(eightfer
     src/cli/logits.cpp
     src/cli/pack.cpp
     src/cli/gen.cpp
+    src/cli/decode.cpp
     src/cli/ppl.cpp
     src/cli/selftest.cpp
     src/bench/bench.cpp

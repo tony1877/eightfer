@@ -113,6 +113,9 @@ int main(int argc, char ** argv) {
     if (args[1] == "ppl") {
         return e8::cli::ppl(args);
     }
+    if (args[1] == "decode") {
+        return e8::cli::decode(args);
+    }
     if (args[1] == "gen") {
         return e8::cli::gen(args);
     }

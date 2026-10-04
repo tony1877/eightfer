@@ -1,5 +1,7 @@
 #include "model/qwen4exp.h"
 
+#include "kernels/moe_cpu.h"
+
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 
@@ -8,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 #include <thread>
 
 namespace e8::model {
@@ -101,6 +104,8 @@ Qwen4Exp::Qwen4Exp() = default;
 
 Qwen4Exp::~Qwen4Exp() {
     if (sched_) ggml_backend_sched_free(sched_);
+    if (ec_.buf) ggml_backend_buffer_free(ec_.buf);
+    if (ec_.ctx) ggml_free(ec_.ctx);
     if (wbuf_gpu_) ggml_backend_buffer_free(wbuf_gpu_);
     for (auto b : map_bufs_) {
         if (b) ggml_backend_buffer_free(b);
@@ -220,12 +225,13 @@ bool Qwen4Exp::load(const std::string & path, const LoadOptions & opt, std::stri
             L.ple_conv1d     = make(p + "ple_conv1d.weight", g);
         }
         L.gate_inp     = make(p + "ffn_gate_inp.weight", g);
-        L.gate_up_exps = make(p + "ffn_gate_up_exps.weight", false, false);  // experts stay in the mapping
+        const bool xg  = g && opt.experts_gpu;  // experts normally stay in the mapping
+        L.gate_up_exps = make(p + "ffn_gate_up_exps.weight", xg, false);
         if (!L.gate_up_exps) {
-            L.gate_exps = make(p + "ffn_gate_exps.weight", false);
-            L.up_exps   = make(p + "ffn_up_exps.weight", false);
+            L.gate_exps = make(p + "ffn_gate_exps.weight", xg);
+            L.up_exps   = make(p + "ffn_up_exps.weight", xg);
         }
-        L.down_exps      = make(p + "ffn_down_exps.weight", false);
+        L.down_exps      = make(p + "ffn_down_exps.weight", xg);
         L.gate_inp_shexp = make(p + "ffn_gate_inp_shexp.weight", g, false);
         L.gate_shexp     = make(p + "ffn_gate_shexp.weight", g, false);
         L.up_shexp       = make(p + "ffn_up_shexp.weight", g, false);
@@ -307,6 +313,9 @@ bool Qwen4Exp::load(const std::string & path, const LoadOptions & opt, std::stri
             err = "not enough memory for the KV cache / recurrent state (lower --ctx)";
             return false;
         }
+    }
+    if (!init_expert_cache(err)) {
+        return false;
     }
     reset();
 
@@ -497,22 +506,39 @@ ggml_tensor * Qwen4Exp::moe(ggml_context * ctx, int64_t il, ggml_tensor * cur, i
     }
     w = ggml_reshape_3d(ctx, w, 1, k, n);
 
-    ggml_tensor * x3 = ggml_reshape_3d(ctx, cur, ne, 1, n);
-    ggml_tensor * gt = nullptr, * up = nullptr;
-    if (L.gate_up_exps) {
-        ggml_tensor * gu = ggml_mul_mat_id(ctx, L.gate_up_exps, x3, sel);  // [2*n_ff, k, n]: gate | up
-        const int64_t ff = gu->ne[0] / 2;
-        gt = ggml_view_3d(ctx, gu, ff, k, n, gu->nb[1], gu->nb[2], 0);
-        up = ggml_view_3d(ctx, gu, ff, k, n, gu->nb[1], gu->nb[2], ggml_row_size(gu->type, ff));
-    } else {
-        gt = ggml_mul_mat_id(ctx, L.gate_exps, x3, sel);
-        up = ggml_mul_mat_id(ctx, L.up_exps, x3, sel);
+    ggml_tensor * x3  = ggml_reshape_3d(ctx, cur, ne, 1, n);
+    ggml_tensor * out = nullptr;
+    const size_t  l   = (size_t) il;
+    ggml_tensor * sel_c = nullptr;
+    if (ec_.C > 0 && ec_.gmap[l]) {
+        sel_c       = ggml_cont(ctx, sel);  // argsort_top_k returns a view
+        sel_out_[l] = sel_c;
+        ggml_set_output(sel_c);
     }
-    ggml_tensor * down = ggml_mul_mat_id(ctx, L.down_exps, ggml_swiglu_split(ctx, gt, up), sel);  // [ne, k, n]
-    down = ggml_mul(ctx, down, w);
-    ggml_tensor * out = ggml_view_2d(ctx, down, ne, n, down->nb[2], 0);
-    for (int64_t i = 1; i < k; i++) {
-        out = ggml_add(ctx, out, ggml_view_2d(ctx, down, ne, n, down->nb[2], (size_t) i * down->nb[1]));
+    // The split needs batches below ggml's op-offload threshold (32): the CPU half then runs on the CPU, where
+    // repeated ids in a token row are fine; CUDA's mul_mat_id assumes each token uses an expert at most once.
+    if (sel_c && n < 32) {
+        auto look = [&](ggml_tensor * table) {  // per-selection value of a [n_expert] table: [1, k, n]
+            ggml_tensor * v = ggml_get_rows(ctx, ggml_reshape_2d(ctx, table, 1, h.n_expert), ggml_reshape_1d(ctx, sel_c, k * n));
+            return ggml_reshape_3d(ctx, v, 1, k, n);
+        };
+        // GPU ids: the slot when cached, else a per-position zero slot C+j, so ids in a token row stay distinct
+        ggml_tensor * gm   = look(ec_.gmask[l]);
+        ggml_tensor * jix  = ggml_reshape_3d(ctx, ec_.jidx, 1, k, 1);
+        ggml_tensor * gidf = ggml_add(ctx, ggml_mul(ctx, gm, ggml_sub(ctx, look(ec_.gmap[l]), jix)), jix);
+        ggml_tensor * gids = ggml_reshape_2d(ctx, ggml_cast(ctx, gidf, GGML_TYPE_I32), k, n);
+        ggml_tensor * cids = ggml_reshape_2d(ctx, ggml_cast(ctx, look(ec_.cmap[l]), GGML_TYPE_I32), k, n);
+        ggml_tensor * wg   = ggml_mul(ctx, w, gm);
+        ggml_tensor * wc   = ggml_sub(ctx, w, wg);
+        // CPU half: only the pairs routed to the CPU (nonzero weight); the sparse kernel skips the others
+        static const bool no_cpu = std::getenv("E8_DEBUG_NO_CPU_MOE") != nullptr;  // timing experiments only
+        ggml_tensor * cpu_out = no_cpu ? ggml_scale(ctx, cur, 0.0f)
+            : L.gate_up_exps
+            ? experts(ctx, L.gate_exps, L.up_exps, L.gate_up_exps, L.down_exps, x3, cids, wc, n)
+            : kernels::moe_cpu_sparse(ctx, cur, cids, ggml_reshape_2d(ctx, wc, k, n), L.gate_exps, L.up_exps, L.down_exps);
+        out = ggml_add(ctx, experts(ctx, ec_.gate[l], ec_.up[l], ec_.gate_up[l], ec_.down[l], x3, gids, wg, n), cpu_out);
+    } else {
+        out = experts(ctx, L.gate_exps, L.up_exps, L.gate_up_exps, L.down_exps, x3, sel, w, n);
     }
     if (L.up_shexp) {
         ggml_tensor * sh = ggml_mul_mat(ctx, L.down_shexp, ggml_swiglu_split(ctx, ggml_mul_mat(ctx, L.gate_shexp, cur), ggml_mul_mat(ctx, L.up_shexp, cur)));
@@ -522,6 +548,230 @@ ggml_tensor * Qwen4Exp::moe(ggml_context * ctx, int64_t il, ggml_tensor * cur, i
         out = ggml_add(ctx, out, sh);
     }
     return out;
+}
+
+ggml_tensor * Qwen4Exp::experts(ggml_context * ctx, ggml_tensor * gate, ggml_tensor * up, ggml_tensor * gate_up,
+                                ggml_tensor * down, ggml_tensor * x3, ggml_tensor * ids, ggml_tensor * w, int n) {
+    const int64_t ne = hp_.n_embd, k = ids->ne[0];
+    ggml_tensor * gt = nullptr, * u = nullptr;
+    if (gate_up) {
+        ggml_tensor * gu = ggml_mul_mat_id(ctx, gate_up, x3, ids);  // [2*n_ff, k, n]: gate | up
+        const int64_t ff = gu->ne[0] / 2;
+        gt = ggml_view_3d(ctx, gu, ff, k, n, gu->nb[1], gu->nb[2], 0);
+        u  = ggml_view_3d(ctx, gu, ff, k, n, gu->nb[1], gu->nb[2], ggml_row_size(gu->type, ff));
+    } else {
+        gt = ggml_mul_mat_id(ctx, gate, x3, ids);
+        u  = ggml_mul_mat_id(ctx, up, x3, ids);
+    }
+    ggml_tensor * d = ggml_mul(ctx, ggml_mul_mat_id(ctx, down, ggml_swiglu_split(ctx, gt, u), ids), w);  // [ne, k, n]
+    ggml_tensor * out = ggml_view_2d(ctx, d, ne, n, d->nb[2], 0);
+    for (int64_t i = 1; i < k; i++) {
+        out = ggml_add(ctx, out, ggml_view_2d(ctx, d, ne, n, d->nb[2], (size_t) i * d->nb[1]));
+    }
+    return out;
+}
+
+bool Qwen4Exp::init_expert_cache(std::string & err) {
+    const auto & h  = hp_;
+    const size_t nl = (size_t) h.n_layer;
+    sel_out_.assign(nl, nullptr);
+    if (!gpu_ || opt_.expert_cache_gb == 0 || opt_.experts_gpu) {
+        return true;
+    }
+    // bytes of one expert (all of its matrices) and the number of GPU layers
+    uint64_t per_expert = 0;
+    int      n_gpu      = 0;
+    for (const auto & L : layers_) {
+        if (!L.on_gpu) continue;
+        n_gpu++;
+        if (!per_expert) {
+            for (ggml_tensor * t : { L.gate_exps, L.up_exps, L.gate_up_exps, L.down_exps }) {
+                if (t) per_expert += t->nb[2];
+            }
+        }
+    }
+    if (!n_gpu || !per_expert) {
+        return true;
+    }
+    double budget = opt_.expert_cache_gb * 1e9;
+    if (budget < 0) {  // auto: free VRAM minus room for compute buffers (prefill offloads whole expert tensors)
+        size_t free = 0, total = 0;
+        ggml_backend_dev_memory(ggml_backend_get_device(gpu_), &free, &total);
+        budget = std::max(0.0, (double) free - 3.0e9);
+    }
+    const int k = (int) h.n_expert_used;
+    const int C = (int) std::min<int64_t>(h.n_expert - 1, (int64_t) (budget / ((double) per_expert * n_gpu)) - k);
+    if (C < 1) {
+        return true;
+    }
+    ggml_init_params ip = { ggml_tensor_overhead() * (nl * 8 + 8), nullptr, true };
+    ec_.ctx             = ggml_init(ip);
+    for (auto * v : { &ec_.gate, &ec_.up, &ec_.gate_up, &ec_.down, &ec_.gmap, &ec_.cmap, &ec_.gmask }) v->assign(nl, nullptr);
+    auto slots = [&](ggml_tensor * t) -> ggml_tensor * {
+        return t ? ggml_new_tensor_3d(ec_.ctx, t->type, t->ne[0], t->ne[1], C + k) : nullptr;
+    };
+    for (size_t l = 0; l < nl; l++) {
+        const auto & L = layers_[l];
+        if (!L.on_gpu) continue;
+        ec_.gate[l]    = slots(L.gate_exps);
+        ec_.up[l]      = slots(L.up_exps);
+        ec_.gate_up[l] = slots(L.gate_up_exps);
+        ec_.down[l]    = slots(L.down_exps);
+        ec_.gmap[l]    = ggml_new_tensor_1d(ec_.ctx, GGML_TYPE_F32, h.n_expert);
+        ec_.cmap[l]    = ggml_new_tensor_1d(ec_.ctx, GGML_TYPE_F32, h.n_expert);
+        ec_.gmask[l]   = ggml_new_tensor_1d(ec_.ctx, GGML_TYPE_F32, h.n_expert);
+    }
+    ec_.jidx = ggml_new_tensor_1d(ec_.ctx, GGML_TYPE_F32, k);
+    ec_.buf  = ggml_backend_alloc_ctx_tensors_from_buft(ec_.ctx, ggml_backend_get_default_buffer_type(gpu_));
+    if (!ec_.buf) {
+        err = "not enough VRAM for the expert cache (set --expert-cache-gb lower)";
+        return false;
+    }
+    ggml_backend_buffer_clear(ec_.buf, 0);  // the dummy slots must hold finite (zero) weights
+    {
+        std::vector<float> j((size_t) k);
+        for (int i = 0; i < k; i++) j[(size_t) i] = (float) (C + i);
+        ggml_backend_tensor_set(ec_.jidx, j.data(), 0, j.size() * sizeof(float));
+    }
+    ec_.C     = C;
+    ec_.bytes = ggml_backend_buffer_get_size(ec_.buf);
+    ec_.slot_of.assign(nl, std::vector<int>((size_t) h.n_expert, -1));
+    ec_.expert_in.assign(nl, std::vector<int>((size_t) C, -1));
+    ec_.heat.assign(nl, std::vector<float>((size_t) h.n_expert, 0.0f));
+    ec_.dummy.assign(nl, 0);
+    // empty cache: everything routes to the CPU
+    for (size_t l = 0; l < nl; l++) {
+        if (!ec_.gmap[l]) continue;
+        std::vector<float> gm((size_t) h.n_expert, (float) C), cm((size_t) h.n_expert), mk((size_t) h.n_expert, 0.0f);
+        for (int64_t e = 0; e < h.n_expert; e++) cm[(size_t) e] = (float) e;
+        ggml_backend_tensor_set(ec_.gmap[l], gm.data(), 0, gm.size() * 4);
+        ggml_backend_tensor_set(ec_.cmap[l], cm.data(), 0, cm.size() * 4);
+        ggml_backend_tensor_set(ec_.gmask[l], mk.data(), 0, mk.size() * 4);
+    }
+    return true;
+}
+
+void Qwen4Exp::update_expert_cache(int n) {
+    const auto & h = hp_;
+    if (ec_.C <= 0) return;
+    const int     k         = (int) h.n_expert_used;
+    const float   decay     = std::pow(0.995f, (float) n);
+    const int     max_swaps = std::max(4, std::min(64, n));  // per layer per eval
+    std::vector<int32_t> ids;
+    for (size_t l = 0; l < sel_out_.size(); l++) {
+        ggml_tensor * s = sel_out_[l];
+        if (!s || !s->buffer) continue;
+        ids.resize((size_t) ggml_nelements(s));
+        ggml_backend_tensor_get(s, ids.data(), 0, ids.size() * sizeof(int32_t));
+        auto & heat = ec_.heat[l];
+        auto & slot = ec_.slot_of[l];
+        auto & in   = ec_.expert_in[l];
+        for (float & x : heat) x *= decay;
+        std::vector<int> used;
+        for (int32_t e : ids) {
+            if (e < 0 || e >= h.n_expert) continue;
+            heat[(size_t) e] += 1.0f;
+            ec_.uses++;
+            ec_.uses_recent++;
+            if (slot[(size_t) e] >= 0) {
+                ec_.hits++;
+                ec_.hits_recent++;
+            } else {
+                used.push_back(e);
+            }
+        }
+        // admit the hottest missed experts: into free slots, else over the coldest cached one if clearly hotter
+        std::sort(used.begin(), used.end());
+        used.erase(std::unique(used.begin(), used.end()), used.end());
+        std::sort(used.begin(), used.end(), [&](int a, int b) { return heat[(size_t) a] > heat[(size_t) b]; });
+        int  swaps   = 0;
+        bool changed = false;
+        for (int e : used) {
+            if (swaps >= max_swaps) break;
+            int target = -1;
+            for (int c = 0; c < ec_.C && target < 0; c++) {
+                if (in[(size_t) c] < 0) target = c;
+            }
+            if (target < 0) {
+                float coldest = 1e30f;
+                for (int c = 0; c < ec_.C; c++) {
+                    const float hv = heat[(size_t) in[(size_t) c]];
+                    if (hv < coldest) {
+                        coldest = hv;
+                        target  = c;
+                    }
+                }
+                if (heat[(size_t) e] < coldest * 1.25f + 0.5f) continue;
+                slot[(size_t) in[(size_t) target]] = -1;
+            }
+            const Qwen4ExpLayer & L = layers_[l];
+            auto copy = [&](ggml_tensor * dst, ggml_tensor * src) {
+                if (!dst) return;
+                ggml_backend_tensor_set(dst, (const char *) src->data + (size_t) e * src->nb[2], (size_t) target * dst->nb[2], dst->nb[2]);
+            };
+            copy(ec_.gate[l], L.gate_exps);
+            copy(ec_.up[l], L.up_exps);
+            copy(ec_.gate_up[l], L.gate_up_exps);
+            copy(ec_.down[l], L.down_exps);
+            in[(size_t) target] = e;
+            slot[(size_t) e]    = target;
+            ec_.swaps++;
+            swaps++;
+            changed = true;
+        }
+        (void) k;
+        if (changed) {
+            // the CPU-side dummy (rows carrying zero weight) is a cached expert, so it never coincides with a
+            // selected uncached expert: a token row repeating an id (real weight + zero weight) is miscomputed
+            int & dm = ec_.dummy[l];
+            if (slot[(size_t) dm] < 0) {
+                for (int64_t e = 0; e < h.n_expert; e++) {
+                    if (slot[(size_t) e] >= 0) {
+                        dm = (int) e;
+                        break;
+                    }
+                }
+            }
+            std::vector<float> gm((size_t) h.n_expert), cm((size_t) h.n_expert), mk((size_t) h.n_expert);
+            static const bool cpu_only = std::getenv("E8_CACHE_CPU_ONLY") != nullptr;  // debug: route all to the CPU
+            for (int64_t e = 0; e < h.n_expert; e++) {
+                const bool c   = slot[(size_t) e] >= 0 && !cpu_only;
+                gm[(size_t) e] = c ? (float) slot[(size_t) e] : (float) ec_.C;
+                cm[(size_t) e] = c ? (float) dm : (float) e;
+                mk[(size_t) e] = c ? 1.0f : 0.0f;
+            }
+            ggml_backend_tensor_set(ec_.gmap[l], gm.data(), 0, gm.size() * 4);
+            ggml_backend_tensor_set(ec_.cmap[l], cm.data(), 0, cm.size() * 4);
+            ggml_backend_tensor_set(ec_.gmask[l], mk.data(), 0, mk.size() * 4);
+        }
+        sel_out_[l] = nullptr;
+    }
+}
+
+std::string Qwen4Exp::cache_report() const {
+    char prof[512] = "";
+    if (n_timed_) {
+        const double d = 1e3 / (double) n_timed_;
+        snprintf(prof, sizeof prof, "\nper decode token: build %.1f ms, alloc %.1f ms, inputs %.1f ms, compute %.1f ms, cache update %.1f ms (graph %d splits)",
+                 t_build_ * d, t_alloc_ * d, t_inputs_ * d, t_compute_ * d, t_update_ * d, ggml_backend_sched_get_n_splits(sched_));
+    }
+    {
+        double gu = 0, dn = 0;
+        long long calls = 0;
+        kernels::moe_cpu_times(gu, dn, calls);
+        if (calls && n_timed_) {
+            char extra[160];
+            snprintf(extra, sizeof extra, "\nCPU MoE ops, per 48-layer pass: gate/up %.1f ms, down %.1f ms (%lld calls)",
+                     gu * 1e3 / ((double) calls / 48), dn * 1e3 / ((double) calls / 48), calls);
+            strncat(prof, extra, sizeof prof - strlen(prof) - 1);
+        }
+    }
+    if (ec_.C <= 0) return std::string("expert cache: off") + prof;
+    char buf[256];
+    snprintf(buf, sizeof buf, "expert cache: %d slots/layer (%.2f GB), hit rate %.1f%% overall, %.1f%% recent, %lld swaps",
+             ec_.C, ec_.bytes / 1e9, 100.0 * ec_.hits / std::max<int64_t>(1, ec_.uses),
+             100.0 * ec_.hits_recent / std::max<int64_t>(1, ec_.uses_recent), (long long) ec_.swaps);
+    return std::string(buf) + prof;
 }
 
 ggml_tensor * Qwen4Exp::ple(ggml_context * ctx, ggml_cgraph * gf, int64_t il, ggml_tensor * res, ggml_tensor * emb, int n) {
@@ -665,11 +915,15 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
         sparse          = (n_past_ + n) / kpool_ > K;
     }
 
+    using clk = std::chrono::steady_clock;
+    auto  sec = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double>(b - a).count(); };
+    const auto t0 = clk::now();
     ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
     ggml_context *   ctx = ggml_init(ip);
     Inputs           in;
     ggml_tensor *    out = nullptr;
     ggml_cgraph *    gf  = build_graph(ctx, n, n_kv, sparse, in, out);
+    const auto t1 = clk::now();
 
     ggml_backend_sched_reset(sched_);
     if (!ggml_backend_sched_alloc_graph(sched_, gf)) {
@@ -677,6 +931,7 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
         err = "eval: cannot allocate the compute graph";
         return false;
     }
+    const auto t2 = clk::now();
     auto set = [](ggml_tensor * t, const void * d, size_t nb) {
         if (t && t->buffer) ggml_backend_tensor_set(t, d, 0, nb);
     };
@@ -731,12 +986,24 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
         set(in.tail, tl.data(), tl.size() * sizeof(float));
     }
 
+    const auto t3 = clk::now();
     if (ggml_backend_sched_graph_compute(sched_, gf) != GGML_STATUS_SUCCESS) {
         ggml_free(ctx);
         err = "eval: graph compute failed";
         return false;
     }
     if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
+    const auto t4 = clk::now();
+    update_expert_cache(n);
+    const auto t5 = clk::now();
+    if (n == 1) {
+        t_build_ += sec(t0, t1);
+        t_alloc_ += sec(t1, t2);
+        t_inputs_ += sec(t2, t3);
+        t_compute_ += sec(t3, t4);
+        t_update_ += sec(t4, t5);
+        n_timed_++;
+    }
     if (dbg_mask_) {
         std::vector<ggml_fp16_t> mk((size_t) ggml_nelements(dbg_mask_));
         ggml_backend_tensor_get(dbg_mask_, mk.data(), 0, ggml_nbytes(dbg_mask_));

@@ -157,6 +157,8 @@ int ppl(const std::vector<std::string> & args) {
     o.kv_type      = kv_type(kv);
     o.n_ubatch     = std::min(n_batch, n_ctx);
     o.residual_path = res_path;
+    if (const char * ec = std::getenv("E8_EXPERT_CACHE_GB")) o.expert_cache_gb = std::atof(ec);
+    o.experts_gpu = std::getenv("E8_EXPERTS_GPU") != nullptr;
     std::unique_ptr<model::CausalLM> mp;
     const auto    t_load = std::chrono::steady_clock::now();
     if (!(mp = model::load_causal_lm(model, o, err))) {

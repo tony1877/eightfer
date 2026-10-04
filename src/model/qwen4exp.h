@@ -92,6 +92,8 @@ public:
     uint64_t gpu_weight_bytes() const override { return gpu_bytes_; }
     uint64_t cpu_weight_bytes() const override { return cpu_bytes_; }
     const Qwen4ExpHparams & hp() const { return hp_; }
+    // expert cache statistics (hit rate, slots, swaps)
+    std::string cache_report() const;
 
 private:
     struct Inputs {
@@ -107,6 +109,10 @@ private:
     ggml_tensor * attn(ggml_context * ctx, ggml_cgraph * gf, int64_t il, ggml_tensor * cur, int n, int n_kv, bool sparse,
                        Inputs & in);
     ggml_tensor * moe(ggml_context * ctx, int64_t il, ggml_tensor * cur, int n);
+    ggml_tensor * experts(ggml_context * ctx, ggml_tensor * gate, ggml_tensor * up, ggml_tensor * gate_up,
+                          ggml_tensor * down, ggml_tensor * x3, ggml_tensor * ids, ggml_tensor * w, int n);
+    bool          init_expert_cache(std::string & err);
+    void          update_expert_cache(int n);
     ggml_tensor * ple(ggml_context * ctx, ggml_cgraph * gf, int64_t il, ggml_tensor * res, ggml_tensor * emb, int n);
     // n-gram table rows for `n` tokens at the current position, gathered and dequantized: [n_embd per token]
     void          ple_rows(const int32_t * tokens, int n, std::vector<float> & out) const;
@@ -132,6 +138,28 @@ private:
     int                  n_ctx_ = 0, n_past_ = 0, kpool_ = 0;
     uint64_t             gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;
+
+    // GPU expert cache (DESIGN.md section 5): per GPU layer, C slots of expert weights in VRAM plus a zero dummy
+    // slot. Every MoE layer runs both halves: cached experts from the slots on the GPU, the rest from the mapping
+    // on the CPU; lookup tables (expert -> slot / -> expert or a dummy) and a mask route each selection to
+    // exactly one side. Between evals the selected ids are read back, heat is updated and hot experts are
+    // swapped into the slots.
+    struct ExpertCache {
+        int                                  C = 0;
+        uint64_t                             bytes = 0;
+        std::vector<ggml_tensor *>           gate, up, gate_up, down, gmap, cmap, gmask;
+        ggml_tensor *                        jidx = nullptr;  // [k]: C, C+1, ..., C+k-1 (per-position zero slots)
+        std::vector<std::vector<int>>        slot_of, expert_in;
+        std::vector<std::vector<float>>      heat;
+        std::vector<int>                     dummy;
+        int64_t                              uses = 0, hits = 0, swaps = 0, uses_recent = 0, hits_recent = 0;
+        ggml_context *                       ctx = nullptr;
+        ggml_backend_buffer_t                buf = nullptr;
+    } ec_;
+    std::vector<ggml_tensor *> sel_out_;  // per layer: this eval's selected expert ids [k, n]
+    // per-phase time of single-token evals (decode), seconds
+    double t_build_ = 0, t_alloc_ = 0, t_inputs_ = 0, t_compute_ = 0, t_update_ = 0;
+    int64_t n_timed_ = 0;
     ggml_tensor *        dbg_mask_ = nullptr, * dbg_scores_ = nullptr;
 };
 
