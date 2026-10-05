@@ -101,7 +101,7 @@ ggml_type kv_type(const std::string & s) {
 } // namespace
 
 int ppl(const std::vector<std::string> & args) {
-    std::string model, tokens_path, kld_path, res_path, kv = "f16";
+    std::string model, tokens_path, kld_path, res_path, save_path, kv = "f16";
     int         n_ctx = 512, n_chunks = -1, gpu_layers = 0, threads = 0, n_batch = 512;
     int gpu_kv = -1;
     for (size_t i = 2; i < args.size(); i++) {
@@ -117,6 +117,7 @@ int ppl(const std::vector<std::string> & args) {
         else if (k == "--batch") n_batch = std::atoi(val().c_str());
         else if (k == "--kv") kv = val();
         else if (k == "--res") res_path = val();
+        else if (k == "--save-kld") save_path = val();
         else if (model.empty() && k[0] != '-') model = k;
         else {
             fprintf(stderr, "unknown option: %s\n", k.c_str());
@@ -126,6 +127,7 @@ int ppl(const std::vector<std::string> & args) {
     if (model.empty() || (tokens_path.empty() && kld_path.empty()) || n_ctx < 16 || n_batch < 1) {
         fprintf(stderr, "usage: eightfer ppl <model.gguf> --tokens <ids.txt> [--ctx 512] [--chunks N] [--gpu-layers N]\n"
                         "                    [--batch 512] [--kv f16|q8_0|q4_0] [--threads N] [--res <pack .res.gguf>]\n"
+                        "                    [--save-kld <file> (write this run's log-probs as a --kld-base reference)]\n"
                         "       eightfer ppl <model.gguf> --kld-base <llama-perplexity logits file> [...]\n"
                         "                    (tokens and ctx from the file; adds KL divergence vs llama.cpp)\n");
         return 1;
@@ -151,6 +153,16 @@ int ppl(const std::vector<std::string> & args) {
         return 1;
     }
     n_chunks = n_chunks < 0 ? max_chunks : std::min(n_chunks, max_chunks);
+    // --save-kld: this run's log-probs as a llama-perplexity --kl-divergence-base file (a reference for later runs)
+    std::ofstream save;
+    if (!save_path.empty()) {
+        save.open(std::filesystem::u8path(save_path), std::ios::binary);
+        save.write("_logits_", 8);
+        save.write((const char *) &n_ctx, 4);
+        save.write((const char *) &n_chunks, 4);  // n_vocab, patched below once the model is loaded
+        save.write((const char *) &n_chunks, 4);
+        save.write((const char *) toks.data(), (std::streamsize) ((size_t) n_chunks * n_ctx * 4));
+    }
 
     model::LoadOptions o;
     o.n_gpu_layers = gpu_layers;
@@ -177,6 +189,12 @@ int ppl(const std::vector<std::string> & args) {
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count(), (long long) hp.n_layer,
             gpu_layers, (double) m.gpu_weight_bytes() / 1e9, (double) m.cpu_weight_bytes() / 1e9, (long long) hp.n_vocab,
             hp.add_bos ? 1 : 0);
+    if (save.is_open()) {
+        const int32_t nv32 = (int32_t) hp.n_vocab;
+        save.seekp(12);
+        save.write((const char *) &nv32, 4);
+        save.seekp(0, std::ios::end);
+    }
     if (auto * q = dynamic_cast<model::Qwen35 *>(&m); q && q->has_residual()) {
         fprintf(stderr, "residual: %.2f GB (host)\n", (double) q->residual_bytes() / 1e9);
     }
@@ -223,6 +241,25 @@ int ppl(const std::vector<std::string> & args) {
             nll -= lp;
             nll2 += lp * lp;
             count++;
+            if (save.is_open()) {
+                const int             nq = 2 * (int) ((hp.n_vocab + 1) / 2) + 4;
+                std::vector<uint16_t> q((size_t) nq, 0);
+                float                 mx_lp = -INFINITY, mn_lp = INFINITY;
+                for (int64_t v = 0; v < hp.n_vocab; v++) {
+                    const float l = (float) (row[v] - lse);
+                    mx_lp = std::max(mx_lp, l);
+                    mn_lp = std::min(mn_lp, l);
+                }
+                mn_lp = std::max(mn_lp, mx_lp - 16.0f);
+                const float sc = (mx_lp - mn_lp) / 65535.0f;
+                std::memcpy(q.data(), &sc, 4);
+                std::memcpy(q.data() + 2, &mn_lp, 4);
+                for (int64_t v = 0; v < hp.n_vocab; v++) {
+                    const float l = std::max((float) (row[v] - lse), mn_lp);
+                    q[(size_t) v + 4] = (uint16_t) std::lround(std::min(65535.0f, (l - mn_lp) / sc));
+                }
+                save.write((const char *) q.data(), (std::streamsize) (q.size() * 2));
+            }
             if (kld) {
                 if (!base.next(blp)) {
                     fprintf(stderr, "\nlogits file ended early\n");
