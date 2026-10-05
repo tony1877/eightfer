@@ -103,12 +103,14 @@ ggml_type kv_type(const std::string & s) {
 int ppl(const std::vector<std::string> & args) {
     std::string model, tokens_path, kld_path, res_path, kv = "f16";
     int         n_ctx = 512, n_chunks = -1, gpu_layers = 0, threads = 0, n_batch = 512;
+    int gpu_kv = -1;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & k   = args[i];
         auto                val = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : std::string(); };
         if (k == "--tokens") tokens_path = val();
         else if (k == "--kld-base") kld_path = val();
         else if (k == "--ctx") n_ctx = std::atoi(val().c_str());
+        else if (k == "--gpu-kv") gpu_kv = std::atoi(val().c_str());
         else if (k == "--chunks") n_chunks = std::atoi(val().c_str());
         else if (k == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (k == "--threads") threads = std::atoi(val().c_str());
@@ -153,6 +155,7 @@ int ppl(const std::vector<std::string> & args) {
     model::LoadOptions o;
     o.n_gpu_layers = gpu_layers;
     o.n_ctx        = n_ctx;
+    o.gpu_kv = gpu_kv;
     o.n_threads    = threads;
     o.kv_type      = kv_type(kv);
     o.n_ubatch     = std::min(n_batch, n_ctx);

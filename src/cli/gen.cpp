@@ -70,6 +70,7 @@ void report(const char * label, const GenResult & r, int k) {
 int gen(const std::vector<std::string> & args) {
     std::string           model, res, tokens_path;
     int                   n_gen = 128, k = 6, gpu_layers = 999, n_ctx = 4096, threads = 0;
+    int gpu_kv = -1;
     bool                  compare = false, profile = false, adaptive = false;
     runtime::SamplerParams sp;
     for (size_t i = 2; i < args.size(); i++) {
@@ -90,6 +91,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--seed") sp.seed = (uint64_t) std::atoll(val().c_str());
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
+        else if (a == "--gpu-kv") gpu_kv = std::atoi(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--compare") compare = true;
         else if (a == "--profile") profile = true;
@@ -109,6 +111,7 @@ int gen(const std::vector<std::string> & args) {
     model::LoadOptions o;
     o.n_gpu_layers  = gpu_layers;
     o.n_ctx         = std::max(n_ctx, (int) prompt.size() + n_gen + 32);
+    o.gpu_kv = gpu_kv;
     o.n_threads     = threads;
     o.residual_path = res;
     o.max_record    = 16;

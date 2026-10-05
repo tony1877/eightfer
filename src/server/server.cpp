@@ -329,6 +329,7 @@ json timings(const Result & R) {
 int serve(const std::vector<std::string> & args) {
     std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16";
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
+    int gpu_kv = -1;
     double      cache_gb = -1;
     auto        S = std::make_unique<Server>();
     for (size_t i = 2; i < args.size(); i++) {
@@ -341,6 +342,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--api-key-file") key_file = val();
         else if (a == "--chat-template-file") tmpl_file = val();
         else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
+        else if (a == "--gpu-kv") gpu_kv = std::atoi(val().c_str());
         else if (a == "--kv") kv = val();
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
@@ -387,6 +389,7 @@ int serve(const std::vector<std::string> & args) {
     model::LoadOptions o;
     o.n_gpu_layers    = gpu_layers;
     o.n_ctx           = n_ctx;
+    o.gpu_kv = gpu_kv;
     o.n_threads       = threads;
     o.kv_type         = kv == "q8_0" ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
     o.residual_path   = res;

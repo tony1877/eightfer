@@ -19,6 +19,7 @@ namespace e8::cli {
 int decode(const std::vector<std::string> & args) {
     std::string model, tokens_path;
     int         n_gen = 64, gpu_layers = 999, n_ctx = 4096, threads = 0;
+    int gpu_kv = -1;
     double      cache_gb = -1;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & a   = args[i];
@@ -27,6 +28,7 @@ int decode(const std::vector<std::string> & args) {
         else if (a == "-n") n_gen = std::atoi(val().c_str());
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
+        else if (a == "--gpu-kv") gpu_kv = std::atoi(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (model.empty() && a[0] != '-') model = a;
@@ -45,6 +47,7 @@ int decode(const std::vector<std::string> & args) {
     model::LoadOptions o;
     o.n_gpu_layers    = gpu_layers;
     o.n_ctx           = std::max(n_ctx, (int) prompt.size() + n_gen + 16);
+    o.gpu_kv = gpu_kv;
     o.n_threads       = threads;
     o.expert_cache_gb = cache_gb;
     std::string  err;

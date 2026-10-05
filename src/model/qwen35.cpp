@@ -141,6 +141,8 @@ Qwen35::~Qwen35() {
         ggml_backend_sched_free(sched_);
     }
     if (rbuf_) ggml_backend_buffer_free(rbuf_);
+    if (hbuf_) ggml_backend_buffer_free(hbuf_);
+    if (hctx_) ggml_free(hctx_);
     if (rctx_) ggml_free(rctx_);
     for (int i = 0; i < 2; i++) {
         if (wbuf_[i]) ggml_backend_buffer_free(wbuf_[i]);
@@ -261,6 +263,42 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
 
     // state: KV cache for attention layers, conv + delta-net state for recurrent layers
     n_ctx_                 = std::max(kKvPad, (opt.n_ctx + kKvPad - 1) / kKvPad * kKvPad);
+    W_                     = n_ctx_;
+    int64_t n_attn = 0;
+    bool    all_gpu = gpu_ != nullptr;
+    for (int64_t il = 0; il < h.n_layer; il++) {
+        if (!h.is_recurrent(il)) n_attn++;
+        all_gpu = all_gpu && layers_[(size_t) il].on_gpu;
+    }
+    if (all_gpu && n_attn > 0) {
+        const int64_t row     = h.head_dim * h.n_head_kv;
+        const double  tok     = 2.0 * (double) n_attn * (double) ggml_row_size(opt.kv_type, row);
+        int64_t       want    = opt.gpu_kv;
+        if (want < 0) {
+            size_t fr = 0, tot = 0;
+            ggml_backend_dev_memory(ggml_backend_get_device(gpu_), &fr, &tot);
+            // recurrent state and compute buffers (prefill batch, CUDA pools), then the RAM-KV attention staging:
+            // one layer's per-head K/V copies, their F16 conversion and the mask
+            const double state   = 2.0 * (double) (h.n_layer - n_attn) *
+                                 (double) (h.ssm_d_state * h.ssm_d_state * h.ssm_n_v + h.conv_channels() * 4) * 4.0;
+            const double reserve = (std::getenv("E8_VRAM_RESERVE_GB") ? std::atof(std::getenv("E8_VRAM_RESERVE_GB")) * 1e9 : 0.3e9) + state;  // measured: 256K ctx, 4K window peaks at 15.3 of 16.3 GB
+            const double stage   = (double) n_ctx_ * (2.0 * (double) h.n_head_kv * (double) ggml_row_size(opt.kv_type, h.head_dim) +
+                                                    4.0 * (double) h.head_dim + 2.0 * (double) opt.n_ubatch);
+            if ((double) fr - reserve >= tok * (double) n_ctx_) {
+                want = n_ctx_;
+            } else {
+                want = (int64_t) (((double) fr - reserve - stage) / tok);
+            }
+        }
+        want = std::min<int64_t>(n_ctx_, want / kKvPad * kKvPad);
+        if (want < n_ctx_) {
+            if (want < 2048) {
+                err = "not enough VRAM for a KV window (" + std::to_string(want) + " tokens; lower --ctx or use --kv q8_0)";
+                return false;
+            }
+            W_ = (int) want;
+        }
+    }
     ggml_init_params sp    = { ggml_tensor_overhead() * (size_t) (h.n_layer * 12 + 8), nullptr, true };
     sctx_[0]               = ggml_init(sp);
     sctx_[1]               = ggml_init(sp);
@@ -283,14 +321,15 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             ssm_state_[(size_t) il]  = ggml_new_tensor_1d(c, GGML_TYPE_F32, h.ssm_d_state * h.ssm_d_state * h.ssm_n_v);
             conv_bak_[(size_t) il]   = ggml_dup_tensor(c, conv_state_[(size_t) il]);
             ssm_bak_[(size_t) il]    = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
-            conv_ck_[(size_t) il]    = ggml_dup_tensor(c, conv_state_[(size_t) il]);
-            ssm_ck_[(size_t) il]     = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
+            // prompt-reuse checkpoint: copied once per request, so it lives in RAM
+            conv_ck_[(size_t) il]    = ggml_dup_tensor(sctx_[1], conv_state_[(size_t) il]);
+            ssm_ck_[(size_t) il]     = ggml_dup_tensor(sctx_[1], ssm_state_[(size_t) il]);
             rec_qkv_[(size_t) il]    = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.conv_channels(), n_rec);
             rec_g_[(size_t) il]      = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
             rec_beta_[(size_t) il]   = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
         } else {
-            k_cache_[(size_t) il] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, n_ctx_);
-            v_cache_[(size_t) il] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, n_ctx_);
+            k_cache_[(size_t) il] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, W_);
+            v_cache_[(size_t) il] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, W_);
         }
     }
     for (int i = 0; i < 2; i++) {
@@ -303,6 +342,28 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             err = "not enough memory for the KV cache / recurrent state (lower --ctx)";
             return false;
         }
+    }
+    if (W_ < n_ctx_) {
+        ggml_init_params hp = { ggml_tensor_overhead() * (size_t) (h.n_layer * h.n_head_kv * 2 + 8), nullptr, true };
+        hctx_               = ggml_init(hp);
+        hk_.assign((size_t) (h.n_layer * h.n_head_kv), nullptr);
+        hv_.assign((size_t) (h.n_layer * h.n_head_kv), nullptr);
+        for (int64_t il = 0; il < h.n_layer; il++) {
+            if (h.is_recurrent(il)) continue;
+            for (int64_t j = 0; j < h.n_head_kv; j++) {
+                hk_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, opt.kv_type, h.head_dim, n_ctx_);
+                hv_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, opt.kv_type, h.head_dim, n_ctx_);
+            }
+        }
+        hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_get_default_buffer_type(cpu_));
+        if (!hbuf_) {
+            err = "not enough RAM for the KV cache (lower --ctx or use --kv q8_0)";
+            return false;
+        }
+        ggml_backend_buffer_clear(hbuf_, 0);  // masked rows must still be finite for the GPU kernels
+        if (const char * e = std::getenv("E8_HOST_ATTN_GPU_MIN")) host_gpu_min_ = std::atoi(e);
+        fprintf(stderr, "KV: %d tokens in RAM (%.2f GB), window of %d in VRAM\n", n_ctx_,
+                (double) ggml_backend_buffer_get_size(hbuf_) / 1e9, W_);
     }
     reset();
 
@@ -326,6 +387,43 @@ void Qwen35::reset() {
     n_past_       = 0;
     saved_n_past_ = 0;
     recorded_n_   = 0;
+    slot_pos_.assign((size_t) W_, -1);
+    host_valid_ = exact_upto_ = 0;
+}
+
+bool Qwen35::flush_ring(int from, int to, std::string & err) {
+    // copy positions [from, to) from the VRAM ring to the RAM KV, per KV head
+    const auto &         h   = hp_;
+    const size_t         hrs = ggml_row_size(opt_.kv_type, h.head_dim);
+    std::vector<uint8_t> buf;
+    for (int p = from; p < to;) {
+        const int s = p % W_;
+        if (slot_pos_[(size_t) s] != p) {
+            err = "KV for position " + std::to_string(p) + " is no longer in VRAM";
+            return false;
+        }
+        int e = p + 1;
+        while (e < to && (e % W_) == s + (e - p) && slot_pos_[(size_t) (e % W_)] == e) e++;
+        const int cnt = e - p;
+        for (int64_t il = 0; il < h.n_layer; il++) {
+            if (h.is_recurrent(il)) continue;
+            for (int kv = 0; kv < 2; kv++) {
+                ggml_tensor * rc = (kv ? v_cache_ : k_cache_)[(size_t) il];
+                buf.resize(rc->nb[1] * (size_t) cnt);
+                ggml_backend_tensor_get(rc, buf.data(), rc->nb[1] * (size_t) s, buf.size());
+                for (int64_t j = 0; j < h.n_head_kv; j++) {
+                    ggml_tensor * ht = (kv ? hv_ : hk_)[(size_t) (il * h.n_head_kv + j)];
+                    for (int r = 0; r < cnt; r++) {
+                        std::memcpy((uint8_t *) ht->data + ht->nb[1] * (size_t) (p + r),
+                                    buf.data() + rc->nb[1] * (size_t) r + hrs * (size_t) j, hrs);
+                    }
+                }
+            }
+        }
+        p = e;
+    }
+    host_valid_ = std::max(host_valid_, to);
+    return true;
 }
 
 bool Qwen35::load_residual(const std::string & path, std::string & err) {
@@ -549,6 +647,12 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
     ggml_set_input(inp_mask);
     inp_kvidx_ = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n);
     ggml_set_input(inp_kvidx_);
+    inp_hidx_ = nullptr;
+    attn_nodes_.clear();
+    if (attn_mode_ == 1) {
+        inp_hidx_ = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n);
+        ggml_set_input(inp_hidx_);
+    }
 
     auto norm = [&](ggml_tensor * x, ggml_tensor * w) { return ggml_mul(ctx, ggml_rms_norm(ctx, x, eps), w); };
 
@@ -606,14 +710,34 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
             const int64_t row = hd * h.n_head_kv;
             ggml_build_forward_expand(gf, ggml_set_rows(ctx, kc, ggml_reshape_2d(ctx, Kc, row, n), inp_kvidx_));
             ggml_build_forward_expand(gf, ggml_set_rows(ctx, vc, ggml_reshape_2d(ctx, Vc, row, n), inp_kvidx_));
-            ggml_tensor * K = ggml_view_3d(ctx, kc, hd, h.n_head_kv, n_kv, ggml_row_size(kc->type, hd), kc->nb[1], 0);
-            ggml_tensor * V = ggml_view_3d(ctx, vc, hd, h.n_head_kv, n_kv, ggml_row_size(vc->type, hd), vc->nb[1], 0);
-
-            ggml_tensor * q = ggml_permute(ctx, Qc, 0, 2, 1, 3);
-            ggml_tensor * k = ggml_permute(ctx, K, 0, 2, 1, 3);
-            ggml_tensor * v = ggml_permute(ctx, V, 0, 2, 1, 3);
-            ggml_tensor * a = ggml_flash_attn_ext(ctx, q, k, v, inp_mask, 1.0f / sqrtf((float) hd), 0.0f, 0.0f);
-            ggml_prec_set_acc(a, GGML_PREC_F32);
+            ggml_tensor * q = ggml_permute(ctx, Qc, 0, 2, 1, 3);  // [hd, n, n_head]
+            ggml_tensor * a = nullptr;
+            if (attn_mode_ == 1) {
+                // full KV in RAM, one attention per KV head (its 'g' query heads), so a GPU run copies one head
+                const int64_t g = h.n_head / h.n_head_kv;
+                for (int64_t j = 0; j < h.n_head_kv; j++) {
+                    ggml_tensor * hk = hk_[(size_t) (il * h.n_head_kv + j)];
+                    ggml_tensor * hv = hv_[(size_t) (il * h.n_head_kv + j)];
+                    ggml_tensor * kj = ggml_cont(ctx, ggml_view_2d(ctx, Kc, hd, n, Kc->nb[2], Kc->nb[1] * (size_t) j));
+                    ggml_tensor * vj = ggml_cont(ctx, ggml_view_2d(ctx, Vc, hd, n, Vc->nb[2], Vc->nb[1] * (size_t) j));
+                    ggml_build_forward_expand(gf, ggml_set_rows(ctx, hk, kj, inp_hidx_));
+                    ggml_build_forward_expand(gf, ggml_set_rows(ctx, hv, vj, inp_hidx_));
+                    ggml_tensor * k  = ggml_view_3d(ctx, hk, hd, n_kv, 1, hk->nb[1], hk->nb[1] * (size_t) n_kv, 0);
+                    ggml_tensor * v  = ggml_view_3d(ctx, hv, hd, n_kv, 1, hv->nb[1], hv->nb[1] * (size_t) n_kv, 0);
+                    ggml_tensor * qj = ggml_view_3d(ctx, q, hd, n, g, q->nb[1], q->nb[2], q->nb[2] * (size_t) (j * g));
+                    ggml_tensor * aj = ggml_flash_attn_ext(ctx, qj, k, v, inp_mask, 1.0f / sqrtf((float) hd), 0.0f, 0.0f);
+                    ggml_prec_set_acc(aj, GGML_PREC_F32);
+                    attn_nodes_.push_back(aj);
+                    a = a ? ggml_concat(ctx, a, aj, 1) : aj;  // [hd, heads, n]
+                }
+            } else {
+                ggml_tensor * K = ggml_view_3d(ctx, kc, hd, h.n_head_kv, n_kv, ggml_row_size(kc->type, hd), kc->nb[1], 0);
+                ggml_tensor * V = ggml_view_3d(ctx, vc, hd, h.n_head_kv, n_kv, ggml_row_size(vc->type, hd), vc->nb[1], 0);
+                ggml_tensor * k = ggml_permute(ctx, K, 0, 2, 1, 3);
+                ggml_tensor * v = ggml_permute(ctx, V, 0, 2, 1, 3);
+                a = ggml_flash_attn_ext(ctx, q, k, v, inp_mask, 1.0f / sqrtf((float) hd), 0.0f, 0.0f);
+                ggml_prec_set_acc(a, GGML_PREC_F32);
+            }
             a   = ggml_reshape_2d(ctx, a, a->ne[0] * a->ne[1], a->ne[2] * a->ne[3]);
             a   = ggml_mul(ctx, a, ggml_sigmoid(ctx, gate));
             cur = mm(ctx, L.wo, a);
@@ -664,7 +788,24 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
         err = "eval: context full (" + std::to_string(n_ctx_) + " tokens)";
         return false;
     }
-    const int n_kv = std::min(n_ctx_, (n_past_ + n + kKvPad - 1) / kKvPad * kKvPad);
+    // where this eval's attention reads from (see the split-KV notes in qwen35.h)
+    const bool split = W_ < n_ctx_;
+    host_valid_      = std::min(host_valid_, n_past_);
+    exact_upto_      = std::min(exact_upto_, n_past_);
+    bool ring_exact  = n_past_ + n <= W_;
+    for (int p = 0; ring_exact && p < n_past_; p++) ring_exact = slot_pos_[(size_t) p] == p;
+    const bool use_host = split && !ring_exact && !opts.window_ok;
+    if (split && !ring_exact && host_valid_ < exact_upto_ && !flush_ring(host_valid_, exact_upto_, err)) {
+        return false;
+    }
+    if (use_host && host_valid_ < n_past_) {
+        err = "eval: KV for positions " + std::to_string(host_valid_) + ".." + std::to_string(n_past_) + " was lost";
+        return false;
+    }
+    const bool window = split && !ring_exact && !use_host;  // a draft attending only the ring
+    const int  n_kv   = window ? W_ : std::min(use_host ? n_ctx_ : W_, (n_past_ + n + kKvPad - 1) / kKvPad * kKvPad);
+    for (int i = 0; i < n; i++) slot_pos_[(size_t) ((n_past_ + i) % W_)] = n_past_ + i;
+    attn_mode_ = use_host ? 1 : 0;
 
     use_res_             = opts.residual && has_residual();
     ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
@@ -674,6 +815,9 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     use_res_                 = false;
 
     ggml_backend_sched_reset(sched_);
+    for (ggml_tensor * a : attn_nodes_) {
+        ggml_backend_sched_set_tensor_backend(sched_, a, gpu_ && n >= host_gpu_min_ ? gpu_ : cpu_);
+    }
     if (!ggml_backend_sched_alloc_graph(sched_, gf)) {
         ggml_free(ctx);
         err = "eval: cannot allocate the compute graph";
@@ -709,14 +853,30 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     std::vector<ggml_fp16_t> mask((size_t) n_kv * n);
     const ggml_fp16_t        zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
     for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n_kv; j++) {
-            mask[(size_t) i * n_kv + j] = j <= n_past_ + i ? zero : ninf;
+        ggml_fp16_t * mr = mask.data() + (size_t) i * n_kv;
+        const int     qp = n_past_ + i;
+        if (window) {
+            // ring slots holding positions in (qp - (W - n), qp]: the slots this batch overwrites are excluded
+            const int lo = qp - (W_ - n);
+            for (int j = 0; j < n_kv; j++) {
+                const int sp = slot_pos_[(size_t) j];
+                mr[j]        = sp >= 0 && sp <= qp && sp > lo ? zero : ninf;
+            }
+        } else {
+            const int nz = std::min(n_kv, qp + 1);
+            std::fill(mr, mr + nz, zero);
+            std::fill(mr + nz, mr + n_kv, ninf);
         }
     }
     if (inp_kvidx_->buffer) {
         std::vector<int64_t> rows((size_t) n);
-        for (int i = 0; i < n; i++) rows[(size_t) i] = n_past_ + i;
+        for (int i = 0; i < n; i++) rows[(size_t) i] = (n_past_ + i) % W_;
         ggml_backend_tensor_set(inp_kvidx_, rows.data(), 0, rows.size() * sizeof(int64_t));
+    }
+    if (inp_hidx_ && inp_hidx_->buffer) {
+        std::vector<int64_t> rows((size_t) n);
+        for (int i = 0; i < n; i++) rows[(size_t) i] = n_past_ + i;
+        ggml_backend_tensor_set(inp_hidx_, rows.data(), 0, rows.size() * sizeof(int64_t));
     }
     if (inp_mask->buffer) {
         ggml_backend_tensor_set(inp_mask, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
@@ -735,6 +895,8 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     }
     ggml_free(ctx);
     recorded_n_ = opts.record ? n : 0;
+    if (!opts.window_ok) exact_upto_ = n_past_ + n;
+    if (use_host) host_valid_ = n_past_ + n;
     n_past_ += n;
     return true;
 }

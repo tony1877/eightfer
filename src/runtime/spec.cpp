@@ -177,6 +177,7 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     std::vector<int32_t> toks(1, last_);
     model::EvalOpts      dopt;
     dopt.residual          = false;
+    dopt.window_ok         = true;
     const bool sampled     = sp_.temp > 0;
     dopt.argmax            = !sampled;
     using Dist             = std::vector<std::pair<float, int32_t>>;

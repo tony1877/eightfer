@@ -79,6 +79,7 @@ struct EvalOpts {
     bool record    = false;  // keep DeltaNet inputs so rollback() can replay a prefix of this batch
     bool last_only = false;  // logits for the last token only (prefill)
     bool argmax    = false;  // return argmax token ids instead of logits
+    bool window_ok = false;  // attention may see only the VRAM window of recent tokens (speculative drafts)
 };
 
 struct LoadOptions {
@@ -90,6 +91,8 @@ struct LoadOptions {
     int       n_ubatch     = 512;   // most tokens per eval() call
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
+    int       gpu_kv       = -1;    // KV tokens kept in VRAM; fewer than n_ctx keeps the full KV in RAM and a
+                                    // window of the most recent tokens in VRAM. -1 = auto (all if it fits)
     double    expert_cache_gb = -1; // MoE models: VRAM for the GPU expert cache; < 0 = auto, 0 = off
     bool      experts_gpu  = false; // MoE models: all experts of GPU layers in VRAM (small models / tests)
 };
@@ -142,6 +145,8 @@ public:
     // Weight bytes placed on the GPU and on the CPU.
     uint64_t gpu_weight_bytes() const override { return gpu_bytes_; }
     uint64_t cpu_weight_bytes() const override { return cpu_bytes_; }
+    // KV tokens in VRAM (== n_ctx unless the KV is split between RAM and a VRAM window)
+    int gpu_kv() const { return W_; }
 
 private:
     ggml_cgraph * build_graph(ggml_context * ctx, int n, const EvalOpts & o, ggml_tensor *& inp_tok,
@@ -191,6 +196,23 @@ private:
     // KV rows written by this eval (I64 [n]): an input, not a view offset, so the graph is the same from token to
     // token and CUDA graphs can be replayed
     ggml_tensor *        inp_kvidx_ = nullptr;
+
+    // Split KV (W_ < n_ctx_): k_cache_/v_cache_ are a VRAM ring of W_ slots (slot = pos % W_), and the full KV
+    // lives in RAM per (attention layer, KV head) as [head_dim, n_ctx_] (hk_/hv_, index layer * n_head_kv + head).
+    // Exact evals attend the RAM copy (CPU flash attention for small batches, GPU with a per-head copy for big
+    // ones); drafts attend the ring. host_valid_: positions [0, host_valid_) are in RAM; exact_upto_: positions
+    // [0, exact_upto_) were written by exact (non-draft) evals.
+    int                        W_ = 0;
+    std::vector<int>           slot_pos_;
+    std::vector<ggml_tensor *> hk_, hv_;
+    ggml_context *             hctx_ = nullptr;
+    ggml_backend_buffer_t      hbuf_ = nullptr;
+    int                        host_valid_ = 0, exact_upto_ = 0;
+    int                        attn_mode_  = 0;  // while building: 0 = ring/plain KV, 1 = RAM KV
+    int                        host_gpu_min_ = 1;  // RAM-KV attention on the GPU from this batch size (CPU below)
+    ggml_tensor *              inp_hidx_ = nullptr;
+    std::vector<ggml_tensor *> attn_nodes_;  // RAM-KV attention nodes, to place on CPU or GPU
+    bool flush_ring(int from, int to, std::string & err);
 };
 
 } // namespace e8::model
