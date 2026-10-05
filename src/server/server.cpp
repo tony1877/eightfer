@@ -4,13 +4,18 @@
 //                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0] [--spec auto|K]
 //                  [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N]
 //
-// Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions (stream or not). Chat
+// Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions (stream or not),
+// POST /unload (free the model; the next request loads it again). Chat
 // templating (Jinja, tools, chat_template_kwargs such as enable_thinking) and output parsing (reasoning_content,
 // tool_calls) come from llama.cpp's common library, so requests and responses look like llama-server's. Sampling:
 // temperature, top_p, top_k, min_p, seed, presence_penalty, frequency_penalty, stop, max_tokens.
 //
 // Concurrency: requests are accepted in parallel and run one at a time, first come first served (the model holds one
 // sequence). A request whose client disconnects stops at the next decode step, so it does not hold up the queue.
+//
+// Sharing the GPU (--idle-unload SEC, --unload-router URL): the model loads on the first request and is freed after SEC
+// idle seconds; before loading, every model loaded by a llama-server router at URL is unloaded (same API key), so the
+// two servers take turns on the GPU.
 //
 // Prompt reuse: the model state after a request covers prompt + output; a checkpoint is kept at the end of each
 // prompt. A new prompt that extends either one only evaluates the new tokens (recurrent state cannot be cut back to an
@@ -23,6 +28,7 @@
 #include "runtime/spec.h"
 
 #include "chat.h"
+#include "ggml-backend.h"
 #include "common.h"
 #include "llama.h"
 
@@ -39,6 +45,7 @@
 #include <mutex>
 #include <random>
 #include <sstream>
+#include <thread>
 
 namespace e8::cli {
 
@@ -61,6 +68,8 @@ struct Server {
     std::condition_variable          cv;
     uint64_t                         next_ticket = 0, serving = 0;
     std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
+    std::function<bool(std::string &)> load;  // loads the model when it is not loaded (lazy mode)
+    std::chrono::steady_clock::time_point last_used = std::chrono::steady_clock::now();
     std::mt19937_64                  rng{ std::random_device{}() };
 };
 
@@ -153,6 +162,8 @@ struct Result {
 // when the client is gone, which stops generation (as does `cancelled`).
 bool run_request(Server & S, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
                  const std::function<bool()> & cancelled, std::string & err) {
+    if (!S.model && !S.load(err)) return false;
+    S.last_used     = std::chrono::steady_clock::now();
     auto &     m    = *S.model;
     const bool chat = body.contains("messages");
     runtime::SamplerParams sp;
@@ -203,7 +214,12 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     auto et = in.chat_template_kwargs.find("enable_thinking");
     if (et != in.chat_template_kwargs.end()) in.enable_thinking = et->second == "true";
-    if (body.value("reasoning_effort", std::string()) == "none") in.enable_thinking = false;
+    if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string()) {
+        // as llama-server: the effort goes to the chat template ("none" turns thinking off)
+        const std::string re = body["reasoning_effort"].get<std::string>();
+        if (re == "none") in.enable_thinking = false;
+        else in.chat_template_kwargs["reasoning_effort"] = json(re).dump();
+    }
     const common_chat_params cp = common_chat_templates_apply(S.tmpls.get(), in);
 
     pp                  = common_chat_parser_params(cp);
@@ -385,6 +401,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     S.state_tokens.insert(S.state_tokens.end(), out.begin(), out.end() - 1);
     R.t_gen = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
 
+    S.last_used = std::chrono::steady_clock::now();
     if (!chat) {
         R.text = text;
         return true;
@@ -411,7 +428,8 @@ json timings(const Result & R) {
 int serve(const std::vector<std::string> & args) {
     std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16";
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
-    int gpu_kv = -1;
+    int gpu_kv = -1, idle_unload = 0;
+    std::string router_url;
     double      cache_gb = -1;
     auto        S = std::make_unique<Server>();
     for (size_t i = 2; i < args.size(); i++) {
@@ -430,6 +448,8 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--mtp") S->mtp = std::atoi(val().c_str());
+        else if (a == "--idle-unload") idle_unload = std::atoi(val().c_str());
+        else if (a == "--unload-router") router_url = val();
         else if (a == "--spec") {
             const std::string v = val();
             S->spec_auto        = v == "auto";
@@ -443,7 +463,8 @@ int serve(const std::vector<std::string> & args) {
     if (model_path.empty()) {
         fprintf(stderr, "usage: eightfer serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0] [--spec auto|K]\n"
-                        "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n");
+                        "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
+                        "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n");
         return 1;
     }
     if (!key_file.empty()) {  // last non-comment line (same format as the llama-server key file)
@@ -479,13 +500,86 @@ int serve(const std::vector<std::string> & args) {
     o.expert_cache_gb = cache_gb;
     o.max_record      = S->spec_k + 1;
     o.mtp             = S->mtp > 0;
+    Server * sp = S.get();
+    S->load     = [sp, model_path, o, router_url](std::string & e) {
+        bool unloaded = false;
+        if (!router_url.empty()) {  // free the GPU: unload whatever the llama-server router has loaded
+            httplib::Client  rc(router_url);
+            httplib::Headers hd = { { "Authorization", "Bearer " + sp->api_key } };
+            std::vector<std::string> asked;
+            for (int tries = 0; tries < 60; tries++) {
+                auto r = rc.Get("/v1/models", hd);
+                if (!r || r->status != 200) {  // no router: nothing to free
+                    fprintf(stderr, "router %s: %s\n", router_url.c_str(),
+                            r ? ("HTTP " + std::to_string(r->status)).c_str() : httplib::to_string(r.error()).c_str());
+                    break;
+                }
+                std::vector<std::string> busy;
+                try {
+                    const json list = json::parse(r->body);
+                    for (auto & m : list.at("data")) {
+                        const std::string st = m.contains("status") ? m["status"].value("value", std::string()) : std::string();
+                        if (st == "loaded" || st == "loading") busy.push_back(m.value("id", std::string()));
+                    }
+                } catch (const std::exception &) {
+                    break;
+                }
+                if (busy.empty()) break;
+                for (auto & id : busy) {  // once per model; the router takes ~15 s to stop it
+                    if (std::find(asked.begin(), asked.end(), id) != asked.end()) continue;
+                    asked.push_back(id);
+                    auto u = rc.Post("/models/unload", hd, json{ { "model", id } }.dump(), "application/json");
+                    fprintf(stderr, "router: unloading %s (%s)\n", id.c_str(), u ? std::to_string(u->status).c_str() : "no response");
+                }
+                unloaded = true;
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
+        // the router reports a model unloaded before its process has released the VRAM: wait for the memory
+        if (ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU); dev && unloaded) {
+            size_t fr = 0, tot = 0, last = 0;
+            for (int i = 0; i < 120; i++) {
+                ggml_backend_dev_memory(dev, &fr, &tot);
+                if (fr + (size_t) 1.5e9 >= tot || (i > 4 && fr == last)) break;
+                last = fr;
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        sp->model     = model::load_causal_lm(model_path, o, e);
+        if (!sp->model) {
+            e = "load failed: " + e;
+            return false;
+        }
+        sp->q35 = dynamic_cast<model::Qwen35 *>(sp->model.get());
+        sp->state_tokens.clear();
+        sp->ck_tokens.clear();
+        fprintf(stderr, "model loaded in %.1f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        return true;
+    };
     std::string err;
-    S->model = model::load_causal_lm(model_path, o, err);
-    if (!S->model) {
-        fprintf(stderr, "load failed: %s\n", err.c_str());
+    if (idle_unload <= 0 && !S->load(err)) {
+        fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
-    S->q35 = dynamic_cast<model::Qwen35 *>(S->model.get());
+    std::thread idle;
+    if (idle_unload > 0) {  // free the model after idle_unload seconds without requests
+        idle = std::thread([sp, idle_unload] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                if (!sp->model || std::chrono::steady_clock::now() - sp->last_used < std::chrono::seconds(idle_unload)) continue;
+                Turn turn(*sp);
+                if (sp->model && std::chrono::steady_clock::now() - sp->last_used >= std::chrono::seconds(idle_unload)) {
+                    sp->q35 = nullptr;
+                    sp->model.reset();
+                    sp->state_tokens.clear();
+                    sp->ck_tokens.clear();
+                    fprintf(stderr, "idle for %d s: model unloaded\n", idle_unload);
+                }
+            }
+        });
+        idle.detach();
+    }
 
     httplib::Server http;
     auto authorized = [&](const httplib::Request & req, httplib::Response & resp) {
@@ -502,6 +596,16 @@ int serve(const std::vector<std::string> & args) {
         if (!authorized(req, resp)) return;
         json m = { { "id", S->alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 } };
         resp.set_content(json{ { "object", "list" }, { "data", json::array({ m }) } }.dump(), "application/json");
+    });
+    http.Post("/unload", [&](const httplib::Request & req, httplib::Response & resp) {  // free the GPU now
+        if (!authorized(req, resp)) return;
+        Turn turn(*S);
+        const bool was = S->model != nullptr;
+        S->q35 = nullptr;
+        S->model.reset();
+        S->state_tokens.clear();
+        S->ck_tokens.clear();
+        resp.set_content(json{ { "success", true }, { "unloaded", was } }.dump(), "application/json");
     });
     // chat.completion(.chunk) or text_completion objects around a delta / message / text
     auto handler = [&](bool chat) {
@@ -607,8 +711,8 @@ int serve(const std::vector<std::string> & args) {
     http.Post("/v1/completions", handler(false));
 
     printf("eightfer serve: %s on http://%s:%d (model id \"%s\", ctx %d, %s)\n", model_path.c_str(), host.c_str(), port,
-           S->alias.c_str(), S->model->n_ctx(),
-           S->q35 && S->q35->has_residual() ? "base + residual, speculative" : "plain decoding");
+           S->alias.c_str(), n_ctx,
+           idle_unload > 0 ? "loaded on demand" : S->q35 && S->q35->has_residual() ? "base + residual, speculative" : "plain decoding");
     fflush(stdout);
     if (!http.listen(host, port)) {
         fprintf(stderr, "cannot listen on %s:%d\n", host.c_str(), port);
