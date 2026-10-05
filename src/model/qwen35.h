@@ -97,6 +97,12 @@ struct LoadOptions {
     bool      experts_gpu  = false; // MoE models: all experts of GPU layers in VRAM (small models / tests)
 };
 
+// one sparse-attention gather op's parameters (see Qwen35's sparse long-context notes)
+struct Qwen35GatherInfo {
+    const ggml_tensor * host = nullptr;
+    int                 kp_rows = 0, page = 0, win_start = 0, nwin = 0;
+};
+
 class Qwen35 : public CausalLM {
 public:
     Qwen35();
@@ -213,6 +219,20 @@ private:
     ggml_tensor *              inp_hidx_ = nullptr;
     std::vector<ggml_tensor *> attn_nodes_;  // RAM-KV attention nodes, to place on CPU or GPU
     bool flush_ring(int from, int to, std::string & err);
+
+    // Sparse long-context attention (small exact batches with the KV in RAM): per (attention layer, KV head) the
+    // element-wise min/max of each page of kPage keys lives in VRAM. A batch's queries bound q.k per page with them,
+    // take the top pages, and attend exactly over those pages plus the most recent tokens, gathered from RAM.
+    using GatherInfo = Qwen35GatherInfo;
+    std::vector<ggml_tensor *> pmin_, pmax_;
+    ggml_context *             pctx_ = nullptr;
+    ggml_backend_buffer_t      pbuf_ = nullptr;
+    int                        sum_upto_ = 0;  // pages [0, sum_upto_) have summaries
+    bool                       sparse_ = false;
+    int                        sp_nfar_ = 0, sp_kp_ = 0, sp_ws_ = 0, sp_nwin_ = 0, sp_nsel_ = 0;
+    std::vector<GatherInfo>    gi_;
+    ggml_tensor *              inp_sbias_ = nullptr, * inp_smask_ = nullptr;
+    void update_summaries(int upto);
 };
 
 } // namespace e8::model

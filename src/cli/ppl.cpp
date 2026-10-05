@@ -183,7 +183,8 @@ int ppl(const std::vector<std::string> & args) {
     fprintf(stderr, "perplexity: %zu tokens, %d chunks of %d, batch %d\n", toks.size(), n_chunks, n_ctx, o.n_ubatch);
 
     const int          first = n_ctx / 2;
-    std::vector<float> logits((size_t) hp.n_vocab * n_ctx);
+    // one batch of logits: positions are scored as their batch completes (a whole long chunk would not fit in RAM)
+    std::vector<float> logits((size_t) hp.n_vocab * o.n_ubatch);
     double             nll = 0, nll2 = 0;
     int64_t            count = 0;
     // KL divergence vs the base, bucketed by position in the chunk (8 buckets over the scored half)
@@ -203,13 +204,12 @@ int ppl(const std::vector<std::string> & args) {
         m.reset();
         for (int b = 0; b < n_ctx; b += o.n_ubatch) {
             const int n = std::min(o.n_ubatch, n_ctx - b);
-            if (!m.eval(batch.data() + b, n, logits.data() + (size_t) b * hp.n_vocab, err)) {
+            if (!m.eval(batch.data() + b, n, b + n > first ? logits.data() : nullptr, err)) {
                 fprintf(stderr, "\n%s\n", err.c_str());
                 return 1;
             }
-        }
-        for (int i = first; i < n_ctx - 1; i++) {
-            const float * row = logits.data() + (size_t) i * hp.n_vocab;
+        for (int i = std::max(first, b); i < std::min(b + n, n_ctx - 1); i++) {
+            const float * row = logits.data() + (size_t) (i - b) * hp.n_vocab;
             float         mx  = row[0];
             for (int64_t v = 1; v < hp.n_vocab; v++) {
                 mx = std::max(mx, row[v]);
@@ -250,6 +250,7 @@ int ppl(const std::vector<std::string> & args) {
                     kl_max_pos   = i;
                 }
             }
+        }
         }
         if (c == 0) {
             const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
