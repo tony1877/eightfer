@@ -5,7 +5,8 @@
 //                  [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N]
 //
 // Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions (stream or not),
-// POST /unload (free the model; the next request loads it again). Chat
+// POST /unload (free the model; the next request loads it again). Several models (--also ALIAS=PATH[,RES]): the request's
+// "model" picks one; it is loaded on demand and the previous one freed (one model in memory at a time). Chat
 // templating (Jinja, tools, chat_template_kwargs such as enable_thinking) and output parsing (reasoning_content,
 // tool_calls) come from llama.cpp's common library, so requests and responses look like llama-server's. Sampling:
 // temperature, top_p, top_k, min_p, seed, presence_penalty, frequency_penalty, stop, max_tokens.
@@ -55,12 +56,21 @@ namespace {
 
 using json = nlohmann::ordered_json;
 
+// a model this server can load: tokenizer and chat templates stay loaded, the weights only while it is active
+struct Entry {
+    std::string               alias, path, res;
+    llama_model *             vocab_model = nullptr;
+    const llama_vocab *       vocab       = nullptr;
+    common_chat_templates_ptr tmpls;
+};
+
 struct Server {
     std::unique_ptr<model::CausalLM> model;
     model::Qwen35 *                  q35 = nullptr;  // speculative decoding when it has a residual
-    llama_model *                    vocab_model = nullptr;
-    const llama_vocab *              vocab = nullptr;
-    common_chat_templates_ptr        tmpls;
+    std::vector<Entry>               entries;        // [0] = the main model (positional path, --alias, --res)
+    int                              active = -1;    // entry whose weights are loaded
+    const llama_vocab *              vocab  = nullptr;  // the active entry's
+    common_chat_templates *          tmpl   = nullptr;
     std::string                      alias, api_key;
     int                              spec_k = 12;
     bool                             spec_auto = true;
@@ -70,7 +80,7 @@ struct Server {
     std::condition_variable          cv;
     uint64_t                         next_ticket = 0, serving = 0;
     std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
-    std::function<bool(std::string &)> load;  // loads the model when it is not loaded (lazy mode)
+    std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
     std::string                      router_url;  // llama-server router to unload / forward to (empty = none)
     std::chrono::steady_clock::time_point last_used = std::chrono::steady_clock::now();
     std::mt19937_64                  rng{ std::random_device{}() };
@@ -153,6 +163,7 @@ void unload_model(Server & S) {
     if (!S.model) return;
     S.q35 = nullptr;
     S.model.reset();
+    S.active = -1;
     S.state_tokens.clear();
     S.ck_tokens.clear();
     fprintf(stderr, "model unloaded\n");
@@ -175,7 +186,19 @@ struct Result {
 // when the client is gone, which stops generation (as does `cancelled`).
 bool run_request(Server & S, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
                  const std::function<bool()> & cancelled, std::string & err) {
-    if (!S.model && !S.load(err)) return false;
+    int idx = 0;  // the entry this request names (the main model when it names none of ours)
+    if (body.contains("model") && body["model"].is_string()) {
+        for (size_t i = 0; i < S.entries.size(); i++) {
+            if (S.entries[i].alias == body["model"].get<std::string>()) idx = (int) i;
+        }
+    }
+    if (S.active != idx || !S.model) {
+        unload_model(S);
+        if (!S.load(idx, err)) return false;
+        S.active = idx;
+    }
+    S.vocab = S.entries[(size_t) idx].vocab;
+    S.tmpl  = S.entries[(size_t) idx].tmpls.get();
     S.last_used     = std::chrono::steady_clock::now();
     auto &     m    = *S.model;
     const bool chat = body.contains("messages");
@@ -233,7 +256,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         if (re == "none") in.enable_thinking = false;
         else in.chat_template_kwargs["reasoning_effort"] = json(re).dump();
     }
-    const common_chat_params cp = common_chat_templates_apply(S.tmpls.get(), in);
+    const common_chat_params cp = common_chat_templates_apply(S.tmpl, in);
 
     pp                  = common_chat_parser_params(cp);
     pp.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -443,6 +466,7 @@ int serve(const std::vector<std::string> & args) {
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
     std::string router_url;
+    std::vector<Entry> extra;
     double      cache_gb = -1;
     auto        S = std::make_unique<Server>();
     for (size_t i = 2; i < args.size(); i++) {
@@ -452,6 +476,19 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--host") host = val();
         else if (a == "--port") port = std::atoi(val().c_str());
         else if (a == "--alias") S->alias = val();
+        else if (a == "--also") {  // ALIAS=PATH[,RES]
+            const std::string v = val();
+            const size_t      eq = v.find('='), cm = v.find(',', eq == std::string::npos ? 0 : eq);
+            if (eq == std::string::npos) {
+                fprintf(stderr, "--also needs ALIAS=PATH[,RES]\n");
+                return 1;
+            }
+            Entry e;
+            e.alias = v.substr(0, eq);
+            e.path  = v.substr(eq + 1, cm == std::string::npos ? std::string::npos : cm - eq - 1);
+            if (cm != std::string::npos) e.res = v.substr(cm + 1);
+            extra.push_back(std::move(e));
+        }
         else if (a == "--api-key-file") key_file = val();
         else if (a == "--chat-template-file") tmpl_file = val();
         else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
@@ -495,13 +532,23 @@ int serve(const std::vector<std::string> & args) {
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.vocab_only         = true;
-    S->vocab_model        = llama_model_load_from_file(model_path.c_str(), mp);
-    if (!S->vocab_model) {
-        fprintf(stderr, "cannot load the vocabulary from %s\n", model_path.c_str());
-        return 1;
+    {
+        Entry main;
+        main.alias = S->alias;
+        main.path  = model_path;
+        main.res   = res;
+        S->entries.push_back(std::move(main));
+        for (auto & e : extra) S->entries.push_back(std::move(e));
     }
-    S->vocab = llama_model_get_vocab(S->vocab_model);
-    S->tmpls = common_chat_templates_init(S->vocab_model, tmpl_file.empty() ? "" : read_file(tmpl_file));
+    for (auto & e : S->entries) {  // one chat template file (if given) for every model
+        e.vocab_model = llama_model_load_from_file(e.path.c_str(), mp);
+        if (!e.vocab_model) {
+            fprintf(stderr, "cannot load the vocabulary from %s\n", e.path.c_str());
+            return 1;
+        }
+        e.vocab = llama_model_get_vocab(e.vocab_model);
+        e.tmpls = common_chat_templates_init(e.vocab_model, tmpl_file.empty() ? "" : read_file(tmpl_file));
+    }
 
     model::LoadOptions o;
     o.n_gpu_layers    = gpu_layers;
@@ -515,7 +562,7 @@ int serve(const std::vector<std::string> & args) {
     o.mtp             = S->mtp > 0;
     S->router_url = router_url;
     Server * sp = S.get();
-    S->load     = [sp, model_path, o, router_url](std::string & e) {
+    S->load     = [sp, o, router_url](int idx, std::string & e) {
         bool unloaded = false;
         if (!router_url.empty()) {  // free the GPU: unload whatever the llama-server router has loaded
             httplib::Client  rc(router_url);
@@ -560,7 +607,9 @@ int serve(const std::vector<std::string> & args) {
             }
         }
         const auto t0 = std::chrono::steady_clock::now();
-        sp->model     = model::load_causal_lm(model_path, o, e);
+        model::LoadOptions lo = o;
+        lo.residual_path      = sp->entries[(size_t) idx].res;
+        sp->model             = model::load_causal_lm(sp->entries[(size_t) idx].path, lo, e);
         if (!sp->model) {
             e = "load failed: " + e;
             return false;
@@ -568,11 +617,13 @@ int serve(const std::vector<std::string> & args) {
         sp->q35 = dynamic_cast<model::Qwen35 *>(sp->model.get());
         sp->state_tokens.clear();
         sp->ck_tokens.clear();
-        fprintf(stderr, "model loaded in %.1f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        sp->active = idx;
+        fprintf(stderr, "%s loaded in %.1f s\n", sp->entries[(size_t) idx].alias.c_str(),
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         return true;
     };
     std::string err;
-    if (idle_unload <= 0 && !S->load(err)) {
+    if (idle_unload <= 0 && !S->load(0, err)) {
         fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
@@ -608,8 +659,11 @@ int serve(const std::vector<std::string> & args) {
     });
     http.Get("/v1/models", [&](const httplib::Request & req, httplib::Response & resp) {
         if (!authorized(req, resp)) return;
-        json data = json::array({ json{ { "id", S->alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 },
-                                        { "status", { { "value", S->model ? "loaded" : "unloaded" } } } } });
+        json data = json::array();
+        for (size_t i = 0; i < S->entries.size(); i++) {
+            data.push_back(json{ { "id", S->entries[i].alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 },
+                                 { "status", { { "value", S->model && S->active == (int) i ? "loaded" : "unloaded" } } } });
+        }
         if (!S->router_url.empty()) {  // and the router's models
             httplib::Client rc(S->router_url);
             rc.set_connection_timeout(2, 0);
@@ -651,7 +705,8 @@ int serve(const std::vector<std::string> & args) {
                 return;
             }
             const std::string want = body.contains("model") && body["model"].is_string() ? body["model"].get<std::string>() : "";
-            if (!S->router_url.empty() && !want.empty() && want != S->alias) {
+            const bool ours = std::any_of(S->entries.begin(), S->entries.end(), [&](const Entry & e) { return e.alias == want; });
+            if (!S->router_url.empty() && !want.empty() && !ours) {
                 // another model: free ours and let the router serve it (it loads the model on demand)
                 const std::string path = req.path, rbody = req.body, url = S->router_url;
                 httplib::Headers  hd   = { { "Authorization", req.get_header_value("Authorization") } };
@@ -693,7 +748,7 @@ int serve(const std::vector<std::string> & args) {
             }
             const std::string id      = random_id(S->rng, chat ? "chatcmpl-" : "cmpl-");
             const int64_t     created = (int64_t) std::time(nullptr);
-            const std::string alias   = S->alias;
+            const std::string alias   = ours ? want : S->alias;
             auto obj = [id, created, alias, chat](const json & choice, bool chunk) {
                 return json{ { "id", id }, { "object", chat ? (chunk ? "chat.completion.chunk" : "chat.completion") : "text_completion" },
                              { "created", created }, { "model", alias }, { "choices", json::array({ choice }) } };
