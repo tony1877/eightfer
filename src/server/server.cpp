@@ -15,7 +15,9 @@
 //
 // Sharing the GPU (--idle-unload SEC, --unload-router URL): the model loads on the first request and is freed after SEC
 // idle seconds; before loading, every model loaded by a llama-server router at URL is unloaded (same API key), so the
-// two servers take turns on the GPU.
+// two servers take turns on the GPU. The router is also proxied: /v1/models lists its models too, and a completion
+// request naming one of them frees this model and is forwarded to the router (which loads it), so a client that only
+// talks to this server can switch between all models. Requests of both kinds take turns.
 //
 // Prompt reuse: the model state after a request covers prompt + output; a checkpoint is kept at the end of each
 // prompt. A new prompt that extends either one only evaluates the new tokens (recurrent state cannot be cut back to an
@@ -69,6 +71,7 @@ struct Server {
     uint64_t                         next_ticket = 0, serving = 0;
     std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
     std::function<bool(std::string &)> load;  // loads the model when it is not loaded (lazy mode)
+    std::string                      router_url;  // llama-server router to unload / forward to (empty = none)
     std::chrono::steady_clock::time_point last_used = std::chrono::steady_clock::now();
     std::mt19937_64                  rng{ std::random_device{}() };
 };
@@ -144,6 +147,16 @@ public:
 private:
     Server & S_;
 };
+
+// frees the model (the next request of ours loads it again); the caller holds a Turn
+void unload_model(Server & S) {
+    if (!S.model) return;
+    S.q35 = nullptr;
+    S.model.reset();
+    S.state_tokens.clear();
+    S.ck_tokens.clear();
+    fprintf(stderr, "model unloaded\n");
+}
 
 json to_nl(const common_json & j) {
     return json::parse(j.dump());
@@ -500,6 +513,7 @@ int serve(const std::vector<std::string> & args) {
     o.expert_cache_gb = cache_gb;
     o.max_record      = S->spec_k + 1;
     o.mtp             = S->mtp > 0;
+    S->router_url = router_url;
     Server * sp = S.get();
     S->load     = [sp, model_path, o, router_url](std::string & e) {
         bool unloaded = false;
@@ -594,17 +608,28 @@ int serve(const std::vector<std::string> & args) {
     });
     http.Get("/v1/models", [&](const httplib::Request & req, httplib::Response & resp) {
         if (!authorized(req, resp)) return;
-        json m = { { "id", S->alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 } };
-        resp.set_content(json{ { "object", "list" }, { "data", json::array({ m }) } }.dump(), "application/json");
+        json data = json::array({ json{ { "id", S->alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 },
+                                        { "status", { { "value", S->model ? "loaded" : "unloaded" } } } } });
+        if (!S->router_url.empty()) {  // and the router's models
+            httplib::Client rc(S->router_url);
+            rc.set_connection_timeout(2, 0);
+            const httplib::Headers hd = { { "Authorization", req.get_header_value("Authorization") } };
+            auto                   r  = rc.Get("/v1/models", hd);
+            if (r && r->status == 200) {
+                try {
+                    const json list = json::parse(r->body);
+                    for (const auto & m : list.at("data")) data.push_back(m);
+                } catch (const std::exception &) {
+                }
+            }
+        }
+        resp.set_content(json{ { "object", "list" }, { "data", data } }.dump(), "application/json");
     });
     http.Post("/unload", [&](const httplib::Request & req, httplib::Response & resp) {  // free the GPU now
         if (!authorized(req, resp)) return;
         Turn turn(*S);
         const bool was = S->model != nullptr;
-        S->q35 = nullptr;
-        S->model.reset();
-        S->state_tokens.clear();
-        S->ck_tokens.clear();
+        unload_model(*S);
         resp.set_content(json{ { "success", true }, { "unloaded", was } }.dump(), "application/json");
     });
     // chat.completion(.chunk) or text_completion objects around a delta / message / text
@@ -623,6 +648,47 @@ int serve(const std::vector<std::string> & args) {
                 resp.status = 400;
                 resp.set_content(json{ { "error", { { "message", chat ? "missing messages" : "missing prompt" } } } }.dump(),
                                  "application/json");
+                return;
+            }
+            const std::string want = body.contains("model") && body["model"].is_string() ? body["model"].get<std::string>() : "";
+            if (!S->router_url.empty() && !want.empty() && want != S->alias) {
+                // another model: free ours and let the router serve it (it loads the model on demand)
+                const std::string path = req.path, rbody = req.body, url = S->router_url;
+                httplib::Headers  hd   = { { "Authorization", req.get_header_value("Authorization") } };
+                Server *          srv  = S.get();
+                auto client = [url] {
+                    auto c = std::make_unique<httplib::Client>(url);
+                    c->set_read_timeout(3600, 0);
+                    c->set_write_timeout(600, 0);
+                    return c;
+                };
+                if (!body.value("stream", false)) {
+                    Turn turn(*S);
+                    unload_model(*S);
+                    auto r = client()->Post(path, hd, rbody, "application/json");
+                    if (!r) {
+                        resp.status = 502;
+                        resp.set_content(json{ { "error", { { "message", "router: " + httplib::to_string(r.error()) } } } }.dump(),
+                                         "application/json");
+                        return;
+                    }
+                    resp.status = r->status;
+                    resp.set_content(r->body, r->has_header("Content-Type") ? r->get_header_value("Content-Type") : "application/json");
+                    return;
+                }
+                resp.set_chunked_content_provider("text/event-stream", [srv, path, rbody, hd, client](size_t, httplib::DataSink & sink) {
+                    Turn turn(*srv);
+                    unload_model(*srv);
+                    auto r = client()->Post(path, hd, rbody, "application/json", [&](const char * d, size_t n) {
+                        return sink.is_writable() && sink.write(d, n);
+                    });
+                    if (!r) {
+                        const std::string e = "data: " + json{ { "error", { { "message", "router: " + httplib::to_string(r.error()) } } } }.dump() + "\n\n";
+                        sink.write(e.data(), e.size());
+                    }
+                    sink.done();
+                    return true;
+                });
                 return;
             }
             const std::string id      = random_id(S->rng, chat ? "chatcmpl-" : "cmpl-");
