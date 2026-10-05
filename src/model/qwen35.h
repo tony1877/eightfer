@@ -224,7 +224,12 @@ private:
     // element-wise min/max of each page of kPage keys lives in VRAM. A batch's queries bound q.k per page with them,
     // take the top pages, and attend exactly over those pages plus the most recent tokens, gathered from RAM.
     using GatherInfo = Qwen35GatherInfo;
-    std::vector<ggml_tensor *> pmin_, pmax_;
+    std::vector<ggml_tensor *> pmid_;  // page midpoints of the keys, (min + max) / 2 per element
+    // Draft far area: the first Kd_ rows of each VRAM ring hold, per KV head, the pages the last sparse verify
+    // selected (positions < far_ws_), so drafts see the far context too. The ring itself is rows [Kd_, Kd_ + W_).
+    int                        Kd_ = 0, far_rows_ = 0, far_ws_ = 0, ring_off_ = 0;
+    std::vector<ggml_tensor *> sel_nodes_;  // per (attention layer, KV head): the sparse verify's page selection
+    void fill_draft_far();
     ggml_context *             pctx_ = nullptr;
     ggml_backend_buffer_t      pbuf_ = nullptr;
     int                        sum_upto_ = 0;  // pages [0, sum_upto_) have summaries
