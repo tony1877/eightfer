@@ -191,7 +191,7 @@ int ppl(const std::vector<std::string> & args) {
     const bool          kld = !kld_path.empty();
     constexpr int       kBuckets = 8;
     double              kl_sum[kBuckets] = {}, kl_max = 0, base_nll = 0;
-    int64_t             kl_n[kBuckets] = {}, top_same = 0;
+    int64_t             kl_n[kBuckets] = {}, top_same = 0, kl_small = 0;
     int                 kl_max_chunk = 0, kl_max_pos = 0;
     std::vector<float>  blp;
     const auto         t0    = std::chrono::steady_clock::now();
@@ -241,6 +241,7 @@ int ppl(const std::vector<std::string> & args) {
                 }
                 base_nll -= blp[(size_t) toks[start + (size_t) i + 1]];
                 top_same += a_base == a_e8;
+                kl_small += kl < 0.01;
                 const int bk = (i - first) * kBuckets / (n_ctx - first);
                 kl_sum[bk] += kl;
                 kl_n[bk]++;
@@ -272,6 +273,7 @@ int ppl(const std::vector<std::string> & args) {
         printf("vs llama.cpp: base PPL %.4f, mean KLD %.6f, max KLD %.4f (chunk %d pos %d), same top-1 %.2f%%\n",
                std::exp(base_nll / (double) count), tot / (double) count, kl_max, kl_max_chunk, kl_max_pos,
                100.0 * (double) top_same / (double) count);
+        printf("tokens with KLD < 0.01: %.2f%%\n", 100.0 * (double) kl_small / (double) count);
         printf("mean KLD by position:");
         for (int b = 0; b < kBuckets; b++) {
             printf("  %d-%d: %.5f", first + b * (n_ctx - first) / kBuckets, first + (b + 1) * (n_ctx - first) / kBuckets - 1,

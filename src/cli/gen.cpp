@@ -26,10 +26,11 @@ struct GenResult {
     double               t_total = 0;
 };
 
-bool run_gen(model::Qwen35 & m, const std::vector<int32_t> & prompt, int n_gen, int k, bool adaptive,
+bool run_gen(model::Qwen35 & m, const std::vector<int32_t> & prompt, int n_gen, int k, bool adaptive, int mtp,
              const runtime::SamplerParams & sp, GenResult & r, std::string & err) {
     m.reset();
     runtime::SpecDecoder dec(m, k, sp, adaptive);
+    dec.set_mtp(mtp);
     const auto           t0 = std::chrono::steady_clock::now();
     if (!dec.prefill(prompt, r.toks, err)) return false;
     while ((int) r.toks.size() < n_gen) {
@@ -56,9 +57,13 @@ void report(const char * label, const GenResult & r, int k) {
     } else if (s.cycles > 0) {
         printf("  %.1f ms per token\n", 1e3 * s.t_verify / s.cycles);
     }
+    if (s.mtp_proposed > 0) {
+        printf("  MTP: %lld proposals, %.3f kept by the base\n", (long long) s.mtp_proposed,
+               (double) s.mtp_accepted / (double) s.mtp_proposed);
+    }
     if (k > 0) {
         printf("  k used:");
-        for (int i = 1; i <= 16; i++) {
+        for (int i = 1; i <= runtime::SpecDecoder::kMaxK; i++) {
             if (s.k_hist[i]) printf(" %d x%lld", i, (long long) s.k_hist[i]);
         }
         printf("\n");
@@ -71,6 +76,7 @@ int gen(const std::vector<std::string> & args) {
     std::string           model, res, tokens_path;
     int                   n_gen = 128, k = 6, gpu_layers = 999, n_ctx = 4096, threads = 0;
     int gpu_kv = -1;
+    int mtp    = 3;
     bool kv_q8 = false;
     bool                  compare = false, profile = false, adaptive = false;
     runtime::SamplerParams sp;
@@ -83,7 +89,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--spec") {
             const std::string v = val();
             adaptive            = v == "auto";
-            k                   = adaptive ? 12 : std::atoi(v.c_str());
+            k                   = adaptive ? runtime::SpecDecoder::kMaxK : std::atoi(v.c_str());
         }
         else if (a == "--temp") sp.temp = (float) std::atof(val().c_str());
         else if (a == "--top-p") sp.top_p = (float) std::atof(val().c_str());
@@ -96,6 +102,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--kv") kv_q8 = val() == "q8_0";
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--compare") compare = true;
+        else if (a == "--mtp") mtp = std::atoi(val().c_str());
         else if (a == "--profile") profile = true;
         else if (model.empty() && a[0] != '-') model = a;
         else {
@@ -104,10 +111,10 @@ int gen(const std::vector<std::string> & args) {
         }
     }
     const std::vector<int32_t> prompt = read_token_ids(tokens_path);
-    if (model.empty() || prompt.empty() || n_gen < 1 || k < 0 || k > 15) {
-        fprintf(stderr, "usage: eightfer gen <base.gguf> [--res r.gguf] --tokens <ids.txt> [-n 128] [--spec K (0..15) | auto]\n"
+    if (model.empty() || prompt.empty() || n_gen < 1 || k < 0 || k > runtime::SpecDecoder::kMaxK) {
+        fprintf(stderr, "usage: eightfer gen <base.gguf> [--res r.gguf] --tokens <ids.txt> [-n 128] [--spec K (0..63) | auto]\n"
                         "                    [--temp T] [--top-p P] [--top-k K] [--min-p P] [--seed S] [--gpu-layers N]\n"
-                        "                    [--ctx N] [--threads N] [--compare]\n");
+                        "                    [--ctx N] [--threads N] [--mtp N (MTP proposals per base pass, 0 = off)] [--compare]\n");
         return 1;
     }
     model::LoadOptions o;
@@ -117,7 +124,8 @@ int gen(const std::vector<std::string> & args) {
     if (kv_q8) o.kv_type = GGML_TYPE_Q8_0;
     o.n_threads     = threads;
     o.residual_path = res;
-    o.max_record    = 16;
+    o.max_record    = k + 1;
+    o.mtp           = k > 0 && mtp > 0;
     model::Qwen35 m;
     std::string   err;
     const auto    tl = std::chrono::steady_clock::now();
@@ -164,7 +172,7 @@ int gen(const std::vector<std::string> & args) {
     }
 
     GenResult a;
-    if (!run_gen(m, prompt, n_gen, k, adaptive, sp, a, err)) {
+    if (!run_gen(m, prompt, n_gen, k, adaptive, mtp, sp, a, err)) {
         fprintf(stderr, "generation failed: %s\n", err.c_str());
         return 1;
     }
@@ -175,7 +183,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (compare && k > 0 && sp.temp <= 0) {
         GenResult b;
-        if (!run_gen(m, prompt, n_gen, 0, false, sp, b, err)) {
+        if (!run_gen(m, prompt, n_gen, 0, false, 0, sp, b, err)) {
             fprintf(stderr, "plain generation failed: %s\n", err.c_str());
             return 1;
         }

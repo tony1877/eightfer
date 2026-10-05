@@ -64,21 +64,40 @@ The runtime, scheduling, storage tiers and split-precision format are eightfer's
 ## Serving (OpenAI-compatible)
 
 ```
-eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key-file KEYFILE                --chat-template-file TEMPLATE.jinja --ctx 16384 --kv q8_0 --spec auto
+eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key-file KEYFILE \
+               --chat-template-file TEMPLATE.jinja --ctx 16384 --kv q8_0 --spec auto [--mtp 3]
 ```
 
 - Qwen3.8-27B: pack it first (`eightfer pack`), then serve the base with `--res`: base + residual quality,
-  self-speculative decoding (14-16 tok/s at temp 1.0 on an RTX 5080 + 9800X3D).
+  self-speculative decoding. On an RTX 5080 + 9800X3D, short context, 4 benchmark prompts: 27.8 tok/s at temp 1.0
+  and 27.9 greedy (16-47 by prompt), vs 3.1 tok/s for plain base + residual decoding. Two things make it fast:
+  - Long drafts. `--spec auto` picks 1-63 drafts per cycle from the measured acceptance by draft position and the
+    measured verify cost per batch size. From 32 tokens ggml streams the residual to the GPU (~330 ms per verify,
+    flat in the batch size, vs ~900 ms for 16 tokens on the CPU), so runs of 31-50 drafts pay off.
+  - MTP-staged drafts (`--mtp N`, default 3, 0 = off). The model's own MTP block proposes N tokens; one base pass
+    checks them by speculative sampling and adds a token of its own. The kept tokens are exact samples from the base,
+    so they draft for base + residual as before. 13 ms per draft token vs 19 for the base alone.
+  Output follows the base + residual distribution exactly (speculative sampling at both levels). Greedy output is
+  token-identical to plain decoding up to rounding: verify batches of 16+ tokens can flip a near-tie (k=6 matches
+  plain over 256 tokens).
 - Flash-Next: serve the GGUF directly (experts stay memory-mapped; a GPU expert cache takes free VRAM;
   18.8 tok/s, 24 warm).
 - Requests and responses follow llama-server: `chat_template_kwargs` (e.g. `enable_thinking`), `reasoning_content`,
   `tools` / `tool_calls`, streaming with usage and timings in the last chunk.
+- Endpoints: `/v1/chat/completions`, `/v1/completions` (prompt string or token ids, no template), `/v1/models`,
+  `/health`. Sampling: `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `presence_penalty`, `frequency_penalty`
+  (over the generated tokens, applied exactly inside speculative decoding), `stop`, `max_tokens`.
+- Concurrent requests are accepted and run one at a time, first come first served (the model holds one sequence). A
+  streamed request whose client disconnects stops at the next decode cycle. `tests/server_smoke.ps1` covers all of it.
 - Long context (up to the models' 262144): pass `--ctx 262144 --kv q8_0`. When the 27B's KV does not fit in VRAM next
   to the weights, the full KV (9.1 GB at 256K) lives in RAM and small decode/verify batches use sparse attention:
   per 64-key page a midpoint key in VRAM ranks pages for the batch's queries, and attention is exact over the top 128
   pages, the first page and the last 4096 tokens, gathered from RAM. Drafts see the verify's best pages through a
   VRAM far area plus a ring of recent tokens. Quality: 32K text PPL 2.3301 vs 2.3317 exact; text repeated 48K tokens
   back 1.0006 vs 1.0004 exact (`E8_SPARSE=0` forces exact attention). 27B with a 261,776-token prompt: prefill
-  414 tok/s (~10.5 min), decode 10.6 tok/s at full context (exact attention: 3.3); 130K: 13.4 tok/s.- Flash-Next long prompts are processed layer by layer (65536-token chunks), so each layer's experts are read from
+  403 tok/s (~11 min), decode 18.2 tok/s at full context with long drafts (10.6 with drafts of at most 15, 3.3 with
+  exact attention); needle at position 0 recalled. MTP drafting turns itself off when the KV does not fit in VRAM
+  (its 0.4 GB would come out of the KV window).
+- Flash-Next long prompts are processed layer by layer (65536-token chunks), so each layer's experts are read from
   disk once per chunk instead of once per 512 tokens: 6K-token prompt 110 tok/s (was 10.7); a 261,776-token prompt
   prefills at 95 tok/s (46 min) and then decodes at 9.0 tok/s, needle at position 0 recalled.

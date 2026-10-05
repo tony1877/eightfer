@@ -2,11 +2,15 @@
 //
 //   eightfer serve <model.gguf> [--res r.gguf] [--host 127.0.0.1] [--port 8090] [--alias NAME]
 //                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0] [--spec auto|K]
-//                  [--gpu-layers N] [--expert-cache-gb G] [--threads N]
+//                  [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N]
 //
-// Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions (stream or not). Chat templating (Jinja, tools,
-// chat_template_kwargs such as enable_thinking) and output parsing (reasoning_content, tool_calls) come from
-// llama.cpp's common library, so requests and responses look like llama-server's. One request runs at a time.
+// Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions (stream or not). Chat
+// templating (Jinja, tools, chat_template_kwargs such as enable_thinking) and output parsing (reasoning_content,
+// tool_calls) come from llama.cpp's common library, so requests and responses look like llama-server's. Sampling:
+// temperature, top_p, top_k, min_p, seed, presence_penalty, frequency_penalty, stop, max_tokens.
+//
+// Concurrency: requests are accepted in parallel and run one at a time, first come first served (the model holds one
+// sequence). A request whose client disconnects stops at the next decode step, so it does not hold up the queue.
 //
 // Prompt reuse: the model state after a request covers prompt + output; a checkpoint is kept at the end of each
 // prompt. A new prompt that extends either one only evaluates the new tokens (recurrent state cannot be cut back to an
@@ -31,6 +35,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <condition_variable>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -50,7 +55,11 @@ struct Server {
     std::string                      alias, api_key;
     int                              spec_k = 12;
     bool                             spec_auto = true;
+    int                              mtp = 3;  // MTP proposals per base pass while drafting (0 = off)
+    // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;
+    std::condition_variable          cv;
+    uint64_t                         next_ticket = 0, serving = 0;
     std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
     std::mt19937_64                  rng{ std::random_device{}() };
 };
@@ -108,20 +117,74 @@ int32_t sample(const float * lg, int64_t nv, const runtime::SamplerParams & sp, 
     return p.back().second;
 }
 
+// holds the model for one request; waits for the requests that arrived earlier
+class Turn {
+public:
+    explicit Turn(Server & S) : S_(S) {
+        std::unique_lock<std::mutex> lk(S_.mu);
+        const uint64_t t = S_.next_ticket++;
+        S_.cv.wait(lk, [&] { return S_.serving == t; });
+    }
+    ~Turn() {
+        {
+            std::lock_guard<std::mutex> lk(S_.mu);
+            S_.serving++;
+        }
+        S_.cv.notify_all();
+    }
+private:
+    Server & S_;
+};
+
 json to_nl(const common_json & j) {
     return json::parse(j.dump());
 }
 
 struct Result {
-    common_chat_msg msg;
+    common_chat_msg msg;   // chat requests
+    std::string     text;  // completion requests
     std::string     finish = "stop";
     int             n_prompt = 0, n_gen = 0, n_reused = 0;
     double          t_prompt = 0, t_gen = 0;
 };
 
-// Runs one chat request. `on_delta` (streaming) receives OpenAI delta objects as the output grows.
-bool run_chat(Server & S, const json & body, Result & R, const std::function<void(const json &)> & on_delta,
-              std::string & err) {
+// Runs one request: chat (body has "messages") or completion ("prompt"). `on_delta` (streaming) receives OpenAI delta
+// objects as the output grows (chat: {content, reasoning_content, tool_calls}; completion: {text}) and returns false
+// when the client is gone, which stops generation (as does `cancelled`).
+bool run_request(Server & S, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
+                 const std::function<bool()> & cancelled, std::string & err) {
+    auto &     m    = *S.model;
+    const bool chat = body.contains("messages");
+    runtime::SamplerParams sp;
+    sp.temp              = body.value("temperature", 1.0f);
+    sp.top_p             = body.value("top_p", 1.0f);
+    sp.top_k             = body.value("top_k", 0);
+    sp.min_p             = body.value("min_p", 0.0f);
+    sp.seed              = body.value("seed", (uint64_t) 0);
+    sp.presence_penalty  = body.value("presence_penalty", 0.0f);
+    sp.frequency_penalty = body.value("frequency_penalty", 0.0f);
+    int max_tokens = body.value("max_completion_tokens", body.value("max_tokens", chat ? -1 : 16));
+    std::vector<std::string> stops;
+    if (body.contains("stop")) {
+        if (body["stop"].is_string()) stops.push_back(body["stop"].get<std::string>());
+        else if (body["stop"].is_array())
+            for (auto & s : body["stop"]) stops.push_back(s.get<std::string>());
+    }
+
+    std::vector<int32_t>      prompt;
+    size_t                    n_head = 0;  // the prompt-reuse checkpoint goes after this many tokens
+    common_chat_parser_params pp;
+    if (!chat) {
+        // ---- completion: the prompt as given (a string, or token ids), no template
+        const json & pr = body.contains("prompt") ? body["prompt"] : json("");
+        if (pr.is_array() && !pr.empty() && pr[0].is_number_integer()) {
+            for (auto & t : pr) prompt.push_back(t.get<int32_t>());
+        } else {
+            const std::string text = pr.is_array() ? (pr.empty() ? std::string() : pr[0].get<std::string>()) : pr.get<std::string>();
+            prompt = common_tokenize(S.vocab, text, /*add_special=*/m.add_bos(), /*parse_special=*/true);
+        }
+        n_head = prompt.empty() ? 0 : prompt.size() - 1;
+    } else {
     // ---- template
     common_chat_templates_inputs in;
     in.messages = common_chat_msgs_parse_oaicompat(common_json::parse(body.at("messages").dump()));
@@ -143,27 +206,13 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
     if (body.value("reasoning_effort", std::string()) == "none") in.enable_thinking = false;
     const common_chat_params cp = common_chat_templates_apply(S.tmpls.get(), in);
 
-    common_chat_parser_params pp(cp);
+    pp                  = common_chat_parser_params(cp);
     pp.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     pp.parse_tool_calls = true;
     if (!cp.parser.empty()) pp.parser.load(cp.parser);
 
-    std::vector<std::string> stops = cp.additional_stops;
-    if (body.contains("stop")) {
-        if (body["stop"].is_string()) stops.push_back(body["stop"].get<std::string>());
-        else if (body["stop"].is_array())
-            for (auto & s : body["stop"]) stops.push_back(s.get<std::string>());
-    }
-    runtime::SamplerParams sp;
-    sp.temp  = body.value("temperature", 1.0f);
-    sp.top_p = body.value("top_p", 1.0f);
-    sp.top_k = body.value("top_k", 0);
-    sp.min_p = body.value("min_p", 0.0f);
-    sp.seed  = body.value("seed", (uint64_t) 0);
-    int max_tokens = body.value("max_completion_tokens", body.value("max_tokens", -1));
+    stops.insert(stops.end(), cp.additional_stops.begin(), cp.additional_stops.end());
 
-    // ---- prompt, with prefix reuse
-    auto & m = *S.model;
     // The checkpoint goes before the generation prompt ("<|im_start|>assistant\n<think>\n"): the next turn re-renders
     // the assistant turn differently, but the conversation before it stays a prefix.
     std::string head = cp.prompt, tail;
@@ -172,13 +221,16 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
         tail = cp.generation_prompt;
         head.resize(head.size() - tail.size());
     }
-    std::vector<int32_t> prompt = common_tokenize(S.vocab, head, /*add_special=*/m.add_bos(), /*parse_special=*/true);
-    size_t               n_head = prompt.size();
+    prompt = common_tokenize(S.vocab, head, /*add_special=*/m.add_bos(), /*parse_special=*/true);
+    n_head = prompt.size();
     if (!tail.empty()) {
         const std::vector<int32_t> t = common_tokenize(S.vocab, tail, false, true);
         prompt.insert(prompt.end(), t.begin(), t.end());
     }
     if (n_head == prompt.size() && n_head > 0) n_head--;  // keep at least one token after the checkpoint
+    }
+
+    // ---- prompt, with prefix reuse
     if (prompt.empty() || (int) prompt.size() >= m.n_ctx() - 1) {
         err = "prompt of " + std::to_string(prompt.size()) + " tokens does not fit the context (" + std::to_string(m.n_ctx()) + ")";
         return false;
@@ -222,12 +274,16 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
 
     // ---- generation
     std::vector<int32_t> out;  // every token produced (some may be past a stop)
+    runtime::TokenCounts counts;  // plain path: penalties
     std::string          text;
     common_chat_msg      prev;
     std::vector<std::string> ids_cache;
     auto gen_id = [&]() { return random_id(S.rng, "call_"); };
     bool done   = false;
     size_t used = 0;  // tokens of `out` consumed into `text`
+    size_t sent = 0;  // completion streaming: bytes of `text` sent
+    size_t hold = 0;  // completion streaming: a stop string may still be forming in the last hold bytes
+    for (const std::string & s : stops) hold = std::max(hold, s.empty() ? 0 : s.size() - 1);
     auto consume = [&]() {
         for (; used < out.size() && !done; used++) {
             const int32_t t = out[used];
@@ -250,7 +306,23 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
                 done     = true;
             }
         }
-        if (on_delta) {
+        if (cancelled && cancelled()) {
+            R.finish = "cancelled";
+            done     = true;
+        }
+        if (on_delta && !chat) {
+            const size_t upto = done ? text.size() : (text.size() > hold ? text.size() - hold : 0);
+            if (upto > sent) {
+                // never split a UTF-8 character
+                size_t e = upto;
+                while (!done && e > sent && (text[e] & 0xC0) == 0x80) e--;
+                if (e > sent && !on_delta(json{ { "text", text.substr(sent, e - sent) } })) {
+                    R.finish = "cancelled";
+                    done     = true;
+                }
+                sent = e;
+            }
+        } else if (on_delta) {
             try {
                 common_chat_msg cur = common_chat_parse(text, !done, pp);
                 cur.set_tool_call_ids(ids_cache, gen_id);
@@ -270,7 +342,10 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
                         if (!fn.empty()) tc["function"] = fn;
                         delta["tool_calls"] = json::array({ tc });
                     }
-                    on_delta(delta);
+                    if (!on_delta(delta)) {
+                        R.finish = "cancelled";
+                        done     = true;
+                    }
                 }
                 prev = cur;
             } catch (const std::exception &) {
@@ -282,6 +357,7 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
     const bool spec = S.q35 && S.q35->has_residual();
     if (spec) {
         runtime::SpecDecoder dec(*S.q35, S.spec_k, sp, S.spec_auto);
+        dec.set_mtp(S.mtp);
         dec.begin(last.data(), out);
         consume();
         while (!done && S.q35->n_past() + S.spec_k + 2 < m.n_ctx()) {
@@ -290,11 +366,16 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
         }
     } else {
         std::mt19937_64 rng(sp.seed ? sp.seed : S.rng());
-        out.push_back(sample(last.data(), m.n_vocab(), sp, rng));
+        auto            next = [&]() {
+            runtime::apply_penalties(last.data(), sp, counts);
+            out.push_back(sample(last.data(), m.n_vocab(), sp, rng));
+            counts[out.back()]++;
+        };
+        next();
         consume();
         while (!done && m.n_past() + 2 < m.n_ctx()) {
             if (!m.eval_last(&out.back(), 1, last.data(), err)) return false;
-            out.push_back(sample(last.data(), m.n_vocab(), sp, rng));
+            next();
             consume();
         }
     }
@@ -304,6 +385,10 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
     S.state_tokens.insert(S.state_tokens.end(), out.begin(), out.end() - 1);
     R.t_gen = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
 
+    if (!chat) {
+        R.text = text;
+        return true;
+    }
     R.msg = common_chat_parse(text, false, pp);
     R.msg.set_tool_call_ids(ids_cache, gen_id);
     if (!R.msg.tool_calls.empty() && R.finish == "stop") R.finish = "tool_calls";
@@ -344,10 +429,11 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
+        else if (a == "--mtp") S->mtp = std::atoi(val().c_str());
         else if (a == "--spec") {
             const std::string v = val();
             S->spec_auto        = v == "auto";
-            S->spec_k           = S->spec_auto ? 12 : std::max(1, std::min(15, std::atoi(v.c_str())));
+            S->spec_k           = S->spec_auto ? runtime::SpecDecoder::kMaxK : std::max(1, std::min(runtime::SpecDecoder::kMaxK, std::atoi(v.c_str())));
         } else if (model_path.empty() && a[0] != '-') model_path = a;
         else {
             fprintf(stderr, "unknown option: %s\n", a.c_str());
@@ -357,7 +443,7 @@ int serve(const std::vector<std::string> & args) {
     if (model_path.empty()) {
         fprintf(stderr, "usage: eightfer serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0] [--spec auto|K]\n"
-                        "         [--gpu-layers N] [--expert-cache-gb G] [--threads N]\n");
+                        "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n");
         return 1;
     }
     if (!key_file.empty()) {  // last non-comment line (same format as the llama-server key file)
@@ -391,6 +477,8 @@ int serve(const std::vector<std::string> & args) {
     o.kv_type         = kv == "q8_0" ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
     o.residual_path   = res;
     o.expert_cache_gb = cache_gb;
+    o.max_record      = S->spec_k + 1;
+    o.mtp             = S->mtp > 0;
     std::string err;
     S->model = model::load_causal_lm(model_path, o, err);
     if (!S->model) {
@@ -415,82 +503,108 @@ int serve(const std::vector<std::string> & args) {
         json m = { { "id", S->alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 } };
         resp.set_content(json{ { "object", "list" }, { "data", json::array({ m }) } }.dump(), "application/json");
     });
-    http.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & resp) {
-        if (!authorized(req, resp)) return;
-        json body;
-        try {
-            body = json::parse(req.body);
-        } catch (const std::exception & e) {
-            resp.status = 400;
-            resp.set_content(json{ { "error", { { "message", e.what() } } } }.dump(), "application/json");
-            return;
-        }
-        const std::string id      = random_id(S->rng, "chatcmpl-");
-        const int64_t     created = (int64_t) std::time(nullptr);
-        const bool        stream  = body.value("stream", false);
-        auto chunk = [&](const json & delta, const json & finish) {
-            return json{ { "id", id }, { "object", "chat.completion.chunk" }, { "created", created }, { "model", S->alias },
-                         { "choices", json::array({ { { "index", 0 }, { "delta", delta }, { "finish_reason", finish } } }) } };
-        };
-        if (!stream) {
-            std::lock_guard<std::mutex> lk(S->mu);
-            Result      R;
-            std::string e;
-            bool        ok = false;
+    // chat.completion(.chunk) or text_completion objects around a delta / message / text
+    auto handler = [&](bool chat) {
+        return [&, chat](const httplib::Request & req, httplib::Response & resp) {
+            if (!authorized(req, resp)) return;
+            json body;
             try {
-                ok = run_chat(*S, body, R, nullptr, e);
-            } catch (const std::exception & ex) {
-                e = ex.what();
-            }
-            if (!ok) {
+                body = json::parse(req.body);
+            } catch (const std::exception & e) {
                 resp.status = 400;
-                resp.set_content(json{ { "error", { { "message", e } } } }.dump(), "application/json");
+                resp.set_content(json{ { "error", { { "message", e.what() } } } }.dump(), "application/json");
                 return;
             }
-            json msg = to_nl(R.msg.to_json_oaicompat());
-            msg["role"] = "assistant";
-            json r = { { "id", id }, { "object", "chat.completion" }, { "created", created }, { "model", S->alias },
-                       { "choices", json::array({ { { "index", 0 }, { "message", msg }, { "finish_reason", R.finish } } }) },
-                       { "usage", usage(R) }, { "timings", timings(R) } };
-            resp.set_content(r.dump(), "application/json");
-            return;
-        }
-        // runs after this handler returns: capture by value only
-        Server * srv = S.get();
-        resp.set_chunked_content_provider("text/event-stream", [srv, body, id, created](size_t, httplib::DataSink & sink) {
-            Server & SS = *srv;
-            auto chunk = [&](const json & delta, const json & finish) {
-                return json{ { "id", id }, { "object", "chat.completion.chunk" }, { "created", created }, { "model", SS.alias },
-                             { "choices", json::array({ { { "index", 0 }, { "delta", delta }, { "finish_reason", finish } } }) } };
-            };
-            std::lock_guard<std::mutex> lk(SS.mu);
-            auto send = [&](const json & j) {
-                const std::string s = "data: " + j.dump() + "\n\n";
-                return sink.write(s.data(), s.size());
-            };
-            send(chunk({ { "role", "assistant" }, { "content", nullptr } }, nullptr));
-            Result      R;
-            std::string e;
-            bool        ok = false;
-            try {
-                ok = run_chat(SS, body, R, [&](const json & d) { send(chunk(d, nullptr)); }, e);
-            } catch (const std::exception & ex) {
-                e = ex.what();
+            if (chat ? !body.contains("messages") : !body.contains("prompt")) {
+                resp.status = 400;
+                resp.set_content(json{ { "error", { { "message", chat ? "missing messages" : "missing prompt" } } } }.dump(),
+                                 "application/json");
+                return;
             }
-            if (!ok) {
-                send(json{ { "error", { { "message", e } } } });
-            } else {
-                json last     = chunk(json::object(), R.finish);
-                last["usage"] = usage(R);
-                last["timings"] = timings(R);
-                send(last);
+            const std::string id      = random_id(S->rng, chat ? "chatcmpl-" : "cmpl-");
+            const int64_t     created = (int64_t) std::time(nullptr);
+            const std::string alias   = S->alias;
+            auto obj = [id, created, alias, chat](const json & choice, bool chunk) {
+                return json{ { "id", id }, { "object", chat ? (chunk ? "chat.completion.chunk" : "chat.completion") : "text_completion" },
+                             { "created", created }, { "model", alias }, { "choices", json::array({ choice }) } };
+            };
+            if (!body.value("stream", false)) {
+                Turn        turn(*S);
+                Result      R;
+                std::string e;
+                bool        ok = false;
+                try {
+                    ok = run_request(*S, body, R, nullptr, [&] { return req.is_connection_closed(); }, e);
+                } catch (const std::exception & ex) {
+                    e = ex.what();
+                }
+                if (!ok) {
+                    resp.status = 400;
+                    resp.set_content(json{ { "error", { { "message", e } } } }.dump(), "application/json");
+                    return;
+                }
+                json choice = { { "index", 0 } };
+                if (chat) {
+                    json msg    = to_nl(R.msg.to_json_oaicompat());
+                    msg["role"] = "assistant";
+                    choice["message"] = msg;
+                } else {
+                    choice["text"]     = R.text;
+                    choice["logprobs"] = nullptr;
+                }
+                choice["finish_reason"] = R.finish;
+                json r       = obj(choice, false);
+                r["usage"]   = usage(R);
+                r["timings"] = timings(R);
+                resp.set_content(r.dump(), "application/json");
+                return;
             }
-            const std::string done = "data: [DONE]\n\n";
-            sink.write(done.data(), done.size());
-            sink.done();
-            return true;
-        });
-    });
+            // runs after this handler returns: capture by value only
+            Server * srv = S.get();
+            resp.set_chunked_content_provider("text/event-stream", [srv, body, obj, chat](size_t, httplib::DataSink & sink) {
+                Server & SS   = *srv;
+                auto     send = [&](const json & j) {
+                    const std::string s = "data: " + j.dump() + "\n\n";
+                    return sink.is_writable() && sink.write(s.data(), s.size());
+                };
+                auto delta = [&](const json & d, const json & finish) {
+                    json c = { { "index", 0 } };
+                    if (chat) c["delta"] = d;
+                    else {
+                        c["text"]     = d.value("text", std::string());
+                        c["logprobs"] = nullptr;
+                    }
+                    c["finish_reason"] = finish;
+                    return obj(c, true);
+                };
+                Turn turn(SS);
+                if (chat) send(delta({ { "role", "assistant" }, { "content", nullptr } }, nullptr));
+                Result      R;
+                std::string e;
+                bool        ok = false;
+                try {
+                    ok = run_request(SS, body, R, [&](const json & d) { return send(delta(d, nullptr)); },
+                                     [&] { return !sink.is_writable(); }, e);
+                } catch (const std::exception & ex) {
+                    e = ex.what();
+                }
+                if (!ok) {
+                    send(json{ { "error", { { "message", e } } } });
+                } else {
+                    json last       = delta(json::object(), R.finish);
+                    last["usage"]   = usage(R);
+                    last["timings"] = timings(R);
+                    send(last);
+                }
+                const std::string done = "data: [DONE]\n\n";
+                sink.write(done.data(), done.size());
+                sink.done();
+                return true;
+            });
+        };
+    };
+    http.Post("/v1/chat/completions", handler(true));
+    http.Post("/v1/completions", handler(false));
 
     printf("eightfer serve: %s on http://%s:%d (model id \"%s\", ctx %d, %s)\n", model_path.c_str(), host.c_str(), port,
            S->alias.c_str(), S->model->n_ctx(),

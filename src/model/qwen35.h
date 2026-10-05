@@ -2,7 +2,12 @@
 
 // Qwen3.5/3.6/3.8 dense ("qwen35" in GGUF): Gated DeltaNet linear attention in 3 of every 4 layers, gated full
 // attention with partial interleaved M-RoPE in the 4th, a SwiGLU FFN in every layer. Mirrors llama.cpp's
-// src/models/qwen35.cpp at the pinned commit, single sequence only. The MTP block is not loaded.
+// src/models/qwen35.cpp at the pinned commit, single sequence only.
+//
+// MTP drafting (LoadOptions::mtp): the GGUF's MTP block (blk.<n_layer>.*, one gated full-attention layer with nextn
+// projections) is loaded on the GPU. Every eval keeps the trunk's final (normed) hidden states and writes the MTP
+// layer's K/V for the positions whose next token is known; mtp_step() then proposes tokens from a hidden state and
+// the token after it, chaining on its own output (as vLLM's Qwen3-Next MTP). Its KV is a ring of recent positions.
 //
 // Split precision (DESIGN.md section 3/4): with LoadOptions::residual_path set, every big matrix W of the base GGUF
 // gets a residual R from `eightfer pack`, kept in pinned host memory. eval() with EvalOpts::residual computes
@@ -91,6 +96,8 @@ struct LoadOptions {
     int       n_ubatch     = 512;   // most tokens per eval() call
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
+    bool      mtp          = false; // load the MTP block for drafting (when the GGUF has one and a GPU exists)
+    int       mtp_window   = 4096;  // MTP KV ring size
     int       gpu_kv       = -1;    // KV tokens kept in VRAM; fewer than n_ctx keeps the full KV in RAM and a
                                     // window of the most recent tokens in VRAM. -1 = auto (all if it fits)
     double    expert_cache_gb = -1; // MoE models: VRAM for the GPU expert cache; < 0 = auto, 0 = off
@@ -118,12 +125,21 @@ public:
     // argmax ids to `ids`. Either output pointer may be null.
     bool eval(const int32_t * tokens, int n, const EvalOpts & opts, float * logits, int32_t * ids, std::string & err);
 
-    // Snapshot / restore the recurrent state and n_past.
-    void save_state();
-    void restore_state();
-    // After a recorded eval of n tokens: restore the snapshot taken before it and re-run only the first `keep`
+    // Snapshot / restore the recurrent state and n_past. Two slots: 0 for the committed state of a speculative
+    // cycle, 1 (only with MTP) for the base's own check of MTP proposals inside a draft.
+    void save_state(int slot = 0);
+    void restore_state(int slot = 0);
+    // After a recorded eval of n tokens: restore the snapshot `slot` taken before it and re-run only the first `keep`
     // tokens through the DeltaNet layers (attention KV is kept as written). n_past becomes snapshot + keep.
-    bool rollback(int keep, std::string & err);
+    bool rollback(int keep, std::string & err, int slot = 0);
+
+    bool has_mtp() const { return mtp_on_; }
+    // row of the last eval's hidden states that belongs to position n_past() - 1, or -1 when unknown
+    int  hidden_row() const { return hid_row_; }
+    // One MTP draft step at position `pos`: reads `tok` (the token at pos + 1) and the hidden state at pos, which is
+    // row `hid_row` of the last eval when >= 0, else the previous step's output. Writes the prediction for pos + 2:
+    // n_vocab logits, or with `id` non-null and `logits` null the argmax.
+    bool mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t * id, std::string & err);
 
     bool has_residual() const { return !res_.empty(); }
     uint64_t residual_bytes() const { return res_bytes_; }
@@ -143,6 +159,8 @@ public:
 
     int                   n_past() const override { return n_past_; }
     int                   n_ctx() const override { return n_ctx_; }
+    // largest batch a speculative verify should use: the sparse long-context attention takes at most 32 queries
+    int                   max_verify() const { return n_past_ + 64 > W_ ? 32 : 64; }
     int64_t               n_vocab() const override { return hp_.n_vocab; }
     int64_t               n_layer() const override { return hp_.n_layer; }
     bool                  add_bos() const override { return hp_.add_bos; }
@@ -165,6 +183,13 @@ private:
     ggml_tensor * mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x);
     bool load_residual(const std::string & path, std::string & err);
     bool compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err);
+    // MTP: the layer input from embeddings and hidden states [n_embd, n]
+    ggml_tensor * mtp_input(ggml_context * ctx, ggml_tensor * emb, ggml_tensor * hid);
+    // MTP layer on x [n_embd, n] at positions `pos`: writes K/V to ring rows `kvidx`; with a mask, also attends and
+    // returns the layer output (else nullptr)
+    ggml_tensor * mtp_layer(ggml_context * ctx, ggml_cgraph * gf, ggml_tensor * x, int n, ggml_tensor * pos,
+                            ggml_tensor * kvidx, ggml_tensor * mask);
+    void embed(const int32_t * tokens, int n, std::vector<float> & out) const;
 
     Qwen35Hparams            hp_;
     GgufFile                 file_;
@@ -182,7 +207,23 @@ private:
     std::vector<ggml_tensor *> k_cache_, v_cache_, conv_state_, ssm_state_;
     // snapshot of conv/ssm state, and the recorded DeltaNet inputs of the last recorded eval
     std::vector<ggml_tensor *> conv_bak_, ssm_bak_, rec_qkv_, rec_g_, rec_beta_, conv_ck_, ssm_ck_;
+    std::vector<ggml_tensor *> conv_bak1_, ssm_bak1_;  // snapshot slot 1 (MTP)
     int ck_n_past_ = 0;
+    int saved_n_past1_ = 0;
+
+    // MTP block (see the notes at the top)
+    bool                 mtp_on_ = false;  // only when the full KV fits in VRAM next to it
+    ggml_context *       mctx_ = nullptr;
+    ggml_backend_buffer_t mbuf_ = nullptr;
+    Qwen35Layer          mtp_;
+    ggml_tensor *        mtp_eh_ = nullptr, * mtp_enorm_ = nullptr, * mtp_hnorm_ = nullptr, * mtp_norm_ = nullptr;
+    ggml_tensor *        mtp_k_ = nullptr, * mtp_v_ = nullptr;  // KV ring [head_dim * n_head_kv, Wm_]
+    ggml_tensor *        mtp_hid_ = nullptr;    // the last eval's trunk hidden states [n_embd, n_ubatch]
+    ggml_tensor *        mtp_chain_ = nullptr;  // the last MTP step's output [n_embd, 1]
+    int                  Wm_ = 0;
+    std::vector<int>     mtp_slot_pos_;
+    ggml_tensor *        inp_mpos_ = nullptr, * inp_mkvidx_ = nullptr;
+    int                  hid_row_ = -1;
 
     // residual: base weight -> residual tensor (pinned host memory)
     std::unordered_map<const ggml_tensor *, ggml_tensor *> res_;

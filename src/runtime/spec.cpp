@@ -12,25 +12,44 @@ double now() {
 }
 } // namespace
 
+void apply_penalties(float * logits, const SamplerParams & sp, const TokenCounts & counts) {
+    if (sp.presence_penalty == 0 && sp.frequency_penalty == 0) return;
+    for (const auto & [t, c] : counts) {
+        if (c > 0) logits[t] -= sp.frequency_penalty * (float) c + sp.presence_penalty;
+    }
+}
+
 SpecDecoder::SpecDecoder(model::Qwen35 & m, int k, const SamplerParams & sp, bool adaptive) :
-    m_(m), k_(std::min(std::max(0, k), 15)), adaptive_(adaptive && k > 0), sp_(sp),
+    m_(m), k_(std::min(std::max(0, k), kMaxK)), adaptive_(adaptive && k > 0), sp_(sp),
     rng_(sp.seed ? sp.seed : std::random_device{}()) {}
 
-int SpecDecoder::choose_k() const {
-    // per-token acceptance from decayed counts of accepted drafts and first rejections (geometric model)
-    const double alpha = std::clamp(acc_n_ / (acc_n_ + rej_n_), 0.05, 0.995);
-    // verify cost a + b*k; before enough data, assume the measured 27B shape (b ~ 3% of a per token)
-    double a = 350, b = 12;
-    const double det = vs_ * vskk_ - vsk_ * vsk_;
-    if (vs_ > 3 && det > 1e-6) {
-        b = std::max(0.0, (vs_ * vskt_ - vsk_ * vst_) / det);
-        a = std::max(1.0, (vst_ - b * vsk_) / vs_);
+double SpecDecoder::verify_ms(int n) const {
+    // measured cost of an n-token verify if there is one, else the nearest measured size of the same kind scaled by
+    // the prior shape. Below kGpuBatch ggml multiplies the host residual on the CPU (cost grows with n); from
+    // kGpuBatch on it streams the residual to the GPU (about one 14 GB transfer, nearly flat in n).
+    auto prior = [](int m) { return m < kGpuBatch ? 250.0 + 38.0 * m : 340.0 + 0.5 * m; };
+    if (vn_[n] > 0.3) return vt_[n] / vn_[n];
+    int near = -1;
+    for (int d = 1; d < kMaxK + 1 && near < 0; d++) {
+        for (int m : { n - d, n + d }) {
+            if (m >= 1 && m <= kMaxK + 1 && (m < kGpuBatch) == (n < kGpuBatch) && vn_[m] > 0.3) near = m;
+        }
     }
-    int    best = 1;
-    double best_rate = 0;
-    for (int k = 1; k <= k_; k++) {
-        const double tokens = (1 - std::pow(alpha, k + 1)) / (1 - alpha);  // accepted drafts + 1
-        const double rate   = tokens / (k * draft_ms_ + a + b * k);
+    return near < 0 ? prior(n) : vt_[near] / vn_[near] * prior(n) / prior(near);
+}
+
+int SpecDecoder::choose_k() const {
+    // expected accepted drafts at k = sum over draft positions j <= k of P(first j drafts accepted), from decayed
+    // per-position counts with a weak prior (rejections cluster, so long runs are likelier than a fixed per-token rate
+    // predicts); then pick the k with the best expected tokens per millisecond
+    const int kmax = std::min(k_, m_.max_verify() - 1);
+    int       best = 1;
+    double    best_rate = 0, surv = 1, accepted = 0;
+    for (int k = 1; k <= kmax; k++) {
+        const double hazard = (fail_[k] + kPriorHazard * kPriorWeight) / (seen_[k] + kPriorWeight);
+        surv *= 1 - std::clamp(hazard, 0.0, 1.0);
+        accepted += surv;
+        const double rate = (accepted + 1) / (k * draft_ms_ + verify_ms(k + 1));
         if (rate > best_rate) {
             best_rate = rate;
             best      = k;
@@ -137,7 +156,7 @@ bool SpecDecoder::prefill(const std::vector<int32_t> & prompt, std::vector<int32
         if (!m_.eval(prompt.data() + i, n, o, final ? logits_.data() : nullptr, nullptr, err)) return false;
     }
     last_ = sample(logits_.data(), -1);
-    out.push_back(last_);
+    emit(out, last_);
     st_.emitted++;
     st_.prefill_tokens += (int64_t) prompt.size();
     st_.t_prefill += now() - t0;
@@ -146,9 +165,122 @@ bool SpecDecoder::prefill(const std::vector<int32_t> & prompt, std::vector<int32
 
 void SpecDecoder::begin(const float * last_logits, std::vector<int32_t> & out) {
     logits_.assign(last_logits, last_logits + m_.hp().n_vocab);
+    apply_penalties(logits_.data(), sp_, counts_);
     last_ = sample(logits_.data(), -1);
-    out.push_back(last_);
+    emit(out, last_);
     st_.emitted++;
+}
+
+namespace {
+using Dist = std::vector<std::pair<float, int32_t>>;
+double at(const Dist & v, int32_t t) {
+    for (auto & e : v) {
+        if (e.second == t) return (double) e.first;
+    }
+    return 0.0;
+}
+int32_t draw(const Dist & p, std::mt19937_64 & rng) {
+    double r = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
+    for (auto & e : p) {
+        if ((r -= e.first) <= 0) return e.second;
+    }
+    return p.back().second;
+}
+// after rejecting a draft from q: a sample from max(0, p - q), normalised
+int32_t draw_residual(const Dist & p, const Dist & q, std::mt19937_64 & rng) {
+    std::vector<std::pair<double, int32_t>> r;
+    double                                  tot = 0;
+    for (auto & e : p) {
+        const double d = e.first - at(q, e.second);
+        if (d > 0) {
+            r.emplace_back(d, e.second);
+            tot += d;
+        }
+    }
+    if (tot <= 0) return p.front().second;
+    double u = std::uniform_real_distribution<double>(0.0, tot)(rng);
+    for (auto & e : r) {
+        if ((u -= e.first) <= 0) return e.second;
+    }
+    return r.back().second;
+}
+} // namespace
+
+bool SpecDecoder::draft_mtp(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err) {
+    // Rounds of: the MTP block proposes up to mtp_n_ tokens, one base pass checks them (speculative sampling against
+    // the MTP's distribution, or argmax agreement when greedy) and adds one token of its own. The kept tokens are
+    // exact samples from the base, so they and the base's distributions are the drafts for the base + residual verify.
+    const int64_t      nv      = m_.hp().n_vocab;
+    const bool         sampled = sp_.temp > 0;
+    std::vector<float> ml(sampled ? (size_t) nv : 0), lg;
+    int                row = m_.hidden_row();
+    while ((int) toks.size() - 1 < k) {
+        const int            need = k - ((int) toks.size() - 1);
+        const int            mt   = std::min(mtp_n_, need - 1);
+        std::vector<int32_t> in(1, toks.back());
+        std::vector<Dist>    pq;
+        TokenCounts          cm = sampled ? cur : TokenCounts{};
+        for (int j = 0; j < mt; j++) {  // MTP chain: position of toks.back() is n_past()
+            int32_t id = -1;
+            if (!m_.mtp_step(in.back(), m_.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr, &id, err)) {
+                return false;
+            }
+            if (sampled) {
+                apply_penalties(ml.data(), sp_, cm);
+                pq.emplace_back();
+                dist(ml.data(), pq.back());
+                id = draw(pq.back(), rng_);
+                cm[id]++;
+            }
+            in.push_back(id);
+        }
+        const int nb = mt + 1;
+        m_.save_state(1);
+        model::EvalOpts bo;
+        bo.residual  = false;
+        bo.window_ok = true;
+        bo.record    = true;
+        bo.argmax    = !sampled;
+        std::vector<int32_t> bid((size_t) nb);
+        lg.resize(sampled ? (size_t) nb * nv : 0);
+        if (!m_.eval(in.data(), nb, bo, sampled ? lg.data() : nullptr, bid.data(), err)) return false;
+        int     a    = 0;
+        int32_t next = -1;
+        if (!sampled) {
+            while (a < mt && in[(size_t) a + 1] == bid[(size_t) a]) toks.push_back(in[(size_t) ++a]);
+            next = bid[(size_t) a];
+        } else {
+            for (;; a++) {
+                float * L = lg.data() + (size_t) a * nv;
+                apply_penalties(L, sp_, cur);
+                Dist pb;
+                dist(L, pb);
+                if (a == mt) {  // all proposals kept: the base's own next token
+                    next = draw(pb, rng_);
+                    qd.push_back(std::move(pb));
+                    break;
+                }
+                const int32_t d  = in[(size_t) a + 1];
+                const double  qv = at(pq[(size_t) a], d);
+                if (qv > 0 && std::uniform_real_distribution<double>(0.0, 1.0)(rng_) * qv < at(pb, d)) {
+                    toks.push_back(d);
+                    cur[d]++;
+                    qd.push_back(std::move(pb));
+                    continue;
+                }
+                next = draw_residual(pb, pq[(size_t) a], rng_);
+                qd.push_back(std::move(pb));
+                break;
+            }
+        }
+        toks.push_back(next);
+        cur[next]++;
+        st_.mtp_proposed += mt;
+        st_.mtp_accepted += a;
+        if (!m_.rollback(a + 1, err, 1)) return false;  // keep toks.back() before this round + the accepted proposals
+        row = a;
+    }
+    return true;
 }
 
 bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
@@ -164,8 +296,9 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         const double t0 = now();
         if (!m_.eval(&last_, 1, model::EvalOpts{}, logits_.data(), nullptr, err)) return false;
         st_.t_verify += now() - t0;
+        apply_penalties(logits_.data(), sp_, counts_);
         last_ = sample(logits_.data(), -1);
-        out.push_back(last_);
+        emit(out, last_);
         st_.emitted++;
         return true;
     }
@@ -183,10 +316,17 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     using Dist             = std::vector<std::pair<float, int32_t>>;
     std::vector<Dist> qd(sampled ? (size_t) k_ : 0);
     std::vector<float> dl(sampled ? (size_t) nv : 0);
-    for (int i = 0; i < k_; i++) {
+    TokenCounts        cur = counts_;  // penalties at each position include the drafts before it
+    const bool use_mtp = mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0;
+    if (use_mtp) {
+        qd.clear();
+        if (!draft_mtp(k_, toks, qd, cur, err)) return false;
+    }
+    for (int i = use_mtp ? k_ : 0; i < k_; i++) {
         int32_t id = -1;
         if (!m_.eval(&toks.back(), 1, dopt, sampled ? dl.data() : nullptr, &id, err)) return false;
         if (sampled) {
+            apply_penalties(dl.data(), sp_, cur);
             dist(dl.data(), qd[(size_t) i]);
             std::uniform_real_distribution<double> uq(0.0, 1.0);
             double r = uq(rng_);
@@ -200,6 +340,7 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
             }
         }
         toks.push_back(id);
+        cur[id]++;
     }
     m_.restore_state();
     const double td = now() - t0;
@@ -215,26 +356,27 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     if (!m_.eval(toks.data(), k_ + 1, vopt, lg.data(), nullptr, err)) return false;
     const double tv = 1e3 * (now() - t0);
     st_.t_verify += tv / 1e3;
-    {
-        const double d = 0.9;  // decayed least squares of verify ms on k
-        vs_   = d * vs_ + 1;
-        vsk_  = d * vsk_ + k_;
-        vskk_ = d * vskk_ + (double) k_ * k_;
-        vst_  = d * vst_ + tv;
-        vskt_ = d * vskt_ + k_ * tv;
+    for (int n = 1; n <= kMaxK + 1; n++) {  // decayed verify ms per batch size
+        vt_[n] *= 0.9;
+        vn_[n] *= 0.9;
     }
+    vt_[k_ + 1] += tv;
+    vn_[k_ + 1] += 1;
 
     int                                    acc  = 0;
     int32_t                                next = -1;
     std::uniform_real_distribution<double> u(0.0, 1.0);
+    cur = counts_;
     for (; acc < k_; acc++) {
-        const float * L = lg.data() + (size_t) acc * nv;
+        float * L = lg.data() + (size_t) acc * nv;
         const int32_t d = toks[(size_t) acc + 1];
+        apply_penalties(L, sp_, cur);
+        cur[d]++;
         if (!sampled) {
             // deterministic draft (q = delta at d): accept with p(d), else resample from p without d
             const double pd = prob(L, d);
             if (pd >= 1.0 || (pd > 0 && u(rng_) < pd)) {
-                out.push_back(d);
+                emit(out, d);
                 continue;
             }
             next = sample(L, d);
@@ -252,7 +394,7 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         };
         const double pd = at(pdist, d), qv = at(q, d);
         if (qv > 0 && u(rng_) * qv < pd) {
-            out.push_back(d);
+            emit(out, d);
             continue;
         }
         std::vector<std::pair<double, int32_t>> resid;
@@ -278,14 +420,19 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         }
         break;
     }
-    if (acc == k_) {
-        next = sample(lg.data() + (size_t) k_ * nv, -1);  // all accepted: bonus token from the last position
+    if (acc == k_) {  // all accepted: bonus token from the last position
+        apply_penalties(lg.data() + (size_t) k_ * nv, sp_, cur);
+        next = sample(lg.data() + (size_t) k_ * nv, -1);
     }
-    out.push_back(next);
+    emit(out, next);
     st_.accepted += acc;
     st_.emitted += acc + 1;
-    acc_n_ = 0.9 * acc_n_ + acc;
-    rej_n_ = 0.9 * rej_n_ + (acc < k_ ? 1 : 0);
+    for (int j = 1; j <= kMaxK; j++) {  // decayed per-position counts: drafts seen and first rejections
+        seen_[j] *= 0.95;
+        fail_[j] *= 0.95;
+    }
+    for (int j = 1; j <= std::min(acc + 1, k_); j++) seen_[j] += 1;
+    if (acc < k_) fail_[acc + 1] += 1;
 
     t0 = now();
     if (!m_.rollback(acc + 1, err)) return false;  // keep last_ and the accepted drafts
