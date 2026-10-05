@@ -64,16 +64,14 @@ int decode(const std::vector<std::string> & args) {
     const int64_t      nv = m.n_vocab();
     std::vector<float> lg((size_t) nv * std::min<size_t>(prompt.size(), 512));
     auto               t0 = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < prompt.size(); i += 512) {
-        const int n = (int) std::min<size_t>(512, prompt.size() - i);
-        if (!m.eval(prompt.data() + i, n, lg.data(), err)) {
-            fprintf(stderr, "prefill failed: %s\n", err.c_str());
-            return 1;
-        }
+    if (!m.prefill(prompt.data(), (int) prompt.size(), lg.data(), err)) {
+        fprintf(stderr, "prefill failed: %s\n", err.c_str());
+        return 1;
     }
     const double tp  = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    const size_t off = (size_t) ((prompt.size() - 1) % 512) * (size_t) nv;
-    int32_t      tok = (int32_t) (std::max_element(lg.begin() + (long long) off, lg.begin() + (long long) off + nv) - lg.begin() - (long long) off);
+    int32_t      tok = (int32_t) (std::max_element(lg.begin(), lg.begin() + nv) - lg.begin());
+    printf("prefill: %zu tokens in %.1f s (%.1f tok/s), next token %d (logit %.4f)\n", prompt.size(), tp,
+           prompt.size() / tp, tok, lg[(size_t) tok]);
     std::vector<int32_t> out;
     std::vector<double>  times;
     for (int i = 0; i < n_gen; i++) {

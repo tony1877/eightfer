@@ -21,6 +21,15 @@ public:
     virtual bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) = 0;
     // One saved state (recurrent state, n_past; KV entries past n_past are masked and get overwritten), used to
     // reuse a prompt prefix across requests.
+    // Prompt processing of any length: `logits` (may be null) receives the last token's row. Models may override it
+    // with a faster path for long prompts.
+    virtual bool prefill(const int32_t * tokens, int n, float * logits, std::string & err) {
+        for (int i = 0; i < n; i += 512) {
+            const int m = n - i < 512 ? n - i : 512;
+            if (!eval_last(tokens + i, m, i + m == n ? logits : nullptr, err)) return false;
+        }
+        return true;
+    }
     virtual void checkpoint_save()    = 0;
     virtual void checkpoint_restore() = 0;
 

@@ -355,7 +355,11 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
                 hv_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, opt.kv_type, h.head_dim, n_ctx_);
             }
         }
-        hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_get_default_buffer_type(cpu_));
+        if (std::getenv("E8_KV_PINNED") && std::atoi(std::getenv("E8_KV_PINNED")) != 0) {
+            hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_dev_host_buffer_type(ggml_backend_get_device(gpu_)));
+            if (!hbuf_) fprintf(stderr, "warning: pinned allocation for the KV failed, using pageable RAM\n");
+        }
+        if (!hbuf_) hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_get_default_buffer_type(cpu_));
         if (!hbuf_) {
             err = "not enough RAM for the KV cache (lower --ctx or use --kv q8_0)";
             return false;
@@ -464,7 +468,9 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     // pinned host memory when a GPU exists (fast GPU streaming for big batches); plain RAM otherwise or if the
     // pinned allocation is refused (Windows caps pinned memory at half of RAM)
     ggml_backend_buffer_type_t buft = nullptr;
-    if (gpu_) {
+    // E8_KV_PINNED=1 gives the pinned budget to a long-context KV instead (faster decode, slower prefill)
+    const bool kv_pin = std::getenv("E8_KV_PINNED") && std::atoi(std::getenv("E8_KV_PINNED")) != 0;
+    if (gpu_ && !kv_pin) {
         buft = ggml_backend_dev_host_buffer_type(ggml_backend_get_device(gpu_));
     }
     if (buft) {

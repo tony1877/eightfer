@@ -201,13 +201,10 @@ bool run_chat(Server & S, const json & body, Result & R, const std::function<voi
     const auto         t0 = std::chrono::steady_clock::now();
     std::vector<float> last((size_t) m.n_vocab());
     auto eval_range = [&](size_t a, size_t b) {
-        for (size_t i = a; i < b; i += 512) {
-            const int n = (int) std::min<size_t>(512, b - i);
-            if (!m.eval_last(prompt.data() + i, n, last.data(), err)) {
-                S.state_tokens.clear();
-                S.ck_tokens.clear();
-                return false;
-            }
+        if (b > a && !m.prefill(prompt.data() + a, (int) (b - a), last.data(), err)) {
+            S.state_tokens.clear();
+            S.ck_tokens.clear();
+            return false;
         }
         return true;
     };

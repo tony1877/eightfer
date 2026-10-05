@@ -12,6 +12,14 @@
 #include <cstdlib>
 #include <chrono>
 #include <thread>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 namespace e8::model {
 
@@ -902,31 +910,7 @@ ggml_cgraph * Qwen4Exp::build_graph(ggml_context * ctx, int n, int n_kv, bool sp
 
     in.embd = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, n);
     ggml_set_input(in.embd);
-    in.pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) n * 4);
-    ggml_set_input(in.pos);
-    in.mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_kv, n);
-    ggml_set_input(in.mask);
-    in.kvidx = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n);
-    ggml_set_input(in.kvidx);
-    if (std::find(h.ple_layer.begin(), h.ple_layer.end(), true) != h.ple_layer.end()) {
-        in.ple = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, n);
-        ggml_set_input(in.ple);
-    }
-    if (kpool_ > 0) {
-        const int64_t np = (n_past_ + n - 1) / kpool_ - n_past_ / kpool_ + 1;
-        in.pool_pos      = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * np);
-        ggml_set_input(in.pool_pos);
-        in.pool_rows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, np * kpool_);
-        ggml_set_input(in.pool_rows);
-        in.pool_blk = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, np);
-        ggml_set_input(in.pool_blk);
-        if (sparse) {
-            in.bvis = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv / kpool_, n);
-            ggml_set_input(in.bvis);
-            in.tail = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, n);
-            ggml_set_input(in.tail);
-        }
-    }
+    new_inputs(ctx, n, n_kv, sparse, in);
 
     // the wide residual starts as hc copies of the embedding
     ggml_tensor * res = ggml_repeat_4d(ctx, ggml_reshape_3d(ctx, in.embd, h.n_embd, 1, n), h.n_embd, h.hc, n, 1);
@@ -954,6 +938,178 @@ ggml_cgraph * Qwen4Exp::build_graph(ggml_context * ctx, int n, int n_kv, bool sp
     return gf;
 }
 
+void Qwen4Exp::new_inputs(ggml_context * ctx, int n, int n_kv, bool sparse, Inputs & in) {
+    const auto & h = hp_;
+    in.pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) n * 4);
+    ggml_set_input(in.pos);
+    in.mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_kv, n);
+    ggml_set_input(in.mask);
+    in.kvidx = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, n);
+    ggml_set_input(in.kvidx);
+    if (std::find(h.ple_layer.begin(), h.ple_layer.end(), true) != h.ple_layer.end()) {
+        in.ple = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, n);
+        ggml_set_input(in.ple);
+    }
+    if (kpool_ > 0) {
+        const int64_t np = (n_past_ + n - 1) / kpool_ - n_past_ / kpool_ + 1;
+        in.pool_pos      = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4 * np);
+        ggml_set_input(in.pool_pos);
+        in.pool_rows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, np * kpool_);
+        ggml_set_input(in.pool_rows);
+        in.pool_blk = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, np);
+        ggml_set_input(in.pool_blk);
+        if (sparse) {
+            in.bvis = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv / kpool_, n);
+            ggml_set_input(in.bvis);
+            in.tail = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, n);
+            ggml_set_input(in.tail);
+        }
+    }
+}
+
+bool Qwen4Exp::sparse_at(int n) const {
+    // QSA is dense while every token's complete blocks fit the budget
+    if (kpool_ <= 0) return false;
+    return (n_past_ + n) / kpool_ > hp_.idx_budget / kpool_;
+}
+
+bool Qwen4Exp::run_part(int part, int64_t il, const int32_t * tokens, int n, float * r, float * logits, std::string & err) {
+    const auto &  h      = hp_;
+    const int64_t hcd    = h.hc * h.n_embd;
+    const int     n_kv   = std::min(n_ctx_, (n_past_ + n + kKvPad - 1) / kKvPad * kKvPad);
+    const bool    sparse = sparse_at(n);
+    ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
+    ggml_context *   ctx = ggml_init(ip);
+    ggml_cgraph *    gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
+    Inputs           in;
+    in.res = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, h.n_embd, h.hc, part == 2 ? 1 : n);
+    ggml_set_input(in.res);
+    ggml_tensor * res = in.res, * out = nullptr, * inject = nullptr;
+    const Qwen4ExpLayer & L = layers_[(size_t) (part == 2 ? 0 : il)];
+    if (part == 0) {
+        new_inputs(ctx, n, n_kv, sparse, in);
+        if (h.ple_layer[(size_t) il]) res = ple(ctx, gf, il, res, in.ple, n);
+        ggml_tensor * cur = hc_mix(ctx, res, L.hca_norm, L.hca_down, L.hca_up, L.hca_inject, &inject);
+        cur = h.recurrent[(size_t) il] ? gdn(ctx, gf, il, cur, n) : attn(ctx, gf, il, cur, n, n_kv, sparse, in);
+        out = hc_combine(ctx, res, cur, inject);
+    } else if (part == 1) {
+        ggml_tensor * cur = hc_mix(ctx, res, L.hcf_norm, L.hcf_down, L.hcf_up, L.hcf_inject, &inject);
+        out = hc_combine(ctx, res, moe(ctx, il, cur, n), inject);
+    } else {
+        out = ggml_mul_mat(ctx, output_, hc_mix(ctx, res, out_hc_norm_, out_hc_down_, out_hc_up_, nullptr, nullptr));
+    }
+    ggml_set_output(out);
+    ggml_build_forward_expand(gf, out);
+    ggml_backend_sched_reset(sched_);
+    if (!ggml_backend_sched_alloc_graph(sched_, gf)) {
+        ggml_free(ctx);
+        err = "prefill: cannot allocate the compute graph";
+        return false;
+    }
+    ggml_backend_tensor_set(in.res, part == 2 ? r + (size_t) (n - 1) * hcd : r, 0, ggml_nbytes(in.res));
+    if (part == 0 && !set_inputs(in, tokens, n, n_kv, err)) {
+        ggml_free(ctx);
+        return false;
+    }
+    if (ggml_backend_sched_graph_compute(sched_, gf) != GGML_STATUS_SUCCESS) {
+        ggml_free(ctx);
+        err = "prefill: graph compute failed";
+        return false;
+    }
+    if (part == 2) {
+        if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
+    } else {
+        ggml_backend_tensor_get(out, r, 0, ggml_nbytes(out));
+    }
+    ggml_free(ctx);
+    return true;
+}
+
+bool Qwen4Exp::prefill(const int32_t * tokens, int N, float * logits, std::string & err) {
+    const auto & h = hp_;
+    // short prompts: the whole-model graph per 512 tokens
+    static const int min_layered = std::getenv("E8_LAYERED_MIN") ? std::atoi(std::getenv("E8_LAYERED_MIN")) : 4096;
+    if (N < min_layered) return CausalLM::prefill(tokens, N, logits, err);
+    if (n_past_ + N > n_ctx_) {
+        err = "prefill: context full (" + std::to_string(n_ctx_) + " tokens)";
+        return false;
+    }
+    // Long prompts go layer by layer over chunks of S tokens, so each layer's experts are read from disk once per
+    // chunk instead of once per 512 tokens (they do not fit in RAM). Sub-batches: the mixer runs in pieces sized so
+    // the attention mask stays small, the MoE in big pieces (the GPU gets the whole expert tensors per piece).
+    const int64_t hcd = h.hc * h.n_embd;
+    const int     S   = std::getenv("E8_PREFILL_CHUNK") ? std::atoi(std::getenv("E8_PREFILL_CHUNK")) : 65536;
+    // MoE pieces: 4096 tokens need ~1.5 GB of GPU scratch next to the copied expert tensors (8192 ran out of VRAM
+    // beside a full expert cache)
+    const int     um  = std::getenv("E8_MOE_UBATCH") ? std::atoi(std::getenv("E8_MOE_UBATCH")) : 4096;
+    const int     ug  = 2048;
+    std::vector<float> rr;
+    const size_t  rs  = ggml_row_size(tok_embd_->type, h.n_embd);
+    const auto *  tt  = ggml_get_type_traits(tok_embd_->type);
+    const char *  tb  = (const char *) file_.data(tok_embd_);
+    std::vector<float> e((size_t) h.n_embd);
+    // touch the next layer's experts in the background while this one computes
+    auto prefetch = [&](int64_t il) {
+        std::vector<std::pair<void *, size_t>> ranges;
+        if (il < h.n_layer) {
+            const Qwen4ExpLayer & L = layers_[(size_t) il];
+            for (ggml_tensor * t : { L.gate_exps, L.up_exps, L.gate_up_exps, L.down_exps }) {
+                if (t && t->data && t->buffer && ggml_backend_buffer_is_host(t->buffer)) ranges.emplace_back(t->data, ggml_nbytes(t));
+            }
+        }
+        return std::thread([ranges]() {
+#if defined(_WIN32)
+            std::vector<WIN32_MEMORY_RANGE_ENTRY> w;
+            for (auto & r : ranges) w.push_back({ r.first, r.second });
+            if (!w.empty()) PrefetchVirtualMemory(GetCurrentProcess(), w.size(), w.data(), 0);
+#else
+            for (auto & r : ranges) madvise(r.first, r.second, MADV_WILLNEED);
+#endif
+        });
+    };
+    for (int c0 = 0; c0 < N; c0 += S) {
+        const int cn   = std::min(S, N - c0);
+        const int base = n_past_;
+        rr.resize((size_t) cn * hcd);
+        for (int i = 0; i < cn; i++) {
+            const int32_t t = tokens[c0 + i];
+            if (t < 0 || t >= h.n_vocab) {
+                err = "prefill: token id out of range";
+                return false;
+            }
+            const char * row = tb + rs * (size_t) t;
+            if (tok_embd_->type == GGML_TYPE_F32) std::memcpy(e.data(), row, sizeof(float) * h.n_embd);
+            else tt->to_float(row, e.data(), h.n_embd);
+            for (int64_t j = 0; j < h.hc; j++) std::memcpy(rr.data() + (size_t) i * hcd + j * h.n_embd, e.data(), sizeof(float) * h.n_embd);
+        }
+        history_.insert(history_.end(), tokens + c0, tokens + c0 + cn);
+        std::thread pf = prefetch(0);
+        for (int64_t il = 0; il < h.n_layer; il++) {
+            int ua = ug;
+            if (!h.recurrent[(size_t) il]) {  // mask + tail ~6 bytes per (kv, token): keep them near 256 MB
+                const int64_t kv = std::max<int64_t>(kKvPad, base + cn);
+                ua = (int) std::clamp<int64_t>(48'000'000 / kv / 32 * 32, 32, 512);
+            }
+            for (int m0 = 0; m0 < cn; m0 += ua) {
+                const int n = std::min(ua, cn - m0);
+                n_past_     = base + m0;
+                if (!run_part(0, il, tokens + c0 + m0, n, rr.data() + (size_t) m0 * hcd, nullptr, err)) return false;
+            }
+            pf.join();
+            pf = prefetch(il + 1);
+            for (int m0 = 0; m0 < cn; m0 += um) {
+                const int n = std::min(um, cn - m0);
+                n_past_     = base + m0;
+                if (!run_part(1, il, tokens + c0 + m0, n, rr.data() + (size_t) m0 * hcd, nullptr, err)) return false;
+            }
+        }
+        pf.join();
+        n_past_ = base + cn;
+        if (c0 + cn == N && !run_part(2, 0, nullptr, cn, rr.data(), logits, err)) return false;
+    }
+    return true;
+}
+
 bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string & err) {
     const auto & h = hp_;
     if (n <= 0 || n > opt_.n_ubatch) {
@@ -965,12 +1121,7 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
         return false;
     }
     const int n_kv = std::min(n_ctx_, (n_past_ + n + kKvPad - 1) / kKvPad * kKvPad);
-    // QSA is dense while every token's complete blocks fit the budget
-    bool sparse = false;
-    if (kpool_ > 0) {
-        const int64_t K = h.idx_budget / kpool_;
-        sparse          = (n_past_ + n) / kpool_ > K;
-    }
+    const bool sparse = sparse_at(n);
 
     using clk = std::chrono::steady_clock;
     auto  sec = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double>(b - a).count(); };
@@ -1009,50 +1160,9 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
         }
         set(in.embd, e.data(), e.size() * sizeof(float));
     }
-    std::vector<int32_t> pos((size_t) n * 4, 0);
-    for (int i = 0; i < n; i++) pos[(size_t) i] = pos[(size_t) n + i] = pos[(size_t) 2 * n + i] = n_past_ + i;
-    set(in.pos, pos.data(), pos.size() * sizeof(int32_t));
-    std::vector<ggml_fp16_t> mask((size_t) n_kv * n);
-    const ggml_fp16_t        zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n_kv; j++) mask[(size_t) i * n_kv + j] = j <= n_past_ + i ? zero : ninf;
-    }
-    set(in.mask, mask.data(), mask.size() * sizeof(ggml_fp16_t));
-    if (in.ple) {
-        std::vector<float> pr;
-        ple_rows(tokens, n, pr);
-        set(in.ple, pr.data(), pr.size() * sizeof(float));
-    }
-    {
-        std::vector<int64_t> rows((size_t) n);
-        for (int i = 0; i < n; i++) rows[(size_t) i] = n_past_ + i;
-        set(in.kvidx, rows.data(), rows.size() * sizeof(int64_t));
-    }
-    if (in.pool_pos) {  // re-pooled blocks: member rows, block ids, rotation to each block's first position
-        const int64_t        b0 = n_past_ / kpool_, np = in.pool_blk->ne[0];
-        std::vector<int32_t> pp((size_t) (4 * np), 0), pr((size_t) (np * kpool_));
-        std::vector<int64_t> pb((size_t) np);
-        for (int64_t i = 0; i < np; i++) {
-            pp[(size_t) i] = pp[(size_t) (np + i)] = pp[(size_t) (2 * np + i)] = (int32_t) ((b0 + i) * kpool_);
-            pb[(size_t) i] = b0 + i;
-            for (int64_t j = 0; j < kpool_; j++) pr[(size_t) (i * kpool_ + j)] = (int32_t) ((b0 + i) * kpool_ + j);
-        }
-        set(in.pool_pos, pp.data(), pp.size() * sizeof(int32_t));
-        set(in.pool_rows, pr.data(), pr.size() * sizeof(int32_t));
-        set(in.pool_blk, pb.data(), pb.size() * sizeof(int64_t));
-    }
-    if (in.bvis) {
-        const int64_t      NB = in.bvis->ne[0];
-        std::vector<float> bv((size_t) (NB * n)), tl((size_t) n_kv * n);
-        for (int i = 0; i < n; i++) {
-            const int64_t p = n_past_ + i, nb = (p + 1) / kpool_;
-            // visible blocks get -1e-30*b: ties (typically several blocks whose relu-summed score is exactly 0) go
-            // to the lower index, as torch.topk does in the reference; nonzero scores are unaffected (below 1 ulp)
-            for (int64_t b = 0; b < NB; b++) bv[(size_t) (i * NB + b)] = b < nb ? -1e-30f * (float) b : -INFINITY;
-            for (int64_t j = 0; j < n_kv; j++) tl[(size_t) i * n_kv + j] = (j >= nb * kpool_ && j <= p) ? 0.0f : -INFINITY;
-        }
-        set(in.bvis, bv.data(), bv.size() * sizeof(float));
-        set(in.tail, tl.data(), tl.size() * sizeof(float));
+    if (!set_inputs(in, tokens, n, n_kv, err)) {
+        ggml_free(ctx);
+        return false;
     }
 
     const auto t3 = clk::now();
@@ -1093,6 +1203,64 @@ bool Qwen4Exp::eval(const int32_t * tokens, int n, float * logits, std::string &
     ggml_free(ctx);
     history_.insert(history_.end(), tokens, tokens + n);
     n_past_ += n;
+    return true;
+}
+
+bool Qwen4Exp::set_inputs(const Inputs & in, const int32_t * tokens, int n, int n_kv, std::string & err) {
+    (void) err;
+    auto set = [](ggml_tensor * t, const void * d, size_t nb) {
+        if (t && t->buffer) ggml_backend_tensor_set(t, d, 0, nb);
+    };
+    std::vector<int32_t> pos((size_t) n * 4, 0);
+    for (int i = 0; i < n; i++) pos[(size_t) i] = pos[(size_t) n + i] = pos[(size_t) 2 * n + i] = n_past_ + i;
+    set(in.pos, pos.data(), pos.size() * sizeof(int32_t));
+    std::vector<ggml_fp16_t> mask((size_t) n_kv * n);
+    const ggml_fp16_t        zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
+    for (int i = 0; i < n; i++) {
+        ggml_fp16_t * mr = mask.data() + (size_t) i * n_kv;
+        const int     nz = std::min(n_kv, n_past_ + i + 1);
+        std::fill(mr, mr + nz, zero);
+        std::fill(mr + nz, mr + n_kv, ninf);
+    }
+    set(in.mask, mask.data(), mask.size() * sizeof(ggml_fp16_t));
+    if (in.ple) {
+        std::vector<float> pr;
+        ple_rows(tokens, n, pr);
+        set(in.ple, pr.data(), pr.size() * sizeof(float));
+    }
+    {
+        std::vector<int64_t> rows((size_t) n);
+        for (int i = 0; i < n; i++) rows[(size_t) i] = n_past_ + i;
+        set(in.kvidx, rows.data(), rows.size() * sizeof(int64_t));
+    }
+    if (in.pool_pos) {  // re-pooled blocks: member rows, block ids, rotation to each block's first position
+        const int64_t        b0 = n_past_ / kpool_, np = in.pool_blk->ne[0];
+        std::vector<int32_t> pp((size_t) (4 * np), 0), pr((size_t) (np * kpool_));
+        std::vector<int64_t> pb((size_t) np);
+        for (int64_t i = 0; i < np; i++) {
+            pp[(size_t) i] = pp[(size_t) (np + i)] = pp[(size_t) (2 * np + i)] = (int32_t) ((b0 + i) * kpool_);
+            pb[(size_t) i] = b0 + i;
+            for (int64_t j = 0; j < kpool_; j++) pr[(size_t) (i * kpool_ + j)] = (int32_t) ((b0 + i) * kpool_ + j);
+        }
+        set(in.pool_pos, pp.data(), pp.size() * sizeof(int32_t));
+        set(in.pool_rows, pr.data(), pr.size() * sizeof(int32_t));
+        set(in.pool_blk, pb.data(), pb.size() * sizeof(int64_t));
+    }
+    if (in.bvis) {
+        const int64_t      NB = in.bvis->ne[0];
+        std::vector<float> bv((size_t) (NB * n)), tl((size_t) n_kv * n);
+        for (int i = 0; i < n; i++) {
+            const int64_t p = n_past_ + i, nb = (p + 1) / kpool_;
+            // visible blocks get -1e-30*b: ties (typically several blocks whose relu-summed score is exactly 0) go
+            // to the lower index, as torch.topk does in the reference; nonzero scores are unaffected (below 1 ulp)
+            for (int64_t b = 0; b < NB; b++) bv[(size_t) (i * NB + b)] = b < nb ? -1e-30f * (float) b : -INFINITY;
+            float * tr = tl.data() + (size_t) i * n_kv;
+            std::fill(tr, tr + n_kv, -INFINITY);
+            std::fill(tr + std::min<int64_t>(n_kv, nb * kpool_), tr + std::min<int64_t>(n_kv, p + 1), 0.0f);
+        }
+        set(in.bvis, bv.data(), bv.size() * sizeof(float));
+        set(in.tail, tl.data(), tl.size() * sizeof(float));
+    }
     return true;
 }
 

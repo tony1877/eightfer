@@ -73,3 +73,11 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
   18.8 tok/s, 24 warm).
 - Requests and responses follow llama-server: `chat_template_kwargs` (e.g. `enable_thinking`), `reasoning_content`,
   `tools` / `tool_calls`, streaming with usage and timings in the last chunk.
+- Long context (up to the models' 262144): pass `--ctx 262144 --kv q8_0`. When the 27B's KV does not fit in VRAM next
+  to the weights, the full KV (9.1 GB at 256K) lives in RAM and a window of recent tokens (auto, `--gpu-kv N`) stays
+  in VRAM for the drafter. 27B at a 261,776-token prompt: prefill 416 tok/s (~10.5 min), decode 3.3 tok/s at a full
+  context (4.4 with `E8_KV_PINNED=1`, which pins the KV instead of the residual: prefill 342 tok/s). Decode is
+  bound by copying the RAM KV to the GPU each verify, so it is faster the less of the context is used.
+- Flash-Next long prompts are processed layer by layer (65536-token chunks), so each layer's experts are read from
+  disk once per chunk instead of once per 512 tokens: 6K-token prompt 110 tok/s (was 10.7); a 261,776-token prompt
+  prefills at 95 tok/s (46 min) and then decodes at 9.0 tok/s, needle at position 0 recalled.

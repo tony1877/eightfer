@@ -83,6 +83,7 @@ public:
 
     bool eval(const int32_t * tokens, int n, float * logits, std::string & err) override;
     void reset() override;
+    bool prefill(const int32_t * tokens, int n, float * logits, std::string & err) override;
     bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) override;
     void checkpoint_save() override;
     void checkpoint_restore() override;
@@ -101,7 +102,7 @@ public:
 
 private:
     struct Inputs {
-        ggml_tensor * embd = nullptr, * pos = nullptr, * mask = nullptr, * ple = nullptr;
+        ggml_tensor * embd = nullptr, * pos = nullptr, * mask = nullptr, * ple = nullptr, * res = nullptr;
         // QSA (sparse batches only)
         ggml_tensor * bvis = nullptr, * tail = nullptr, * pool_pos = nullptr;
         // rows written by this eval, and the blocks re-pooled (always the blocks touched by this batch, so a
@@ -109,6 +110,12 @@ private:
         ggml_tensor * kvidx = nullptr, * pool_rows = nullptr, * pool_blk = nullptr;
     };
     ggml_cgraph * build_graph(ggml_context * ctx, int n, int n_kv, bool sparse, Inputs & in, ggml_tensor *& out);
+    void new_inputs(ggml_context * ctx, int n, int n_kv, bool sparse, Inputs & in);
+    bool set_inputs(const Inputs & in, const int32_t * tokens, int n, int n_kv, std::string & err);
+    bool sparse_at(int n) const;
+    // Layer-major prompt processing: one sub-layer (0 = mixer, 1 = MoE, 2 = output head) for n tokens at n_past_,
+    // reading and writing the wide residual rows `r` ([hc * n_embd] per token; head: logits of the last row).
+    bool run_part(int part, int64_t il, const int32_t * tokens, int n, float * r, float * logits, std::string & err);
     ggml_tensor * hc_mix(ggml_context * ctx, ggml_tensor * x, ggml_tensor * wn, ggml_tensor * wd, ggml_tensor * wu,
                          ggml_tensor * wi, ggml_tensor ** inject);
     ggml_tensor * hc_combine(ggml_context * ctx, ggml_tensor * res, ggml_tensor * out, ggml_tensor * inject);
