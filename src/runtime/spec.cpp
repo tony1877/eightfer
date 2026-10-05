@@ -67,8 +67,24 @@ void SpecDecoder::dist(const float * logits, std::vector<std::pair<float, int32_
     if (sp_.top_k > 0 && (size_t) sp_.top_k < n) {
         std::partial_sort(p.begin(), p.begin() + sp_.top_k, p.end(), desc);
         n = (size_t) sp_.top_k;
+    } else if (sp_.top_p >= 1.0f && sp_.min_p <= 0.0f) {
+        // nothing below needs the order: only put the most likely token first
+        std::iter_swap(p.begin(), std::max_element(p.begin(), p.end(), [](const auto & a, const auto & b) { return a.first < b.first; }));
     } else {
-        std::sort(p.begin(), p.end(), desc);
+        // the nucleus / min-p set lies among the likely tokens: sort only those when they provably hold the top_p mass
+        const float mx = std::max_element(p.begin(), p.end(), [](const auto & a, const auto & b) { return a.first < b.first; })->first;
+        const float lo = mx - 14.0f;  // logit cut, ~1e-6 of the top probability
+        auto        mid = std::partition(p.begin(), p.end(), [lo](const auto & e) { return e.first >= lo; });
+        double      in = 0, all = 0;
+        for (auto it = p.begin(); it != p.end(); ++it) {
+            const double e = std::exp((double) (it->first - mx));
+            all += e;
+            if (it < mid) in += e;
+        }
+        // the tail (below the cut) can stay unsorted when it is discarded anyway: the top_p cut ends inside the head
+        // (with margin for float sums), or min_p removes everything under ~8e-7 of the top probability
+        const bool head_only = (sp_.top_p < 1.0f && in >= (sp_.top_p + 1e-4) * all) || sp_.min_p > 1e-6f;
+        std::sort(p.begin(), head_only ? mid : p.end(), desc);
     }
     p.resize(n);
     const float mx  = p[0].first;
@@ -188,10 +204,14 @@ int32_t draw(const Dist & p, std::mt19937_64 & rng) {
 }
 // after rejecting a draft from q: a sample from max(0, p - q), normalised
 int32_t draw_residual(const Dist & p, const Dist & q, std::mt19937_64 & rng) {
+    std::unordered_map<int32_t, float> qm;  // q by token (q and p can hold the whole vocabulary)
+    qm.reserve(q.size() * 2);
+    for (auto & e : q) qm.emplace(e.second, e.first);
     std::vector<std::pair<double, int32_t>> r;
     double                                  tot = 0;
     for (auto & e : p) {
-        const double d = e.first - at(q, e.second);
+        const auto   it = qm.find(e.second);
+        const double d  = e.first - (it == qm.end() ? 0.0 : (double) it->second);
         if (d > 0) {
             r.emplace_back(d, e.second);
             tot += d;

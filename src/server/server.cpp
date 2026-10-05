@@ -82,6 +82,15 @@ struct Server {
     std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
     std::string                      router_url;  // llama-server router to unload / forward to (empty = none)
+    // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
+    runtime::SamplerParams           defaults = [] {
+        runtime::SamplerParams d;
+        d.temp  = 1.0f;
+        d.top_p = 0.95f;
+        d.top_k = 20;
+        d.min_p = 0.0f;
+        return d;
+    }();
     std::chrono::steady_clock::time_point last_used = std::chrono::steady_clock::now();
     std::mt19937_64                  rng{ std::random_device{}() };
 };
@@ -174,6 +183,7 @@ json to_nl(const common_json & j) {
 }
 
 struct Result {
+    std::string     spec;  // speculative decoding summary (log)
     common_chat_msg msg;   // chat requests
     std::string     text;  // completion requests
     std::string     finish = "stop";
@@ -203,13 +213,14 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     auto &     m    = *S.model;
     const bool chat = body.contains("messages");
     runtime::SamplerParams sp;
-    sp.temp              = body.value("temperature", 1.0f);
-    sp.top_p             = body.value("top_p", 1.0f);
-    sp.top_k             = body.value("top_k", 0);
-    sp.min_p             = body.value("min_p", 0.0f);
+    const auto & dflt    = S.defaults;
+    sp.temp              = body.value("temperature", dflt.temp);
+    sp.top_p             = body.value("top_p", dflt.top_p);
+    sp.top_k             = body.value("top_k", dflt.top_k);
+    sp.min_p             = body.value("min_p", dflt.min_p);
     sp.seed              = body.value("seed", (uint64_t) 0);
-    sp.presence_penalty  = body.value("presence_penalty", 0.0f);
-    sp.frequency_penalty = body.value("frequency_penalty", 0.0f);
+    sp.presence_penalty  = body.value("presence_penalty", dflt.presence_penalty);
+    sp.frequency_penalty = body.value("frequency_penalty", dflt.frequency_penalty);
     int max_tokens = body.value("max_completion_tokens", body.value("max_tokens", chat ? -1 : 16));
     std::vector<std::string> stops;
     if (body.contains("stop")) {
@@ -416,6 +427,12 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             if (!dec.step(out, err)) return false;
             consume();
         }
+        const auto & st = dec.stats();
+        char         b[160];
+        snprintf(b, sizeof b, "%lld cycles, %.1f tokens/cycle, draft %.0f / verify %.0f ms per cycle", (long long) st.cycles,
+                 st.cycles ? (double) (st.emitted - 1) / st.cycles : 0.0, st.cycles ? 1e3 * st.t_draft / st.cycles : 0.0,
+                 st.cycles ? 1e3 * st.t_verify / st.cycles : 0.0);
+        R.spec = b;
     } else {
         std::mt19937_64 rng(sp.seed ? sp.seed : S.rng());
         auto            next = [&]() {
@@ -438,6 +455,9 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     R.t_gen = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
 
     S.last_used = std::chrono::steady_clock::now();
+    fprintf(stderr, "%s: prompt %d tokens (%d reused) in %.1f s, %d generated at %.1f tok/s (temp %.2f top_k %d top_p %.2f)%s%s\n",
+            S.entries[(size_t) S.active].alias.c_str(), R.n_prompt, R.n_reused, R.t_prompt, R.n_gen,
+            R.n_gen / std::max(R.t_gen, 1e-9), sp.temp, sp.top_k, sp.top_p, R.spec.empty() ? "" : "; ", R.spec.c_str());
     if (!chat) {
         R.text = text;
         return true;
@@ -499,6 +519,11 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--mtp") S->mtp = std::atoi(val().c_str());
         else if (a == "--idle-unload") idle_unload = std::atoi(val().c_str());
+        else if (a == "--temperature" || a == "--temp") S->defaults.temp = (float) std::atof(val().c_str());
+        else if (a == "--top-p") S->defaults.top_p = (float) std::atof(val().c_str());
+        else if (a == "--top-k") S->defaults.top_k = std::atoi(val().c_str());
+        else if (a == "--min-p") S->defaults.min_p = (float) std::atof(val().c_str());
+        else if (a == "--presence-penalty") S->defaults.presence_penalty = (float) std::atof(val().c_str());
         else if (a == "--unload-router") router_url = val();
         else if (a == "--spec") {
             const std::string v = val();
@@ -514,7 +539,8 @@ int serve(const std::vector<std::string> & args) {
         fprintf(stderr, "usage: eightfer serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0] [--spec auto|K]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
-                        "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n");
+                        "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
+                        "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n");
         return 1;
     }
     if (!key_file.empty()) {  // last non-comment line (same format as the llama-server key file)
