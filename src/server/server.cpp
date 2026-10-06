@@ -75,6 +75,7 @@ struct Server {
     int                              spec_k = 12;
     bool                             spec_auto = true;
     int                              mtp = 3;  // MTP proposals per base pass while drafting (0 = off)
+    bool                             echo = true;  // echo drafting (copies from the context)
     // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;
     std::condition_variable          cv;
@@ -421,6 +422,8 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     if (spec) {
         runtime::SpecDecoder dec(*S.q35, S.spec_k, sp, S.spec_auto);
         dec.set_mtp(S.mtp);
+        dec.set_echo(S.echo);
+        dec.set_context(prompt);
         dec.begin(last.data(), out);
         consume();
         while (!done && S.q35->n_past() + S.spec_k + 2 < m.n_ctx()) {
@@ -429,9 +432,10 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         }
         const auto & st = dec.stats();
         char         b[160];
-        snprintf(b, sizeof b, "%lld cycles, %.1f tokens/cycle, draft %.0f / verify %.0f ms per cycle", (long long) st.cycles,
-                 st.cycles ? (double) (st.emitted - 1) / st.cycles : 0.0, st.cycles ? 1e3 * st.t_draft / st.cycles : 0.0,
-                 st.cycles ? 1e3 * st.t_verify / st.cycles : 0.0);
+        snprintf(b, sizeof b, "%lld cycles, %.1f tokens/cycle, draft %.0f / verify %.0f ms per cycle, echo %lld/%lld kept",
+                 (long long) st.cycles, st.cycles ? (double) (st.emitted - 1) / st.cycles : 0.0,
+                 st.cycles ? 1e3 * st.t_draft / st.cycles : 0.0, st.cycles ? 1e3 * st.t_verify / st.cycles : 0.0,
+                 (long long) st.echo_accepted, (long long) st.echo_proposed);
         R.spec = b;
     } else {
         std::mt19937_64 rng(sp.seed ? sp.seed : S.rng());
@@ -518,6 +522,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--mtp") S->mtp = std::atoi(val().c_str());
+        else if (a == "--echo") S->echo = std::atoi(val().c_str()) != 0;
         else if (a == "--idle-unload") idle_unload = std::atoi(val().c_str());
         else if (a == "--temperature" || a == "--temp") S->defaults.temp = (float) std::atof(val().c_str());
         else if (a == "--top-p") S->defaults.top_p = (float) std::atof(val().c_str());

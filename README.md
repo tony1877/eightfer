@@ -77,6 +77,11 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
   - MTP-staged drafts (`--mtp N`, default 3, 0 = off). The model's own MTP block proposes N tokens; one base pass
     checks them by speculative sampling and adds a token of its own. The kept tokens are exact samples from the base,
     so they draft for base + residual as before. 13 ms per draft token vs 19 for the base alone.
+  - Echo drafting (`--echo 1`, default). When the last 8 tokens occurred earlier in the context, the tokens that
+    followed them (up to 63) are proposed instead of MTP's: agents re-emit file contents, code and tool arguments.
+    The base checks the copy in one pass like an MTP proposal. Synthetic agent tasks at 256K context (file rewrite,
+    str_replace call, refactor): 8.1 / 29.1 / 22.5 -> 36.3 / 49.4 / 29.8 tok/s, 2.8x end to end; it also fixes
+    drafting once the copied text has left the drafts' VRAM window.
   Output follows the base + residual distribution exactly (speculative sampling at both levels). Greedy output is
   token-identical to plain decoding up to rounding: verify batches of 16+ tokens can flip a near-tie (k=6 matches
   plain over 256 tokens).

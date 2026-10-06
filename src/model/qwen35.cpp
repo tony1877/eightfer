@@ -395,10 +395,11 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             ssm_state_[(size_t) il]  = ggml_new_tensor_1d(c, GGML_TYPE_F32, h.ssm_d_state * h.ssm_d_state * h.ssm_n_v);
             conv_bak_[(size_t) il]   = ggml_dup_tensor(c, conv_state_[(size_t) il]);
             ssm_bak_[(size_t) il]    = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
-            if (mtp_on_) {
-                conv_bak1_[(size_t) il] = ggml_dup_tensor(c, conv_state_[(size_t) il]);
-                ssm_bak1_[(size_t) il]  = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
-            }
+            // snapshot slot 1 (multi-token proposal checks while drafting): VRAM beside MTP, else RAM (it is copied once
+            // per checked proposal, ~0.16 GB, and the KV window needs the VRAM more)
+            ggml_context * cb = mtp_on_ ? c : sctx_[1];
+            conv_bak1_[(size_t) il] = ggml_dup_tensor(cb, conv_state_[(size_t) il]);
+            ssm_bak1_[(size_t) il]  = ggml_dup_tensor(cb, ssm_state_[(size_t) il]);
             // prompt-reuse checkpoint: copied once per request, so it lives in RAM
             conv_ck_[(size_t) il]    = ggml_dup_tensor(sctx_[1], conv_state_[(size_t) il]);
             ssm_ck_[(size_t) il]     = ggml_dup_tensor(sctx_[1], ssm_state_[(size_t) il]);

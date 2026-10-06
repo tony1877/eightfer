@@ -171,6 +171,7 @@ bool SpecDecoder::prefill(const std::vector<int32_t> & prompt, std::vector<int32
         o.last_only = true;
         if (!m_.eval(prompt.data() + i, n, o, final ? logits_.data() : nullptr, nullptr, err)) return false;
     }
+    set_context(prompt);
     last_ = sample(logits_.data(), -1);
     emit(out, last_);
     st_.emitted++;
@@ -226,40 +227,94 @@ int32_t draw_residual(const Dist & p, const Dist & q, std::mt19937_64 & rng) {
 }
 } // namespace
 
-bool SpecDecoder::draft_mtp(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err) {
-    // Rounds of: the MTP block proposes up to mtp_n_ tokens, one base pass checks them (speculative sampling against
-    // the MTP's distribution, or argmax agreement when greedy) and adds one token of its own. The kept tokens are
-    // exact samples from the base, so they and the base's distributions are the drafts for the base + residual verify.
+uint64_t SpecDecoder::ngram_key(const int32_t * t) {
+    uint64_t h = 1469598103934665603ull;  // FNV-1a over kEchoN token ids
+    for (int i = 0; i < kEchoN; i++) {
+        h ^= (uint32_t) t[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+int SpecDecoder::find_copy(const int32_t * tail) {
+    // index every kEchoN-gram of the history ending before its last position, then look up `tail`; returns the
+    // history position right after the most recent earlier occurrence (where the copy continues), or -1
+    const int h = (int) hist_.size();
+    for (; ngram_upto_ < h; ngram_upto_++) {
+        if (ngram_upto_ >= kEchoN) ngram_[ngram_key(hist_.data() + ngram_upto_ - kEchoN)] = ngram_upto_;
+    }
+    const auto it = ngram_.find(ngram_key(tail));
+    if (it == ngram_.end()) return -1;
+    const int e = it->second;
+    if (e >= h || !std::equal(tail, tail + kEchoN, hist_.data() + e - kEchoN)) return -1;  // hash collision
+    return e;
+}
+
+bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err) {
+    // Rounds of: proposals, then one base pass that checks them (speculative sampling against the proposals'
+    // distribution, or argmax agreement when greedy) and adds one token of its own. Proposals come from
+    //  - echo: when the last kEchoN tokens occurred earlier in the context, the tokens that followed them (up to 63;
+    //    agents re-emit file contents, code and arguments); a deterministic proposal, q = 1 on the copied token
+    //  - else the MTP block (mtp_n_ tokens), when loaded
+    //  - else none: the base pass adds one token.
+    // The kept tokens are exact samples from the base, so they and the base's distributions are the drafts for the
+    // base + residual verify.
     const int64_t      nv      = m_.hp().n_vocab;
     const bool         sampled = sp_.temp > 0;
     std::vector<float> ml(sampled ? (size_t) nv : 0), lg;
-    int                row = m_.hidden_row();
     while ((int) toks.size() - 1 < k) {
         const int            need = k - ((int) toks.size() - 1);
-        const int            mt   = std::min(mtp_n_, need - 1);
         std::vector<int32_t> in(1, toks.back());
         std::vector<Dist>    pq;
-        TokenCounts          cm = sampled ? cur : TokenCounts{};
-        for (int j = 0; j < mt; j++) {  // MTP chain: position of toks.back() is n_past()
-            int32_t id = -1;
-            if (!m_.mtp_step(in.back(), m_.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr, &id, err)) {
-                return false;
+        bool                 echo = false;
+        if (echo_ && need > 1) {
+            // the last kEchoN tokens of history + this cycle's drafts
+            std::vector<int32_t> tail;
+            const int            nd = (int) toks.size() - 1;  // drafts so far (toks[0] = last_, already in hist_)
+            for (int i = kEchoN - 1; i >= 0; i--) {
+                const int back = i - nd;  // >= 0: from hist_, else from toks
+                if (back >= 0) {
+                    if ((int) hist_.size() - 1 - back < 0) break;
+                    tail.push_back(hist_[hist_.size() - 1 - (size_t) back]);
+                } else {
+                    tail.push_back(toks[(size_t) (-back)]);  // i tokens from the end = draft nd - i
+                }
             }
-            if (sampled) {
-                apply_penalties(ml.data(), sp_, cm);
-                pq.emplace_back();
-                dist(ml.data(), pq.back());
-                id = draw(pq.back(), rng_);
-                cm[id]++;
+            const int j = (int) tail.size() == kEchoN ? find_copy(tail.data()) : -1;
+            if (j >= 0) {
+                const int len = std::min({ need - 1, 63, (int) hist_.size() - j });
+                for (int t = 0; t < len; t++) {
+                    in.push_back(hist_[(size_t) (j + t)]);
+                    if (sampled) pq.push_back(Dist{ { 1.0f, hist_[(size_t) (j + t)] } });
+                }
+                echo = len > 0;
             }
-            in.push_back(id);
         }
-        const int nb = mt + 1;
-        m_.save_state(1);
+        if (!echo && mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0) {
+            const int   mt  = std::min(mtp_n_, need - 1);
+            const int   row = m_.hidden_row();
+            TokenCounts cm  = sampled ? cur : TokenCounts{};
+            for (int j = 0; j < mt; j++) {  // MTP chain: position of toks.back() is n_past()
+                int32_t id = -1;
+                if (!m_.mtp_step(in.back(), m_.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr, &id, err)) {
+                    return false;
+                }
+                if (sampled) {
+                    apply_penalties(ml.data(), sp_, cm);
+                    pq.emplace_back();
+                    dist(ml.data(), pq.back());
+                    id = draw(pq.back(), rng_);
+                    cm[id]++;
+                }
+                in.push_back(id);
+            }
+        }
+        const int mt = (int) in.size() - 1, nb = mt + 1;
+        if (mt > 0) m_.save_state(1);
         model::EvalOpts bo;
         bo.residual  = false;
         bo.window_ok = true;
-        bo.record    = true;
+        bo.record    = mt > 0;
         bo.argmax    = !sampled;
         std::vector<int32_t> bid((size_t) nb);
         lg.resize(sampled ? (size_t) nb * nv : 0);
@@ -275,7 +330,7 @@ bool SpecDecoder::draft_mtp(int k, std::vector<int32_t> & toks, std::vector<Dist
                 apply_penalties(L, sp_, cur);
                 Dist pb;
                 dist(L, pb);
-                if (a == mt) {  // all proposals kept: the base's own next token
+                if (a == mt) {  // all proposals kept (or none made): the base's own next token
                     next = draw(pb, rng_);
                     qd.push_back(std::move(pb));
                     break;
@@ -295,10 +350,14 @@ bool SpecDecoder::draft_mtp(int k, std::vector<int32_t> & toks, std::vector<Dist
         }
         toks.push_back(next);
         cur[next]++;
-        st_.mtp_proposed += mt;
-        st_.mtp_accepted += a;
-        if (!m_.rollback(a + 1, err, 1)) return false;  // keep toks.back() before this round + the accepted proposals
-        row = a;
+        if (echo) {
+            st_.echo_proposed += mt;
+            st_.echo_accepted += a;
+        } else {
+            st_.mtp_proposed += mt;
+            st_.mtp_accepted += a;
+        }
+        if (mt > 0 && !m_.rollback(a + 1, err, 1)) return false;  // keep toks.back() before this round + the kept proposals
     }
     return true;
 }
@@ -337,10 +396,10 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     std::vector<Dist> qd(sampled ? (size_t) k_ : 0);
     std::vector<float> dl(sampled ? (size_t) nv : 0);
     TokenCounts        cur = counts_;  // penalties at each position include the drafts before it
-    const bool use_mtp = mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0;
+    const bool use_mtp = echo_ || (mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0);
     if (use_mtp) {
         qd.clear();
-        if (!draft_mtp(k_, toks, qd, cur, err)) return false;
+        if (!draft_rounds(k_, toks, qd, cur, err)) return false;
     }
     for (int i = use_mtp ? k_ : 0; i < k_; i++) {
         int32_t id = -1;

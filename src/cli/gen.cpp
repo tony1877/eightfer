@@ -26,11 +26,12 @@ struct GenResult {
     double               t_total = 0;
 };
 
-bool run_gen(model::Qwen35 & m, const std::vector<int32_t> & prompt, int n_gen, int k, bool adaptive, int mtp,
+bool run_gen(model::Qwen35 & m, const std::vector<int32_t> & prompt, int n_gen, int k, bool adaptive, int mtp, bool echo,
              const runtime::SamplerParams & sp, GenResult & r, std::string & err) {
     m.reset();
     runtime::SpecDecoder dec(m, k, sp, adaptive);
     dec.set_mtp(mtp);
+    dec.set_echo(echo);
     const auto           t0 = std::chrono::steady_clock::now();
     if (!dec.prefill(prompt, r.toks, err)) return false;
     while ((int) r.toks.size() < n_gen) {
@@ -57,6 +58,10 @@ void report(const char * label, const GenResult & r, int k) {
     } else if (s.cycles > 0) {
         printf("  %.1f ms per token\n", 1e3 * s.t_verify / s.cycles);
     }
+    if (s.echo_proposed > 0) {
+        printf("  echo: %lld tokens proposed from the context, %.3f kept by the base\n", (long long) s.echo_proposed,
+               (double) s.echo_accepted / (double) s.echo_proposed);
+    }
     if (s.mtp_proposed > 0) {
         printf("  MTP: %lld proposals, %.3f kept by the base\n", (long long) s.mtp_proposed,
                (double) s.mtp_accepted / (double) s.mtp_proposed);
@@ -77,6 +82,7 @@ int gen(const std::vector<std::string> & args) {
     int                   n_gen = 128, k = 6, gpu_layers = 999, n_ctx = 4096, threads = 0;
     int gpu_kv = -1;
     int mtp    = 3;
+    bool echo  = true;
     bool kv_q8 = false;
     bool                  compare = false, profile = false, adaptive = false;
     runtime::SamplerParams sp;
@@ -103,6 +109,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--compare") compare = true;
         else if (a == "--mtp") mtp = std::atoi(val().c_str());
+        else if (a == "--echo") echo = std::atoi(val().c_str()) != 0;
         else if (a == "--profile") profile = true;
         else if (model.empty() && a[0] != '-') model = a;
         else {
@@ -172,7 +179,7 @@ int gen(const std::vector<std::string> & args) {
     }
 
     GenResult a;
-    if (!run_gen(m, prompt, n_gen, k, adaptive, mtp, sp, a, err)) {
+    if (!run_gen(m, prompt, n_gen, k, adaptive, mtp, echo, sp, a, err)) {
         fprintf(stderr, "generation failed: %s\n", err.c_str());
         return 1;
     }
@@ -183,7 +190,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (compare && k > 0 && sp.temp <= 0) {
         GenResult b;
-        if (!run_gen(m, prompt, n_gen, 0, false, 0, sp, b, err)) {
+        if (!run_gen(m, prompt, n_gen, 0, false, 0, false, sp, b, err)) {
             fprintf(stderr, "plain generation failed: %s\n", err.c_str());
             return 1;
         }

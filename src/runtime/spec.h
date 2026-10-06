@@ -37,6 +37,7 @@ struct SpecStats {
     double  t_draft = 0, t_verify = 0, t_rollback = 0, t_prefill = 0;
     int64_t prefill_tokens = 0;
     int64_t mtp_proposed = 0, mtp_accepted = 0;  // MTP proposals checked by the base / kept
+    int64_t echo_proposed = 0, echo_accepted = 0;  // tokens copied from the context as proposals / kept
 };
 
 class SpecDecoder {
@@ -47,6 +48,14 @@ public:
     SpecDecoder(model::Qwen35 & m, int k, const SamplerParams & sp, bool adaptive = false);
     // MTP proposals per base pass while drafting (when the model has its MTP block); 0 drafts with the base alone
     void set_mtp(int n) { mtp_n_ = n > 0 ? n : 0; }
+    // echo drafting: propose continuations of earlier occurrences of the last tokens (on by default)
+    void set_echo(bool on) { echo_ = on; }
+    // the tokens before the first emitted one (the prompt), for echo drafting; prefill() sets it itself
+    void set_context(const std::vector<int32_t> & prompt) {
+        hist_       = prompt;
+        ngram_upto_ = 0;
+        ngram_.clear();
+    }
 
     // Evaluates the prompt (base + residual) and samples the first token, which is appended to `out`.
     bool prefill(const std::vector<int32_t> & prompt, std::vector<int32_t> & out, std::string & err);
@@ -70,12 +79,15 @@ private:
     int     choose_k() const;
     double  verify_ms(int n) const;
     using Dist = std::vector<std::pair<float, int32_t>>;
-    // drafts toks[1..k] (toks[0] = last_) with MTP rounds checked by the base; qd gets the base's distribution at
-    // each draft when sampling
-    bool    draft_mtp(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err);
+    // drafts toks[1..k] (toks[0] = last_) with echo / MTP rounds checked by the base; qd gets the base's
+    // distribution at each draft when sampling
+    bool    draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err);
+    static uint64_t ngram_key(const int32_t * t);
+    int     find_copy(const int32_t * tail);
     void    emit(std::vector<int32_t> & out, int32_t t) {
         out.push_back(t);
         counts_[t]++;
+        hist_.push_back(t);
     }
 
     static constexpr int    kGpuBatch    = 32;    // ggml's default batch size for running host weights on the GPU
@@ -95,6 +107,11 @@ private:
     std::vector<float> logits_;
     TokenCounts        counts_;  // tokens emitted so far (penalties)
     int                mtp_n_ = 3;  // MTP proposals per base pass (0 = draft with the base alone)
+    static constexpr int kEchoN = 8;  // echo: tokens that must match to propose a copy
+    bool                 echo_  = true;
+    std::vector<int32_t> hist_;  // prompt + emitted tokens
+    std::unordered_map<uint64_t, int> ngram_;  // kEchoN-gram -> history position after its latest occurrence
+    int                  ngram_upto_ = 0;
     SpecStats          st_;
 };
 
