@@ -82,6 +82,8 @@ struct Qwen35Layer {
 struct EvalOpts {
     bool residual  = true;   // add the residual (when loaded)
     bool record    = false;  // keep DeltaNet inputs so rollback() can replay a prefix of this batch
+    bool dry       = false;  // with record: leave the recurrent state and n_past as they were; commit(keep) then
+                             // advances them by the first `keep` tokens (no snapshot needed)
     bool last_only = false;  // logits for the last token only (prefill)
     bool argmax    = false;  // return argmax token ids instead of logits
     bool window_ok = false;  // attention may see only the VRAM window of recent tokens (speculative drafts)
@@ -132,6 +134,8 @@ public:
     // After a recorded eval of n tokens: restore the snapshot `slot` taken before it and re-run only the first `keep`
     // tokens through the DeltaNet layers (attention KV is kept as written). n_past becomes snapshot + keep.
     bool rollback(int keep, std::string & err, int slot = 0);
+    // After a dry recorded eval: run the first `keep` tokens through the DeltaNet recurrence and advance n_past by keep
+    bool commit(int keep, std::string & err);
 
     bool has_mtp() const { return mtp_on_; }
     // row of the last eval's hidden states that belongs to position n_past() - 1, or -1 when unknown
@@ -188,6 +192,8 @@ private:
     ggml_tensor * mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x);
     bool load_residual(const std::string & path, std::string & err);
     bool compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err);
+    bool replay(int keep, std::string & err);  // the first keep recorded tokens through the DeltaNet recurrence
+    bool write_state_ = true;                  // while building: gdn_core updates the recurrent state
     // MTP: the layer input from embeddings and hidden states [n_embd, n]
     ggml_tensor * mtp_input(ggml_context * ctx, ggml_tensor * emb, ggml_tensor * hid);
     // MTP layer on x [n_embd, n] at positions `pos`: writes K/V to ring rows `kvidx`; with a mask, also attends and
@@ -232,6 +238,7 @@ private:
 
     // residual: base weight -> residual tensor (pinned host memory)
     std::unordered_map<const ggml_tensor *, ggml_tensor *> res_;
+    std::unordered_map<const ggml_tensor *, std::vector<ggml_tensor *>> res_chunks_;  // big residuals in row pieces
     ggml_context *        rctx_ = nullptr;
     ggml_backend_buffer_t rbuf_ = nullptr;
     uint64_t              res_bytes_ = 0;
@@ -243,6 +250,7 @@ private:
     int         saved_n_past_ = 0;
     int         recorded_n_ = 0;  // recorded tokens of the last recorded eval (0 = none)
     int         recorded_full_ = 0;  // its batch size (rollback beyond recorded_n_ is only possible to keep all)
+    bool        dry_pending_ = false;  // the last recorded eval was dry: commit() before anything else
     int         debug_layer_ = -1;
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context

@@ -317,13 +317,14 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         const double ts0 = now();
         st_.t_mtp += ts0 - tm0;
         (echo ? st_.rounds_echo : mt > 0 ? st_.rounds_mtp : st_.rounds_plain)++;
-        if (mt > 0) m_.save_state(1);
+        // proposals: a dry check (recurrent state untouched), then commit only the kept tokens
         const double tb0 = now();
         st_.t_snap += tb0 - ts0;
         model::EvalOpts bo;
         bo.residual  = false;
         bo.window_ok = true;
         bo.record    = mt > 0;
+        bo.dry       = mt > 0;
         bo.argmax    = !sampled;
         std::vector<int32_t> bid((size_t) nb);
         lg.resize(sampled ? (size_t) nb * nv : 0);
@@ -368,7 +369,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             st_.mtp_accepted += a;
         }
         const double tr0 = now();
-        if (mt > 0 && !m_.rollback(a + 1, err, 1)) return false;  // keep toks.back() before this round + the kept proposals
+        if (mt > 0 && !m_.commit(a + 1, err)) return false;  // keep toks.back() before this round + the kept proposals
         st_.t_rback += now() - tr0;
         last_echo_full_ = echo && a == mt;
         if (extend && !last_echo_full_) break;

@@ -82,6 +82,11 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
     The base checks the copy in one pass like an MTP proposal. Synthetic agent tasks at 256K context (file rewrite,
     str_replace call, refactor): 8.1 / 29.1 / 22.5 -> 36.3 / 49.4 / 29.8 tok/s, 2.8x end to end; it also fixes
     drafting once the copied text has left the drafts' VRAM window.
+  - At 256K context MTP now fits beside the RAM KV: proposal checks run "dry" (recurrent state untouched, the kept
+    tokens committed by replay) instead of snapshotting 0.16 GB of state; the output head's residual is staged in
+    VRAM in row pieces (verify compute buffer 0.84 -> 0.23 GB); prompts past the VRAM ring run in 256-token sparse
+    chunks instead of reserving 1.1 GB for exact staging. 256K: decode 18.2 -> 22.7 tok/s on a summary, prose
+    ~13 -> 22 tok/s, prefill 403 -> 456 tok/s, needle recalled, 15.1 GB peak VRAM.
   Output follows the base + residual distribution exactly (speculative sampling at both levels). Greedy output is
   token-identical to plain decoding up to rounding: verify batches of 16+ tokens can flip a near-tie (k=6 matches
   plain over 256 tokens).

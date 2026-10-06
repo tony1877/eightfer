@@ -28,8 +28,9 @@ namespace e8::model {
 namespace {
 
 constexpr int    kGraphSize = 16384;
+constexpr int64_t kResChunkRows = 24832;  // residual rows per GPU-staged matmul piece (see load_residual)
 // most queries per sparse long-context attention batch (bigger batches attend exactly over the RAM KV)
-const int kSparseMaxN = std::getenv("E8_SPARSE_MAXN") ? std::atoi(std::getenv("E8_SPARSE_MAXN")) : 128;
+const int kSparseMaxN = std::getenv("E8_SPARSE_MAXN") ? std::atoi(std::getenv("E8_SPARSE_MAXN")) : 256;
 constexpr int    kKvPad     = 256;  // KV length handed to attention is padded to this (masked)
 constexpr int    kPage      = 64;   // sparse long-context attention: tokens per key-summary page
 constexpr size_t kReadChunk = 64u << 20;
@@ -304,11 +305,15 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             const double state   = 2.0 * (double) (h.n_layer - n_attn) *
                                  (double) (h.ssm_d_state * h.ssm_d_state * h.ssm_n_v + h.conv_channels() * 4) * 4.0;
             // MTP: weights, a second state snapshot, its KV ring and the hidden-state buffer
-            const double mtp_cost = mtp_w + state / 2.0 + 2.0 * (double) opt.mtp_window * (double) ggml_row_size(opt.kv_type, h.head_dim * h.n_head_kv) +
+            const double mtp_cost = mtp_w + 2.0 * (double) opt.mtp_window * (double) ggml_row_size(opt.kv_type, h.head_dim * h.n_head_kv) +
                                     4.0 * (double) h.n_embd * (double) (opt.n_ubatch + 1);
             const double reserve = (std::getenv("E8_VRAM_RESERVE_GB") ? std::atof(std::getenv("E8_VRAM_RESERVE_GB")) * 1e9 : 0.15e9) + state;  // measured: 256K ctx, 7.9K window peaked at 15.5 of 16.3 GB
-            const double stage   = (double) n_ctx_ * (2.0 * (double) h.n_head_kv * (double) ggml_row_size(opt.kv_type, h.head_dim) +
-                                                    4.0 * (double) h.head_dim + 2.0 * (double) opt.n_ubatch);
+            // with sparse attention big batches are split (see eval), so the compute buffer is the biggest verify's
+            // (~0.35 GB at 88 tokens, measured; 0.5 for 128); else one layer's full per-head K/V copies, F16, mask
+            const bool   sparse_env = !(std::getenv("E8_SPARSE") && std::atoi(std::getenv("E8_SPARSE")) == 0);
+            const double stage   = sparse_env ? 0.5e9
+                                              : (double) n_ctx_ * (2.0 * (double) h.n_head_kv * (double) ggml_row_size(opt.kv_type, h.head_dim) +
+                                                                   4.0 * (double) h.head_dim + 2.0 * (double) opt.n_ubatch);
             if (want_mtp && (double) fr - reserve - mtp_cost >= tok * (double) n_ctx_) {
                 want    = n_ctx_;
                 mtp_on_ = true;
@@ -318,7 +323,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
                 const double summ = (double) n_attn * (double) h.n_head_kv * (double) (n_ctx_ / kPage) * (double) h.head_dim * 2.0;
                 want = (int64_t) (((double) fr - reserve - stage - summ) / tok);
                 // MTP beside a split KV (E8_MTP_MIN_WINDOW=tokens): when the window left after it is still that big
-                static const int64_t min_win = std::getenv("E8_MTP_MIN_WINDOW") ? std::atoll(std::getenv("E8_MTP_MIN_WINDOW")) : 0;
+                static const int64_t min_win = std::getenv("E8_MTP_MIN_WINDOW") ? std::atoll(std::getenv("E8_MTP_MIN_WINDOW")) : 4096;
                 if (want_mtp && min_win > 0) {
                     const int64_t w2 = (int64_t) (((double) fr - reserve - stage - summ - mtp_cost) / tok);
                     if (w2 - 4096 >= min_win) {
@@ -406,11 +411,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             ssm_state_[(size_t) il]  = ggml_new_tensor_1d(c, GGML_TYPE_F32, h.ssm_d_state * h.ssm_d_state * h.ssm_n_v);
             conv_bak_[(size_t) il]   = ggml_dup_tensor(c, conv_state_[(size_t) il]);
             ssm_bak_[(size_t) il]    = ggml_dup_tensor(c, ssm_state_[(size_t) il]);
-            // snapshot slot 1 (multi-token proposal checks while drafting): VRAM beside MTP, else RAM (it is copied once
-            // per checked proposal, ~0.16 GB, and the KV window needs the VRAM more)
-            ggml_context * cb = mtp_on_ ? c : sctx_[1];
-            conv_bak1_[(size_t) il] = ggml_dup_tensor(cb, conv_state_[(size_t) il]);
-            ssm_bak1_[(size_t) il]  = ggml_dup_tensor(cb, ssm_state_[(size_t) il]);
+            // (proposal checks while drafting use dry evals + commit, so slot 1 needs no memory)
             // prompt-reuse checkpoint: copied once per request, so it lives in RAM
             conv_ck_[(size_t) il]    = ggml_dup_tensor(sctx_[1], conv_state_[(size_t) il]);
             ssm_ck_[(size_t) il]     = ggml_dup_tensor(sctx_[1], ssm_state_[(size_t) il]);
@@ -654,7 +655,7 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
         err = "residual " + path + " was packed against a different base (pack id " + id_r + ", base has \"" + id_b + "\")";
         return false;
     }
-    ggml_init_params ip = { ggml_tensor_overhead() * (size_t) (rf.n_tensors() + 8), nullptr, true };
+    ggml_init_params ip = { ggml_tensor_overhead() * (size_t) (rf.n_tensors() + 64), nullptr, true };
     rctx_               = ggml_init(ip);
     std::vector<std::pair<ggml_tensor *, const ggml_tensor *>> to_load;
     for (int64_t i = 0; i < rf.n_tensors(); i++) {
@@ -698,7 +699,22 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     }
     ggml_backend_buffer_set_usage(rbuf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     res_bytes_ = ggml_backend_buffer_get_size(rbuf_);
-    return read_tensors(path, rf, to_load, err);
+    if (!read_tensors(path, rf, to_load, err)) return false;
+    // A big batch runs a host weight on the GPU by staging the whole tensor in VRAM. The output head's residual (248K
+    // rows, 0.7 GB) would set the verify's VRAM need; as tensors over its row pieces (same memory) it needs a tenth.
+    for (auto & [base, r] : res_) {
+        if (r->ne[1] <= kResChunkRows || ggml_n_dims(r) != 2) continue;
+        auto & parts = res_chunks_[r];
+        for (int64_t r0 = 0; r0 < r->ne[1]; r0 += kResChunkRows) {
+            ggml_tensor * pt = ggml_new_tensor_2d(rctx_, r->type, r->ne[0], std::min<int64_t>(kResChunkRows, r->ne[1] - r0));
+            if (ggml_backend_tensor_alloc(rbuf_, pt, (char *) r->data + r->nb[1] * (size_t) r0) != GGML_STATUS_SUCCESS) {
+                err = "cannot place a residual row piece";
+                return false;
+            }
+            parts.push_back(pt);
+        }
+    }
+    return true;
 }
 
 ggml_tensor * Qwen35::mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x) {
@@ -710,8 +726,19 @@ ggml_tensor * Qwen35::mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x) {
             // ggml mul_mat, which the scheduler streams to the GPU
             static const bool small_ok = std::getenv("E8_NO_SMALL_GEMM") == nullptr;
             ggml_tensor *     r        = it->second;
-            y = ggml_add(ctx, y, small_ok && kernels::q4k_small_supported(r, x) ? kernels::q4k_mul_mat_small(ctx, r, x)
-                                                                                : ggml_mul_mat(ctx, r, x));
+            if (small_ok && kernels::q4k_small_supported(r, x)) {
+                y = ggml_add(ctx, y, kernels::q4k_mul_mat_small(ctx, r, x));
+            } else if (auto ch = res_chunks_.find(r); ch != res_chunks_.end()) {
+                // row pieces of a big residual (see load_residual), each staged in VRAM on its own
+                ggml_tensor * acc = nullptr;
+                for (ggml_tensor * part : ch->second) {
+                    ggml_tensor * pm = ggml_mul_mat(ctx, part, x);
+                    acc = acc ? ggml_concat(ctx, acc, pm, 0) : pm;
+                }
+                y = ggml_add(ctx, y, acc);
+            } else {
+                y = ggml_add(ctx, y, ggml_mul_mat(ctx, r, x));
+            }
         }
     }
     return y;
@@ -793,31 +820,44 @@ bool Qwen35::rollback(int keep, std::string & err, int slot) {
         return false;
     }
     restore_state(slot);
-    if (keep > 0) {
-        const auto &     h   = hp_;
-        ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
-        ggml_context *   ctx = ggml_init(ip);
-        ggml_cgraph *    gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
-        for (int64_t il = 0; il < h.n_layer; il++) {
-            if (!h.is_recurrent(il)) {
-                continue;
-            }
-            const size_t  l    = (size_t) il;
-            ggml_tensor * qkv  = ggml_view_2d(ctx, rec_qkv_[l], h.conv_channels(), keep, rec_qkv_[l]->nb[1], 0);
-            ggml_tensor * g    = ggml_view_2d(ctx, rec_g_[l], h.ssm_n_v, keep, rec_g_[l]->nb[1], 0);
-            ggml_tensor * beta = ggml_view_2d(ctx, rec_beta_[l], h.ssm_n_v, keep, rec_beta_[l]->nb[1], 0);
-            gdn_core(ctx, gf, il, ggml_reshape_3d(ctx, qkv, h.conv_channels(), keep, 1),
-                     ggml_reshape_4d(ctx, g, 1, h.ssm_n_v, keep, 1), ggml_reshape_4d(ctx, beta, 1, h.ssm_n_v, keep, 1),
-                     keep);
-        }
-        const bool ok = compute(ctx, gf, err);
-        ggml_free(ctx);
-        if (!ok) {
-            err = "rollback: " + err;
-            return false;
-        }
-    }
+    if (!replay(keep, err)) return false;
     n_past_  = (slot ? saved_n_past1_ : saved_n_past_) + keep;
+    hid_row_ = keep - 1;
+    return true;
+}
+
+bool Qwen35::replay(int keep, std::string & err) {
+    if (keep <= 0) return true;
+    const auto &     h   = hp_;
+    ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
+    ggml_context *   ctx = ggml_init(ip);
+    ggml_cgraph *    gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
+    for (int64_t il = 0; il < h.n_layer; il++) {
+        if (!h.is_recurrent(il)) {
+            continue;
+        }
+        const size_t  l    = (size_t) il;
+        ggml_tensor * qkv  = ggml_view_2d(ctx, rec_qkv_[l], h.conv_channels(), keep, rec_qkv_[l]->nb[1], 0);
+        ggml_tensor * g    = ggml_view_2d(ctx, rec_g_[l], h.ssm_n_v, keep, rec_g_[l]->nb[1], 0);
+        ggml_tensor * beta = ggml_view_2d(ctx, rec_beta_[l], h.ssm_n_v, keep, rec_beta_[l]->nb[1], 0);
+        gdn_core(ctx, gf, il, ggml_reshape_3d(ctx, qkv, h.conv_channels(), keep, 1),
+                 ggml_reshape_4d(ctx, g, 1, h.ssm_n_v, keep, 1), ggml_reshape_4d(ctx, beta, 1, h.ssm_n_v, keep, 1), keep);
+    }
+    const bool ok = compute(ctx, gf, err);
+    ggml_free(ctx);
+    if (!ok) err = "replay: " + err;
+    return ok;
+}
+
+bool Qwen35::commit(int keep, std::string & err) {
+    if (!dry_pending_ || keep < 0 || keep > recorded_n_) {
+        err = "commit: no dry recorded eval or keep past the recorded tokens";
+        return false;
+    }
+    dry_pending_ = false;
+    recorded_n_ = recorded_full_ = 0;
+    if (!replay(keep, err)) return false;
+    n_past_ += keep;
     hid_row_ = keep - 1;
     return true;
 }
@@ -835,7 +875,7 @@ ggml_tensor * Qwen35::gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il,
     ggml_tensor * cin  = ggml_concat(ctx, cst, ggml_transpose(ctx, qkv), 0);  // [d_conv-1+n, C, 1]
     ggml_tensor * last = ggml_view_3d(ctx, cin, h.ssm_d_conv - 1, C, 1, cin->nb[1], cin->nb[2],
                                       ggml_row_size(cin->type, cin->ne[0] - (h.ssm_d_conv - 1)));
-    ggml_build_forward_expand(gf, ggml_cpy(ctx, last, cs));
+    if (write_state_) ggml_build_forward_expand(gf, ggml_cpy(ctx, last, cs));
 
     ggml_tensor * conv = ggml_silu(ctx, ggml_ssm_conv(ctx, cin, L.conv1d));  // [C, n, 1]
     const size_t  nb1  = ggml_row_size(conv->type, C);
@@ -854,7 +894,7 @@ ggml_tensor * Qwen35::gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il,
     ggml_tensor * out   = ggml_view_4d(ctx, res, S, Hv, n, 1, ggml_row_size(res->type, S),
                                        ggml_row_size(res->type, S * Hv), ggml_row_size(res->type, S * Hv * n), 0);
     ggml_tensor * new_state = ggml_view_1d(ctx, res, S * S * Hv, ggml_row_size(res->type, S * Hv * n));
-    ggml_build_forward_expand(gf, ggml_cpy(ctx, new_state, ss));
+    if (write_state_) ggml_build_forward_expand(gf, ggml_cpy(ctx, new_state, ss));
     return out;
 }
 
@@ -1211,6 +1251,21 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
         err = "eval: context full (" + std::to_string(n_ctx_) + " tokens)";
         return false;
     }
+    // With the KV in RAM, a batch past the VRAM ring attends exactly over the whole RAM KV, which needs per-head
+    // copies of all of it in VRAM; in pieces of kSparseMaxN it takes the sparse path instead (same quality at batch
+    // 16-128: 32K text PPL 2.2903-2.2920 vs 2.2937 exact), so that VRAM is not reserved.
+    static const bool sparse_env = !(std::getenv("E8_SPARSE") && std::atoi(std::getenv("E8_SPARSE")) == 0);
+    if (W_ < n_ctx_ && sparse_env && !pmid_.empty() && !opts.window_ok && !opts.record && n > kSparseMaxN &&
+        n_past_ + n > W_) {
+        for (int i = 0; i < n; i += kSparseMaxN) {
+            const int m    = std::min(kSparseMaxN, n - i);
+            const bool fin = i + m == n;
+            float *   lo   = opts.last_only ? (fin ? logits : nullptr) : (logits ? logits + (size_t) i * hp_.n_vocab : nullptr);
+            int32_t * io   = opts.last_only ? (fin ? ids : nullptr) : (ids ? ids + i : nullptr);
+            if (!eval(tokens + i, m, opts, lo, io, err)) return false;
+        }
+        return true;
+    }
     // where this eval's attention reads from (see the split-KV notes in qwen35.h)
     const bool split = W_ < n_ctx_;
     host_valid_      = std::min(host_valid_, n_past_);
@@ -1247,6 +1302,7 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     }
 
     use_res_             = opts.residual && has_residual();
+    write_state_         = !(opts.dry && opts.record);
     // ggml-cuda caches a captured CUDA graph per address of the graph's first node: the hot single-token draft pass
     // gets its own scratch buffer so it keeps its cached graph while other shapes (checks, rollbacks) run in between
     auto &           meta = n == 1 && !use_res_ ? graph_meta_draft_ : graph_meta_;
@@ -1255,6 +1311,7 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     ggml_tensor *    inp_tok = nullptr, * inp_pos = nullptr, * inp_mask = nullptr, * out = nullptr;
     ggml_cgraph *    gf      = build_graph(ctx, n, opts, inp_tok, inp_pos, inp_mask, out, n_kv);
     use_res_                 = false;
+    write_state_             = true;
 
     ggml_backend_sched_reset(sched_);
     for (ggml_tensor * a : attn_nodes_) {
@@ -1264,6 +1321,12 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
         ggml_free(ctx);
         err = "eval: cannot allocate the compute graph";
         return false;
+    }
+    if (std::getenv("E8_SCHED_DEBUG")) {
+        size_t fr = 0, tot = 0;
+        if (gpu_) ggml_backend_dev_memory(ggml_backend_get_device(gpu_), &fr, &tot);
+        fprintf(stderr, "eval n=%d res=%d: GPU compute buffer %.3f GB, %d splits, %.2f GB free\n", n, (int) opts.residual,
+                gpu_ ? ggml_backend_sched_get_buffer_size(sched_, gpu_) / 1e9 : 0.0, ggml_backend_sched_get_n_splits(sched_), fr / 1e9);
     }
     {
         for (int i = 0; i < n; i++) {
@@ -1365,10 +1428,11 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     ggml_free(ctx);
     recorded_n_    = opts.record ? std::min(n, opt_.max_record) : 0;
     recorded_full_ = opts.record ? n : 0;
+    dry_pending_   = opts.dry && opts.record;
     hid_row_    = mtp_on_ ? n - 1 : -1;
     if (!opts.window_ok) exact_upto_ = n_past_ + n;
     if (use_host) host_valid_ = n_past_ + n;
-    n_past_ += n;
+    if (!dry_pending_) n_past_ += n;  // a dry eval moves on in commit()
     return true;
 }
 
