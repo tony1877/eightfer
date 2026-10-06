@@ -293,6 +293,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             }
         }
         if (extend && !echo) break;  // extending a long copy: only further copies
+        const double tm0 = now();
         if (!echo && mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0) {
             const int   mt  = std::min(mtp_n_, need - 1);
             const int   row = m_.hidden_row();
@@ -313,7 +314,12 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             }
         }
         const int mt = (int) in.size() - 1, nb = mt + 1;
+        const double ts0 = now();
+        st_.t_mtp += ts0 - tm0;
+        (echo ? st_.rounds_echo : mt > 0 ? st_.rounds_mtp : st_.rounds_plain)++;
         if (mt > 0) m_.save_state(1);
+        const double tb0 = now();
+        st_.t_snap += tb0 - ts0;
         model::EvalOpts bo;
         bo.residual  = false;
         bo.window_ok = true;
@@ -322,6 +328,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         std::vector<int32_t> bid((size_t) nb);
         lg.resize(sampled ? (size_t) nb * nv : 0);
         if (!m_.eval(in.data(), nb, bo, sampled ? lg.data() : nullptr, bid.data(), err)) return false;
+        st_.t_beval += now() - tb0;
         int     a    = 0;
         int32_t next = -1;
         if (!sampled) {
@@ -360,7 +367,9 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             st_.mtp_proposed += mt;
             st_.mtp_accepted += a;
         }
+        const double tr0 = now();
         if (mt > 0 && !m_.rollback(a + 1, err, 1)) return false;  // keep toks.back() before this round + the kept proposals
+        st_.t_rback += now() - tr0;
         last_echo_full_ = echo && a == mt;
         if (extend && !last_echo_full_) break;
     }

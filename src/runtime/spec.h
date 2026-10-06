@@ -39,6 +39,9 @@ struct SpecStats {
     int64_t mtp_proposed = 0, mtp_accepted = 0;  // MTP proposals checked by the base / kept
     int64_t echo_proposed = 0, echo_accepted = 0;  // tokens copied from the context as proposals / kept
     int64_t long_cycles = 0, reruns = 0;  // cycles extended past k by a long copy / long verifies re-evaluated
+    // draft rounds by proposal source, and where their time goes (seconds)
+    int64_t rounds_echo = 0, rounds_mtp = 0, rounds_plain = 0;
+    double  t_snap = 0, t_beval = 0, t_rback = 0, t_mtp = 0;
 };
 
 class SpecDecoder {

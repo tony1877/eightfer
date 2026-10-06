@@ -58,6 +58,12 @@ void report(const char * label, const GenResult & r, int k) {
     } else if (s.cycles > 0) {
         printf("  %.1f ms per token\n", 1e3 * s.t_verify / s.cycles);
     }
+    if (s.rounds_echo + s.rounds_mtp + s.rounds_plain > 0) {
+        printf("  draft rounds: echo %lld, mtp %lld, plain %lld; draft time: snapshots %.0f ms, base checks %.0f ms, "
+               "rollbacks %.0f ms, mtp %.0f ms, long cycles %lld, reruns %lld\n",
+               (long long) s.rounds_echo, (long long) s.rounds_mtp, (long long) s.rounds_plain, 1e3 * s.t_snap,
+               1e3 * s.t_beval, 1e3 * s.t_rback, 1e3 * s.t_mtp, (long long) s.long_cycles, (long long) s.reruns);
+    }
     if (s.echo_proposed > 0) {
         printf("  echo: %lld tokens proposed from the context, %.3f kept by the base\n", (long long) s.echo_proposed,
                (double) s.echo_accepted / (double) s.echo_proposed);

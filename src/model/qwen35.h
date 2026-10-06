@@ -246,6 +246,7 @@ private:
     int         debug_layer_ = -1;
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context
+    std::vector<uint8_t> graph_meta_draft_, graph_meta_mtp_;  // single-token draft evals / MTP steps (CUDA graph reuse)
     // KV rows written by this eval (I64 [n]): an input, not a view offset, so the graph is the same from token to
     // token and CUDA graphs can be replayed
     ggml_tensor *        inp_kvidx_ = nullptr;

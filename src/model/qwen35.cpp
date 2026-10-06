@@ -317,6 +317,15 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             } else {
                 const double summ = (double) n_attn * (double) h.n_head_kv * (double) (n_ctx_ / kPage) * (double) h.head_dim * 2.0;
                 want = (int64_t) (((double) fr - reserve - stage - summ) / tok);
+                // MTP beside a split KV (E8_MTP_MIN_WINDOW=tokens): when the window left after it is still that big
+                static const int64_t min_win = std::getenv("E8_MTP_MIN_WINDOW") ? std::atoll(std::getenv("E8_MTP_MIN_WINDOW")) : 0;
+                if (want_mtp && min_win > 0) {
+                    const int64_t w2 = (int64_t) (((double) fr - reserve - stage - summ - mtp_cost) / tok);
+                    if (w2 - 4096 >= min_win) {
+                        want    = w2;
+                        mtp_on_ = true;
+                    }
+                }
             }
         }
         want = std::min<int64_t>(n_ctx_, want / kKvPad * kKvPad);
@@ -479,6 +488,8 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
     bes.push_back(cpu_);
     sched_ = ggml_backend_sched_new(bes.data(), nullptr, (int) bes.size(), kGraphSize, false, true);
     graph_meta_.resize(ggml_tensor_overhead() * kGraphSize + ggml_graph_overhead_custom(kGraphSize, false));
+    graph_meta_draft_.resize(graph_meta_.size());
+    graph_meta_mtp_.resize(graph_meta_.size());
     return true;
 }
 
@@ -1138,7 +1149,7 @@ bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t
         err = "mtp_step: no MTP block or bad arguments";
         return false;
     }
-    ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
+    ggml_init_params ip  = { graph_meta_mtp_.size(), graph_meta_mtp_.data(), true };
     ggml_context *   ctx = ggml_init(ip);
     ggml_cgraph *    gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
     ggml_tensor * inp_e  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, 1);
@@ -1236,7 +1247,10 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     }
 
     use_res_             = opts.residual && has_residual();
-    ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
+    // ggml-cuda caches a captured CUDA graph per address of the graph's first node: the hot single-token draft pass
+    // gets its own scratch buffer so it keeps its cached graph while other shapes (checks, rollbacks) run in between
+    auto &           meta = n == 1 && !use_res_ ? graph_meta_draft_ : graph_meta_;
+    ggml_init_params ip  = { meta.size(), meta.data(), true };
     ggml_context *   ctx = ggml_init(ip);
     ggml_tensor *    inp_tok = nullptr, * inp_pos = nullptr, * inp_mask = nullptr, * out = nullptr;
     ggml_cgraph *    gf      = build_graph(ctx, n, opts, inp_tok, inp_pos, inp_mask, out, n_kv);

@@ -83,6 +83,8 @@ struct Server {
     std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
     std::string                      router_url;  // llama-server router to unload / forward to (empty = none)
+    std::string                      timing_log;  // JSON lines of per-request timings (no content), when set
+    std::chrono::system_clock::time_point last_end{};  // end of the previous request (idle time = tools / user)
     // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
     runtime::SamplerParams           defaults = [] {
         runtime::SamplerParams d;
@@ -185,6 +187,7 @@ json to_nl(const common_json & j) {
 
 struct Result {
     std::string     spec;  // speculative decoding summary (log)
+    json            stats = json::object();  // numbers for the timing log
     common_chat_msg msg;   // chat requests
     std::string     text;  // completion requests
     std::string     finish = "stop";
@@ -431,6 +434,10 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             consume();
         }
         const auto & st = dec.stats();
+        R.stats         = { { "cycles", st.cycles }, { "draft_s", st.t_draft }, { "verify_s", st.t_verify },
+                            { "echo_proposed", st.echo_proposed }, { "echo_kept", st.echo_accepted },
+                            { "mtp_proposed", st.mtp_proposed }, { "mtp_kept", st.mtp_accepted },
+                            { "long_cycles", st.long_cycles }, { "reruns", st.reruns } };
         char         b[160];
         snprintf(b, sizeof b, "%lld cycles, %.1f tokens/cycle, draft %.0f / verify %.0f ms per cycle, echo %lld/%lld kept",
                  (long long) st.cycles, st.cycles ? (double) (st.emitted - 1) / st.cycles : 0.0,
@@ -459,6 +466,24 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     R.t_gen = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
 
     S.last_used = std::chrono::steady_clock::now();
+    if (!S.timing_log.empty()) {  // numbers only: never prompt or output text
+        const auto now_sys = std::chrono::system_clock::now();
+        const auto t0_sys  = now_sys - std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                                          std::chrono::duration<double>(R.t_prompt + R.t_gen));
+        json line = { { "t", (double) std::chrono::duration_cast<std::chrono::milliseconds>(now_sys.time_since_epoch()).count() / 1e3 },
+                      { "model", S.entries[(size_t) S.active].alias }, { "kind", chat ? "chat" : "completion" },
+                      { "prompt_tokens", R.n_prompt }, { "reused_tokens", R.n_reused }, { "prefill_s", R.t_prompt },
+                      { "gen_tokens", R.n_gen }, { "decode_s", R.t_gen }, { "finish", R.finish },
+                      { "idle_before_s", S.last_end.time_since_epoch().count() == 0 ? -1.0
+                                         : std::chrono::duration<double>(t0_sys - S.last_end).count() },
+                      { "temp", sp.temp }, { "spec", R.stats } };
+        S.last_end = now_sys;
+        if (FILE * f = fopen(S.timing_log.c_str(), "ab")) {
+            const std::string l = line.dump() + "\n";
+            fwrite(l.data(), 1, l.size(), f);
+            fclose(f);
+        }
+    }
     fprintf(stderr, "%s: prompt %d tokens (%d reused) in %.1f s, %d generated at %.1f tok/s (temp %.2f top_k %d top_p %.2f)%s%s\n",
             S.entries[(size_t) S.active].alias.c_str(), R.n_prompt, R.n_reused, R.t_prompt, R.n_gen,
             R.n_gen / std::max(R.t_gen, 1e-9), sp.temp, sp.top_k, sp.top_p, R.spec.empty() ? "" : "; ", R.spec.c_str());
@@ -530,6 +555,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--min-p") S->defaults.min_p = (float) std::atof(val().c_str());
         else if (a == "--presence-penalty") S->defaults.presence_penalty = (float) std::atof(val().c_str());
         else if (a == "--unload-router") router_url = val();
+        else if (a == "--timing-log") S->timing_log = val();
         else if (a == "--spec") {
             const std::string v = val();
             S->spec_auto        = v == "auto";
@@ -545,7 +571,8 @@ int serve(const std::vector<std::string> & args) {
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0] [--spec auto|K]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
-                        "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n");
+                        "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
+                        "         [--timing-log FILE (JSON lines of per-request timings, no content)]\n");
         return 1;
     }
     if (!key_file.empty()) {  // last non-comment line (same format as the llama-server key file)
