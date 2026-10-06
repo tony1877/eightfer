@@ -38,6 +38,7 @@ struct SpecStats {
     int64_t prefill_tokens = 0;
     int64_t mtp_proposed = 0, mtp_accepted = 0;  // MTP proposals checked by the base / kept
     int64_t echo_proposed = 0, echo_accepted = 0;  // tokens copied from the context as proposals / kept
+    int64_t long_cycles = 0, reruns = 0;  // cycles extended past k by a long copy / long verifies re-evaluated
 };
 
 class SpecDecoder {
@@ -81,7 +82,8 @@ private:
     using Dist = std::vector<std::pair<float, int32_t>>;
     // drafts toks[1..k] (toks[0] = last_) with echo / MTP rounds checked by the base; qd gets the base's
     // distribution at each draft when sampling
-    bool    draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err);
+    bool    draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err,
+                         bool extend = false);
     static uint64_t ngram_key(const int32_t * t);
     int     find_copy(const int32_t * tail);
     void    emit(std::vector<int32_t> & out, int32_t t) {
@@ -108,6 +110,8 @@ private:
     TokenCounts        counts_;  // tokens emitted so far (penalties)
     int                mtp_n_ = 3;  // MTP proposals per base pass (0 = draft with the base alone)
     static constexpr int kEchoN = 8;  // echo: tokens that must match to propose a copy
+    static constexpr int kBigK  = 127;  // most drafts of a verify extended by a long copy
+    bool                 last_echo_full_ = false;  // the last draft round was a copy the base kept entirely
     bool                 echo_  = true;
     std::vector<int32_t> hist_;  // prompt + emitted tokens
     std::unordered_map<uint64_t, int> ngram_;  // kEchoN-gram -> history position after its latest occurrence

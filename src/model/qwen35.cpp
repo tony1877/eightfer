@@ -28,6 +28,8 @@ namespace e8::model {
 namespace {
 
 constexpr int    kGraphSize = 16384;
+// most queries per sparse long-context attention batch (bigger batches attend exactly over the RAM KV)
+const int kSparseMaxN = std::getenv("E8_SPARSE_MAXN") ? std::atoi(std::getenv("E8_SPARSE_MAXN")) : 128;
 constexpr int    kKvPad     = 256;  // KV length handed to attention is padded to this (masked)
 constexpr int    kPage      = 64;   // sparse long-context attention: tokens per key-summary page
 constexpr size_t kReadChunk = 64u << 20;
@@ -766,14 +768,18 @@ bool Qwen35::compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err) {
 }
 
 bool Qwen35::rollback(int keep, std::string & err, int slot) {
-    if (recorded_n_ <= 0 || keep < 0 || keep > recorded_n_) {
+    if (recorded_full_ <= 0 || keep < 0 || keep > recorded_full_) {
         err = "rollback: no recorded eval or keep out of range";
         return false;
     }
-    const int n = recorded_n_;
-    recorded_n_ = 0;
+    const int n = recorded_full_, nr = recorded_n_;
+    recorded_n_ = recorded_full_ = 0;
     if (keep == n) {
         return true;
+    }
+    if (keep > nr) {
+        err = "rollback: past the recorded tokens";
+        return false;
     }
     restore_state(slot);
     if (keep > 0) {
@@ -894,12 +900,16 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
             ggml_tensor * beta  = ggml_sigmoid(ctx, mm(ctx, L.w_beta, cur));  // [Hv, n]
             ggml_tensor * alpha = ggml_reshape_3d(ctx, mm(ctx, L.w_alpha, cur), Hv, n, 1);
             ggml_tensor * g     = ggml_mul(ctx, ggml_softplus(ctx, ggml_add(ctx, alpha, L.dt_bias)), L.a);
-            if (o.record) {
-                const size_t l = (size_t) il;
-                ggml_build_forward_expand(gf, ggml_cpy(ctx, qkv, ggml_view_2d(ctx, rec_qkv_[l], C, n, rec_qkv_[l]->nb[1], 0)));
-                ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_reshape_2d(ctx, g, Hv, n),
-                                                       ggml_view_2d(ctx, rec_g_[l], Hv, n, rec_g_[l]->nb[1], 0)));
-                ggml_build_forward_expand(gf, ggml_cpy(ctx, beta, ggml_view_2d(ctx, rec_beta_[l], Hv, n, rec_beta_[l]->nb[1], 0)));
+            if (o.record) {  // the first max_record tokens (a bigger batch can only be rolled back within them)
+                const size_t  l  = (size_t) il;
+                const int64_t nr = std::min<int64_t>(n, opt_.max_record);
+                ggml_tensor * g2 = ggml_reshape_2d(ctx, g, Hv, n);
+                ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_view_2d(ctx, qkv, C, nr, qkv->nb[1], 0),
+                                                       ggml_view_2d(ctx, rec_qkv_[l], C, nr, rec_qkv_[l]->nb[1], 0)));
+                ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_view_2d(ctx, g2, Hv, nr, g2->nb[1], 0),
+                                                       ggml_view_2d(ctx, rec_g_[l], Hv, nr, rec_g_[l]->nb[1], 0)));
+                ggml_build_forward_expand(gf, ggml_cpy(ctx, ggml_view_2d(ctx, beta, Hv, nr, beta->nb[1], 0),
+                                                       ggml_view_2d(ctx, rec_beta_[l], Hv, nr, rec_beta_[l]->nb[1], 0)));
             }
             ggml_tensor * out = gdn_core(ctx, gf, il, ggml_reshape_3d(ctx, qkv, C, n, 1), ggml_reshape_4d(ctx, g, 1, Hv, n, 1),
                                          ggml_reshape_4d(ctx, beta, 1, Hv, n, 1), n);
@@ -1186,10 +1196,6 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
         err = "eval: batch size must be 1.." + std::to_string(opt_.n_ubatch);
         return false;
     }
-    if (opts.record && n > opt_.max_record) {
-        err = "eval: recorded batch larger than max_record (" + std::to_string(opt_.max_record) + ")";
-        return false;
-    }
     if (n_past_ + n > n_ctx_) {
         err = "eval: context full (" + std::to_string(n_ctx_) + " tokens)";
         return false;
@@ -1216,7 +1222,7 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     attn_mode_ = use_host ? 1 : 0;
     sum_upto_  = std::min(sum_upto_, std::min(n_past_, host_valid_) / kPage);
     static const bool sparse_on = !(std::getenv("E8_SPARSE") && std::atoi(std::getenv("E8_SPARSE")) == 0);
-    sparse_ = use_host && n <= 32 && sparse_on && !pmid_.empty();
+    sparse_ = use_host && n <= kSparseMaxN && sparse_on && !pmid_.empty();
     sel_nodes_.clear();
     if (sparse_) {
         static const int win   = std::getenv("E8_SPARSE_WINDOW") ? std::atoi(std::getenv("E8_SPARSE_WINDOW")) : 4096;
@@ -1343,7 +1349,8 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     if (sparse_ && Kd_ > 0 && sp_kp_ > 0) fill_draft_far();
     sel_nodes_.clear();
     ggml_free(ctx);
-    recorded_n_ = opts.record ? n : 0;
+    recorded_n_    = opts.record ? std::min(n, opt_.max_record) : 0;
+    recorded_full_ = opts.record ? n : 0;
     hid_row_    = mtp_on_ ? n - 1 : -1;
     if (!opts.window_ok) exact_upto_ = n_past_ + n;
     if (use_host) host_valid_ = n_past_ + n;

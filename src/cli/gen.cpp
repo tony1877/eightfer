@@ -131,7 +131,7 @@ int gen(const std::vector<std::string> & args) {
     if (kv_q8) o.kv_type = GGML_TYPE_Q8_0;
     o.n_threads     = threads;
     o.residual_path = res;
-    o.max_record    = k + 1;
+    o.max_record    = std::max(k + 1, 64);  // echo proposals are checked in batches of up to 64
     o.mtp           = k > 0 && mtp > 0;
     model::Qwen35 m;
     std::string   err;

@@ -250,7 +250,8 @@ int SpecDecoder::find_copy(const int32_t * tail) {
     return e;
 }
 
-bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err) {
+bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err,
+                               bool extend) {
     // Rounds of: proposals, then one base pass that checks them (speculative sampling against the proposals'
     // distribution, or argmax agreement when greedy) and adds one token of its own. Proposals come from
     //  - echo: when the last kEchoN tokens occurred earlier in the context, the tokens that followed them (up to 63;
@@ -282,7 +283,8 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             }
             const int j = (int) tail.size() == kEchoN ? find_copy(tail.data()) : -1;
             if (j >= 0) {
-                const int len = std::min({ need - 1, 63, (int) hist_.size() - j });
+                // the base's check of the copy must be rollback-able: at most max_record - 1 proposals
+                const int len = std::min({ need - 1, 63, m_.max_record() - 1, (int) hist_.size() - j });
                 for (int t = 0; t < len; t++) {
                     in.push_back(hist_[(size_t) (j + t)]);
                     if (sampled) pq.push_back(Dist{ { 1.0f, hist_[(size_t) (j + t)] } });
@@ -290,6 +292,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
                 echo = len > 0;
             }
         }
+        if (extend && !echo) break;  // extending a long copy: only further copies
         if (!echo && mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0) {
             const int   mt  = std::min(mtp_n_, need - 1);
             const int   row = m_.hidden_row();
@@ -358,13 +361,16 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             st_.mtp_accepted += a;
         }
         if (mt > 0 && !m_.rollback(a + 1, err, 1)) return false;  // keep toks.back() before this round + the kept proposals
+        last_echo_full_ = echo && a == mt;
+        if (extend && !last_echo_full_) break;
     }
     return true;
 }
 
 bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     const int64_t nv = m_.hp().n_vocab;
-    const int     k_ = adaptive_ ? choose_k() : this->k_;
+    int           k_ = adaptive_ ? choose_k() : this->k_;
+    const int     base_past = m_.n_past();
     if (m_.n_past() + k_ + 1 > m_.n_ctx()) {
         err = "context full";
         return false;
@@ -399,7 +405,16 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     const bool use_mtp = echo_ || (mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0);
     if (use_mtp) {
         qd.clear();
+        last_echo_full_ = false;
         if (!draft_rounds(k_, toks, qd, cur, err)) return false;
+        // long copies: while the drafts end in a copy the base kept entirely, keep copying (one bigger verify
+        // instead of several cycles)
+        const int big = std::min({ kBigK, m_.max_long_verify() - 1, m_.n_ctx() - base_past - 1 });
+        if (echo_ && last_echo_full_ && big > k_) {
+            if (!draft_rounds(big, toks, qd, cur, err, true)) return false;
+            st_.long_cycles += (int) toks.size() - 1 > k_;
+            k_ = (int) toks.size() - 1;
+        }
     }
     for (int i = use_mtp ? k_ : 0; i < k_; i++) {
         int32_t id = -1;
@@ -439,8 +454,10 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         vt_[n] *= 0.9;
         vn_[n] *= 0.9;
     }
-    vt_[k_ + 1] += tv;
-    vn_[k_ + 1] += 1;
+    if (k_ + 1 <= kMaxK + 1) {
+        vt_[k_ + 1] += tv;
+        vn_[k_ + 1] += 1;
+    }
 
     int                                    acc  = 0;
     int32_t                                next = -1;
@@ -476,27 +493,7 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
             emit(out, d);
             continue;
         }
-        std::vector<std::pair<double, int32_t>> resid;
-        double                                  tot = 0;
-        for (auto & e : pdist) {
-            const double r = e.first - at(q, e.second);
-            if (r > 0) {
-                resid.emplace_back(r, e.second);
-                tot += r;
-            }
-        }
-        next = pdist.front().second;
-        if (tot > 0) {
-            double r = u(rng_) * tot;
-            for (auto & e : resid) {
-                r -= e.first;
-                if (r <= 0) {
-                    next = e.second;
-                    break;
-                }
-            }
-            if (r > 0) next = resid.back().second;
-        }
+        next = draw_residual(pdist, q, rng_);
         break;
     }
     if (acc == k_) {  // all accepted: bonus token from the last position
@@ -510,11 +507,20 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         seen_[j] *= 0.95;
         fail_[j] *= 0.95;
     }
-    for (int j = 1; j <= std::min(acc + 1, k_); j++) seen_[j] += 1;
-    if (acc < k_) fail_[acc + 1] += 1;
+    for (int j = 1; j <= std::min({ acc + 1, k_, kMaxK }); j++) seen_[j] += 1;
+    if (acc < k_ && acc + 1 <= kMaxK) fail_[acc + 1] += 1;
 
     t0 = now();
-    if (!m_.rollback(acc + 1, err)) return false;  // keep last_ and the accepted drafts
+    if (m_.can_rollback(acc + 1)) {
+        if (!m_.rollback(acc + 1, err)) return false;  // keep last_ and the accepted drafts
+    } else {
+        // rejected past the recorded part of a long verify: back to the committed state, evaluate the kept prefix
+        std::string e2;
+        m_.rollback(k_ + 1, e2);  // clears the record
+        m_.restore_state();
+        if (!m_.eval(toks.data(), acc + 1, model::EvalOpts{}, nullptr, nullptr, err)) return false;
+        st_.reruns++;
+    }
     st_.t_rollback += now() - t0;
     last_ = next;
     return true;

@@ -159,8 +159,13 @@ public:
 
     int                   n_past() const override { return n_past_; }
     int                   n_ctx() const override { return n_ctx_; }
-    // largest batch a speculative verify should use: the sparse long-context attention takes at most 32 queries
-    int                   max_verify() const { return n_past_ + 64 > W_ ? 32 : 64; }
+    // largest batch a speculative verify should use (the sparse long-context attention takes up to 128 queries)
+    int                   max_verify() const { return 64; }
+    // largest verify for long copied drafts: rollback works within the first max_record tokens, else the kept prefix
+    // is evaluated again
+    int                   max_long_verify() const { return std::min(128, opt_.n_ubatch); }
+    bool                  can_rollback(int keep) const { return keep == recorded_full_ || keep <= recorded_n_; }
+    int                   max_record() const { return opt_.max_record; }
     int64_t               n_vocab() const override { return hp_.n_vocab; }
     int64_t               n_layer() const override { return hp_.n_layer; }
     bool                  add_bos() const override { return hp_.add_bos; }
@@ -236,7 +241,8 @@ private:
     int         n_ctx_  = 0;
     int         n_past_ = 0;
     int         saved_n_past_ = 0;
-    int         recorded_n_ = 0;  // tokens in the last recorded eval (0 = none)
+    int         recorded_n_ = 0;  // recorded tokens of the last recorded eval (0 = none)
+    int         recorded_full_ = 0;  // its batch size (rollback beyond recorded_n_ is only possible to keep all)
     int         debug_layer_ = -1;
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context
