@@ -80,7 +80,13 @@ private:
     // probability of `tok` under the sampling distribution of these logits
     double  prob(const float * logits, int32_t tok);
     void    dist(const float * logits, std::vector<std::pair<float, int32_t>> & p);
+    void    dist_topk(const float * v, const int32_t * id, int k, std::vector<std::pair<float, int32_t>> & p);
+    void    finish_dist(std::vector<std::pair<float, int32_t>> & p);
+    bool    no_penalties() const { return sp_.presence_penalty == 0 && sp_.frequency_penalty == 0; }
+    // top-k to take on the GPU when sampling needs only that (penalties change logits on the CPU), else 0
+    int     gpu_topk() const { return sp_.temp > 0 && sp_.top_k > 0 && sp_.top_k <= 64 && no_penalties() ? sp_.top_k : 0; }
     int     choose_k() const;
+    int     choose_mtp() const;
     double  verify_ms(int n) const;
     using Dist = std::vector<std::pair<float, int32_t>>;
     // drafts toks[1..k] (toks[0] = last_) with echo / MTP rounds checked by the base; qd gets the base's
@@ -111,7 +117,10 @@ private:
     int32_t            last_ = -1;  // sampled, not yet evaluated
     std::vector<float> logits_;
     TokenCounts        counts_;  // tokens emitted so far (penalties)
-    int                mtp_n_ = 3;  // MTP proposals per base pass (0 = draft with the base alone)
+    int                mtp_n_ = 6;  // most MTP proposals per base pass (choose_mtp picks; 0 = draft with the base alone)
+    static constexpr int kMaxMtp = 8;
+    double               mseen_[kMaxMtp + 1] = {}, mfail_[kMaxMtp + 1] = {};  // MTP proposal survival by position
+    double               check_ms_ = 23, step_ms_ = 2.5;                    // base check / MTP step cost (measured)
     static constexpr int kEchoN = 8;  // echo: tokens that must match to propose a copy
     static constexpr int kBigK  = 127;  // most drafts of a verify extended by a long copy
     bool                 last_echo_full_ = false;  // the last draft round was a copy the base kept entirely

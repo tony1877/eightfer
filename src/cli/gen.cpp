@@ -87,7 +87,7 @@ int gen(const std::vector<std::string> & args) {
     std::string           model, res, tokens_path;
     int                   n_gen = 128, k = 6, gpu_layers = 999, n_ctx = 4096, threads = 0;
     int gpu_kv = -1;
-    int mtp    = 3;
+    int mtp    = 6;  // most MTP proposals per round (adaptive below that)
     bool echo  = true;
     bool kv_q8 = false;
     bool                  compare = false, profile = false, adaptive = false;

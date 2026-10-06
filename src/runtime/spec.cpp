@@ -38,6 +38,24 @@ double SpecDecoder::verify_ms(int n) const {
     return near < 0 ? prior(n) : vt_[near] / vn_[near] * prior(n) / prior(near);
 }
 
+int SpecDecoder::choose_mtp() const {
+    // MTP proposals per round: expected kept proposals (per-position survival, weak prior) + the base's own token,
+    // per ms of one base check + the MTP steps; up to mtp_n_
+    int    best = 1;
+    double best_rate = 0, surv = 1, kept = 0;
+    for (int m = 1; m <= std::min(mtp_n_, kMaxMtp); m++) {
+        const double hazard = (mfail_[m] + 0.4 * 2.0) / (mseen_[m] + 2.0);
+        surv *= 1 - std::clamp(hazard, 0.0, 1.0);
+        kept += surv;
+        const double rate = (kept + 1) / (check_ms_ + m * step_ms_);
+        if (rate > best_rate) {
+            best_rate = rate;
+            best      = m;
+        }
+    }
+    return best;
+}
+
 int SpecDecoder::choose_k() const {
     // expected accepted drafts at k = sum over draft positions j <= k of P(first j drafts accepted), from decayed
     // per-position counts with a weak prior (rejections cluster, so long runs are likelier than a fixed per-token rate
@@ -87,6 +105,19 @@ void SpecDecoder::dist(const float * logits, std::vector<std::pair<float, int32_
         std::sort(p.begin(), head_only ? mid : p.end(), desc);
     }
     p.resize(n);
+    finish_dist(p);
+}
+
+void SpecDecoder::dist_topk(const float * v, const int32_t * id, int k, std::vector<std::pair<float, int32_t>> & p) {
+    // the same distribution as dist() from a row's top-k (best first; k >= top_k)
+    const int n = std::min(k, sp_.top_k);
+    p.resize((size_t) n);
+    for (int i = 0; i < n; i++) p[(size_t) i] = { v[i] / sp_.temp, id[i] };
+    finish_dist(p);
+}
+
+void SpecDecoder::finish_dist(std::vector<std::pair<float, int32_t>> & p) {
+    // softmax over the kept (sorted) entries, then min_p and top_p, renormalised
     const float mx  = p[0].first;
     double      sum = 0;
     for (auto & e : p) {
@@ -262,7 +293,10 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
     // base + residual verify.
     const int64_t      nv      = m_.hp().n_vocab;
     const bool         sampled = sp_.temp > 0;
-    std::vector<float> ml(sampled ? (size_t) nv : 0), lg;
+    const int          tk      = sampled ? gpu_topk() : 0;  // > 0: rows come back as their top-k only
+    const int64_t      rw      = tk > 0 ? tk : nv;          // floats per row
+    std::vector<float> ml(sampled ? (size_t) rw : 0), lg;
+    std::vector<int32_t> mid(tk > 0 ? (size_t) tk : 1), lid;
     while ((int) toks.size() - 1 < k) {
         const int            need = k - ((int) toks.size() - 1);
         std::vector<int32_t> in(1, toks.back());
@@ -295,18 +329,23 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         if (extend && !echo) break;  // extending a long copy: only further copies
         const double tm0 = now();
         if (!echo && mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0) {
-            const int   mt  = std::min(mtp_n_, need - 1);
+            const int   mt  = std::min(choose_mtp(), need - 1);
             const int   row = m_.hidden_row();
             TokenCounts cm  = sampled ? cur : TokenCounts{};
             for (int j = 0; j < mt; j++) {  // MTP chain: position of toks.back() is n_past()
                 int32_t id = -1;
-                if (!m_.mtp_step(in.back(), m_.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr, &id, err)) {
+                if (!m_.mtp_step(in.back(), m_.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr,
+                                 tk > 0 ? mid.data() : &id, err, tk)) {
                     return false;
                 }
                 if (sampled) {
-                    apply_penalties(ml.data(), sp_, cm);
                     pq.emplace_back();
-                    dist(ml.data(), pq.back());
+                    if (tk > 0) {
+                        dist_topk(ml.data(), mid.data(), tk, pq.back());
+                    } else {
+                        apply_penalties(ml.data(), sp_, cm);
+                        dist(ml.data(), pq.back());
+                    }
                     id = draw(pq.back(), rng_);
                     cm[id]++;
                 }
@@ -326,9 +365,11 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         bo.record    = mt > 0;
         bo.dry       = mt > 0;
         bo.argmax    = !sampled;
+        bo.topk      = tk;
         std::vector<int32_t> bid((size_t) nb);
-        lg.resize(sampled ? (size_t) nb * nv : 0);
-        if (!m_.eval(in.data(), nb, bo, sampled ? lg.data() : nullptr, bid.data(), err)) return false;
+        lg.resize(sampled ? (size_t) (nb * rw) : 0);
+        lid.resize(tk > 0 ? (size_t) (nb * tk) : 0);
+        if (!m_.eval(in.data(), nb, bo, sampled ? lg.data() : nullptr, tk > 0 ? lid.data() : bid.data(), err)) return false;
         st_.t_beval += now() - tb0;
         int     a    = 0;
         int32_t next = -1;
@@ -337,10 +378,14 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             next = bid[(size_t) a];
         } else {
             for (;; a++) {
-                float * L = lg.data() + (size_t) a * nv;
-                apply_penalties(L, sp_, cur);
                 Dist pb;
-                dist(L, pb);
+                if (tk > 0) {
+                    dist_topk(lg.data() + (size_t) a * tk, lid.data() + (size_t) a * tk, tk, pb);
+                } else {
+                    float * L = lg.data() + (size_t) a * nv;
+                    apply_penalties(L, sp_, cur);
+                    dist(L, pb);
+                }
                 if (a == mt) {  // all proposals kept (or none made): the base's own next token
                     next = draw(pb, rng_);
                     qd.push_back(std::move(pb));
@@ -364,9 +409,18 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         if (echo) {
             st_.echo_proposed += mt;
             st_.echo_accepted += a;
-        } else {
+        } else if (mt > 0) {
             st_.mtp_proposed += mt;
             st_.mtp_accepted += a;
+            // per-position survival of MTP proposals and the measured costs, for choose_mtp()
+            for (int j = 1; j <= kMaxMtp; j++) {
+                mseen_[j] *= 0.97;
+                mfail_[j] *= 0.97;
+            }
+            for (int j = 1; j <= std::min(a + 1, mt); j++) mseen_[j] += 1;
+            if (a < mt) mfail_[a + 1] += 1;
+            check_ms_ = 0.9 * check_ms_ + 0.1 * 1e3 * (now() - tb0);
+            step_ms_  = 0.9 * step_ms_ + 0.1 * 1e3 * (ts0 - tm0) / mt;
         }
         const double tr0 = now();
         if (mt > 0 && !m_.commit(a + 1, err)) return false;  // keep toks.back() before this round + the kept proposals
@@ -454,10 +508,15 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
 
     // verify all k + 1 positions with base + residual
     t0 = now();
-    std::vector<float> lg((size_t) (k_ + 1) * nv);
-    model::EvalOpts    vopt;
+    // top-k on the GPU when the sampler needs no more (greedy: the top token only)
+    const int            vk = sampled ? gpu_topk() : (no_penalties() ? 1 : 0);
+    const int64_t        vr = vk > 0 ? vk : nv;
+    std::vector<float>   lg((size_t) ((k_ + 1) * vr));
+    std::vector<int32_t> vid(vk > 0 ? (size_t) ((k_ + 1) * vk) : 0);
+    model::EvalOpts      vopt;
     vopt.record = true;
-    if (!m_.eval(toks.data(), k_ + 1, vopt, lg.data(), nullptr, err)) return false;
+    vopt.topk   = vk;
+    if (!m_.eval(toks.data(), k_ + 1, vopt, lg.data(), vk > 0 ? vid.data() : nullptr, err)) return false;
     const double tv = 1e3 * (now() - t0);
     st_.t_verify += tv / 1e3;
     for (int n = 1; n <= kMaxK + 1; n++) {  // decayed verify ms per batch size
@@ -474,8 +533,30 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     std::uniform_real_distribution<double> u(0.0, 1.0);
     cur = counts_;
     for (; acc < k_; acc++) {
-        float * L = lg.data() + (size_t) acc * nv;
         const int32_t d = toks[(size_t) acc + 1];
+        if (vk > 0) {
+            cur[d]++;
+            if (!sampled) {  // top-1 only: accept iff it is the draft, else it is the next token
+                const int32_t top = vid[(size_t) acc];
+                if (top == d) {
+                    emit(out, d);
+                    continue;
+                }
+                next = top;
+                break;
+            }
+            Dist pdist;
+            dist_topk(lg.data() + (size_t) acc * vk, vid.data() + (size_t) acc * vk, vk, pdist);
+            const Dist & q  = qd[(size_t) acc];
+            const double pd = at(pdist, d), qv = at(q, d);
+            if (qv > 0 && u(rng_) * qv < pd) {
+                emit(out, d);
+                continue;
+            }
+            next = draw_residual(pdist, q, rng_);
+            break;
+        }
+        float * L = lg.data() + (size_t) acc * nv;
         apply_penalties(L, sp_, cur);
         cur[d]++;
         if (!sampled) {
@@ -507,8 +588,18 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         break;
     }
     if (acc == k_) {  // all accepted: bonus token from the last position
-        apply_penalties(lg.data() + (size_t) k_ * nv, sp_, cur);
-        next = sample(lg.data() + (size_t) k_ * nv, -1);
+        if (vk > 0) {
+            if (!sampled) {
+                next = vid[(size_t) k_];
+            } else {
+                Dist pb;
+                dist_topk(lg.data() + (size_t) k_ * vk, vid.data() + (size_t) k_ * vk, vk, pb);
+                next = draw(pb, rng_);
+            }
+        } else {
+            apply_penalties(lg.data() + (size_t) k_ * nv, sp_, cur);
+            next = sample(lg.data() + (size_t) k_ * nv, -1);
+        }
     }
     emit(out, next);
     st_.accepted += acc;

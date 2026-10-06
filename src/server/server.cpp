@@ -74,7 +74,7 @@ struct Server {
     std::string                      alias, api_key;
     int                              spec_k = 12;
     bool                             spec_auto = true;
-    int                              mtp = 3;  // MTP proposals per base pass while drafting (0 = off)
+    int                              mtp = 6;  // most MTP proposals per base pass while drafting (adaptive; 0 = off)
     bool                             echo = true;  // echo drafting (copies from the context)
     // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;

@@ -86,6 +86,8 @@ struct EvalOpts {
                              // advances them by the first `keep` tokens (no snapshot needed)
     bool last_only = false;  // logits for the last token only (prefill)
     bool argmax    = false;  // return argmax token ids instead of logits
+    int  topk      = 0;      // > 0 (not argmax): only each row's top-k logits, best first: `logits` gets n*topk values,
+                             // `ids` n*topk token ids (sampling with top_k <= topk needs nothing else)
     bool window_ok = false;  // attention may see only the VRAM window of recent tokens (speculative drafts)
 };
 
@@ -143,7 +145,7 @@ public:
     // One MTP draft step at position `pos`: reads `tok` (the token at pos + 1) and the hidden state at pos, which is
     // row `hid_row` of the last eval when >= 0, else the previous step's output. Writes the prediction for pos + 2:
     // n_vocab logits, or with `id` non-null and `logits` null the argmax.
-    bool mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t * id, std::string & err);
+    bool mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t * id, std::string & err, int topk = 0);
 
     bool has_residual() const { return !res_.empty(); }
     uint64_t residual_bytes() const { return res_bytes_; }
@@ -194,6 +196,7 @@ private:
     bool compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err);
     bool replay(int keep, std::string & err);  // the first keep recorded tokens through the DeltaNet recurrence
     bool write_state_ = true;                  // while building: gdn_core updates the recurrent state
+    ggml_tensor * out_ids_ = nullptr;          // while building: the top-k ids output (EvalOpts::topk)
     // MTP: the layer input from embeddings and hidden states [n_embd, n]
     ggml_tensor * mtp_input(ggml_context * ctx, ggml_tensor * emb, ggml_tensor * hid);
     // MTP layer on x [n_embd, n] at positions `pos`: writes K/V to ring rows `kvidx`; with a mask, also attends and

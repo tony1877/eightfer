@@ -1115,8 +1115,15 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
         cur = norm(inpL, out_norm_);
     }
     out_logits = mm(ctx, output_, cur);
+    out_ids_   = nullptr;
     if (o.argmax) {
         out_logits = ggml_argmax(ctx, out_logits);
+    } else if (o.topk > 0) {  // the top-k of each row on the GPU: k values + ids come back instead of the vocabulary
+        const int64_t rows = out_logits->ne[1];
+        out_ids_   = ggml_cont(ctx, ggml_argsort_top_k(ctx, out_logits, o.topk));  // [k, rows], best first
+        out_logits = ggml_get_rows(ctx, ggml_reshape_3d(ctx, out_logits, 1, out_logits->ne[0], rows), out_ids_);
+        ggml_set_output(out_ids_);
+        ggml_build_forward_expand(gf, out_ids_);
     }
     ggml_set_output(out_logits);
     ggml_build_forward_expand(gf, out_logits);
@@ -1183,7 +1190,7 @@ ggml_tensor * Qwen35::mtp_layer(ggml_context * ctx, ggml_cgraph * gf, ggml_tenso
     return ggml_add(ctx, x, ggml_mul_mat(ctx, L.ffn_down, ff));
 }
 
-bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t * id, std::string & err) {
+bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t * id, std::string & err, int topk) {
     const auto & h = hp_;
     if (!mtp_on_ || tok < 0 || tok >= h.n_vocab || pos < 0 || (hid_row >= 0 && hid_row >= opt_.n_ubatch)) {
         err = "mtp_step: no MTP block or bad arguments";
@@ -1205,8 +1212,16 @@ bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t
     ggml_tensor * y  = mtp_layer(ctx, gf, mtp_input(ctx, inp_e, hsrc), 1, inp_p, inp_kv, inp_m);
     ggml_tensor * hn = ggml_mul(ctx, ggml_rms_norm(ctx, y, h.rms_eps), mtp_norm_);
     ggml_build_forward_expand(gf, ggml_cpy(ctx, hn, mtp_chain_));
-    ggml_tensor * out = ggml_mul_mat(ctx, output_, hn);
-    if (!logits) out = ggml_argmax(ctx, out);
+    ggml_tensor * out  = ggml_mul_mat(ctx, output_, hn);
+    ggml_tensor * oids = nullptr;
+    if (!logits) {
+        out = ggml_argmax(ctx, out);
+    } else if (topk > 0) {
+        oids = ggml_cont(ctx, ggml_argsort_top_k(ctx, out, topk));
+        out  = ggml_get_rows(ctx, ggml_reshape_3d(ctx, out, 1, out->ne[0], 1), oids);
+        ggml_set_output(oids);
+        ggml_build_forward_expand(gf, oids);
+    }
     ggml_set_output(out);
     ggml_build_forward_expand(gf, out);
 
@@ -1234,7 +1249,8 @@ bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t
     const bool ok = ggml_backend_sched_graph_compute(sched_, gf) == GGML_STATUS_SUCCESS;
     if (ok) {
         if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
-        else if (id) ggml_backend_tensor_get(out, id, 0, sizeof(int32_t));
+        if (oids && id) ggml_backend_tensor_get(oids, id, 0, ggml_nbytes(oids));
+        else if (!logits && id) ggml_backend_tensor_get(out, id, 0, sizeof(int32_t));
     }
     ggml_free(ctx);
     if (!ok) err = "mtp_step: graph compute failed";
@@ -1420,8 +1436,9 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     }
     if (opts.argmax) {
         if (ids) ggml_backend_tensor_get(out, ids, 0, ggml_nbytes(out));
-    } else if (logits) {
-        ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
+    } else {
+        if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
+        if (opts.topk > 0 && ids && out_ids_) ggml_backend_tensor_get(out_ids_, ids, 0, ggml_nbytes(out_ids_));
     }
     if (sparse_ && Kd_ > 0 && sp_kp_ > 0) fill_draft_far();
     sel_nodes_.clear();
