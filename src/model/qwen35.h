@@ -28,6 +28,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <cstdlib>
 #include <vector>
 
 namespace e8::model {
@@ -170,6 +171,13 @@ public:
     // largest verify for long copied drafts: rollback works within the first max_record tokens, else the kept prefix
     // is evaluated again
     int                   max_batch() const { return opt_.n_ubatch; }
+    // every residual product runs on the GPU (host weights staged by the ggml weight prefetch): a verify then costs
+    // about the same at any size; else batches below 32 multiply the residual on the CPU
+    bool                  res_gpu_all() const {
+        static const bool off = std::getenv("E8_NO_PREFETCH") || std::getenv("E8_CPU_SMALL_VERIFY");
+        return gpu_ && !off;
+    }
+    int                   verify_gpu_min() const { return res_gpu_all() ? 1 : 32; }
     int                   max_long_verify() const { return std::min(128, opt_.n_ubatch); }
     bool                  can_rollback(int keep) const { return keep == recorded_full_ || keep <= recorded_n_; }
     int                   max_record() const { return opt_.max_record; }
@@ -259,7 +267,8 @@ private:
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context
     std::vector<uint8_t> graph_meta_draft_, graph_meta_mtp_;  // single-token draft evals / MTP steps (CUDA graph reuse)
-    std::vector<uint8_t> graph_meta_small_[34];  // base-only batches of 2..16 tokens, by size and dry/not
+    std::vector<uint8_t> graph_meta_small_[34];
+    std::vector<ggml_tensor *> res_on_gpu_;  // residual products of the graph being built, pinned to the GPU  // base-only batches of 2..16 tokens, by size and dry/not
     // KV rows written by this eval (I64 [n]): an input, not a view offset, so the graph is the same from token to
     // token and CUDA graphs can be replayed
     ggml_tensor *        inp_kvidx_ = nullptr;

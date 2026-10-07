@@ -736,20 +736,25 @@ ggml_tensor * Qwen35::mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x) {
         if (it != res_.end()) {
             // small batches (decode, speculative verify): one-pass multi-column Q4_K kernel on the CPU; big batches:
             // ggml mul_mat, which the scheduler streams to the GPU
+            // (with the GPU staging host weights on its own stream, see patches/ggml-weight-prefetch.patch, a GPU run
+            // costs one ~250 ms transfer at any batch size, so every residual product goes there: res_on_gpu_)
             static const bool small_ok = std::getenv("E8_NO_SMALL_GEMM") == nullptr;
             ggml_tensor *     r        = it->second;
-            if (small_ok && kernels::q4k_small_supported(r, x)) {
+            if (small_ok && !res_gpu_all() && kernels::q4k_small_supported(r, x)) {
                 y = ggml_add(ctx, y, kernels::q4k_mul_mat_small(ctx, r, x));
             } else if (auto ch = res_chunks_.find(r); ch != res_chunks_.end()) {
                 // row pieces of a big residual (see load_residual), each staged in VRAM on its own
                 ggml_tensor * acc = nullptr;
                 for (ggml_tensor * part : ch->second) {
                     ggml_tensor * pm = ggml_mul_mat(ctx, part, x);
+                    if (res_gpu_all()) res_on_gpu_.push_back(pm);
                     acc = acc ? ggml_concat(ctx, acc, pm, 0) : pm;
                 }
                 y = ggml_add(ctx, y, acc);
             } else {
-                y = ggml_add(ctx, y, ggml_mul_mat(ctx, r, x));
+                ggml_tensor * pm = ggml_mul_mat(ctx, r, x);
+                if (res_gpu_all()) res_on_gpu_.push_back(pm);
+                y = ggml_add(ctx, y, pm);
             }
         }
     }
@@ -915,6 +920,7 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
     const auto &  h   = hp_;
     ggml_cgraph * gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
     const float   eps = h.rms_eps;
+    res_on_gpu_.clear();
     const int64_t hd  = h.head_dim;
 
     // embeddings are looked up on the host (eval()), so a fully offloaded graph has no CPU split
@@ -1355,6 +1361,8 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     write_state_             = true;
 
     ggml_backend_sched_reset(sched_);
+    for (ggml_tensor * t : res_on_gpu_) ggml_backend_sched_set_tensor_backend(sched_, t, gpu_);
+    res_on_gpu_.clear();
     for (ggml_tensor * a : attn_nodes_) {
         ggml_backend_sched_set_tensor_backend(sched_, a, gpu_ && n >= host_gpu_min_ ? gpu_ : cpu_);
     }

@@ -25,14 +25,16 @@ SpecDecoder::SpecDecoder(model::Qwen35 & m, int k, const SamplerParams & sp, boo
 
 double SpecDecoder::verify_ms(int n) const {
     // measured cost of an n-token verify if there is one, else the nearest measured size of the same kind scaled by
-    // the prior shape. Below kGpuBatch ggml multiplies the host residual on the CPU (cost grows with n); from
-    // kGpuBatch on it streams the residual to the GPU (about one 14 GB transfer, nearly flat in n).
-    auto prior = [](int m) { return m < kGpuBatch ? 250.0 + 38.0 * m : 340.0 + 0.5 * m; };
+    // the prior shape. Below the model's GPU batch the host residual is multiplied on the CPU (cost grows with n);
+    // from it on the residual streams to the GPU (about one 14 GB transfer, nearly flat in n). With the weight
+    // prefetch that is every size.
+    const int gb    = m_.verify_gpu_min();
+    auto      prior = [gb](int m) { return m < gb ? 250.0 + 38.0 * m : (gb <= 1 ? 255.0 : 340.0) + 0.5 * m; };
     if (vn_[n] > 0.3) return vt_[n] / vn_[n];
     int near = -1;
     for (int d = 1; d < kMaxK + 1 && near < 0; d++) {
         for (int m : { n - d, n + d }) {
-            if (m >= 1 && m <= kMaxK + 1 && (m < kGpuBatch) == (n < kGpuBatch) && vn_[m] > 0.3) near = m;
+            if (m >= 1 && m <= kMaxK + 1 && (m < gb) == (n < gb) && vn_[m] > 0.3) near = m;
         }
     }
     return near < 0 ? prior(n) : vt_[near] / vn_[near] * prior(n) / prior(near);
@@ -61,14 +63,18 @@ int SpecDecoder::choose_k() const {
     // per-position counts with a weak prior (rejections cluster, so long runs are likelier than a fixed per-token rate
     // predicts); then pick the k with the best expected tokens per millisecond
     const int kmax = std::min(k_, m_.max_verify() - 1);
-    int       best = 1;
+    // with a flat verify cost (every size streams the residual) at least 24 drafts: shorter verifies look cheap to
+    // the estimate but measured slower (8 seeds x 4 prompts: 41.9 vs 40.8 tok/s mean; 32: 42.9, but prose 27.9)
+    static const int kmin_env = std::getenv("E8_KMIN") ? std::atoi(std::getenv("E8_KMIN")) : -1;
+    const int        kmin     = kmin_env >= 0 ? kmin_env : (m_.verify_gpu_min() <= 1 ? 24 : 1);
+    int       best = std::min(kmin, kmax);
     double    best_rate = 0, surv = 1, accepted = 0;
     for (int k = 1; k <= kmax; k++) {
         const double hazard = (fail_[k] + kPriorHazard * kPriorWeight) / (seen_[k] + kPriorWeight);
         surv *= 1 - std::clamp(hazard, 0.0, 1.0);
         accepted += surv;
         const double rate = (accepted + 1) / (k * draft_ms_ + verify_ms(k + 1));
-        if (rate > best_rate) {
+        if (k >= kmin && rate > best_rate) {
             best_rate = rate;
             best      = k;
         }

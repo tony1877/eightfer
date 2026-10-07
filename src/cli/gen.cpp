@@ -91,6 +91,7 @@ int gen(const std::vector<std::string> & args) {
     bool echo  = true;
     bool kv_q8 = false;
     bool                  compare = false, profile = false, adaptive = false;
+    int                   repeat  = 1;  // --repeat N: N runs with seeds seed..seed+N-1, aggregate decode speed
     runtime::SamplerParams sp;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & a   = args[i];
@@ -117,6 +118,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--mtp") mtp = std::atoi(val().c_str());
         else if (a == "--echo") echo = std::atoi(val().c_str()) != 0;
         else if (a == "--profile") profile = true;
+        else if (a == "--repeat") repeat = std::max(1, std::atoi(val().c_str()));
         else if (model.empty() && a[0] != '-') model = a;
         else {
             fprintf(stderr, "unknown option: %s\n", a.c_str());
@@ -185,6 +187,31 @@ int gen(const std::vector<std::string> & args) {
         return 0;
     }
 
+    if (repeat > 1) {
+        double tdec = 0, tdraft = 0, tver = 0;
+        long long ntok = 0, ncyc = 0;
+        for (int r = 0; r < repeat; r++) {
+            runtime::SamplerParams s2 = sp;
+            s2.seed                   = sp.seed + (uint64_t) r;
+            GenResult g;
+            if (!run_gen(m, prompt, n_gen, k, adaptive, mtp, echo, s2, g, err)) {
+                fprintf(stderr, "generation failed: %s\n", err.c_str());
+                return 1;
+            }
+            const double d = g.t_total - g.st.t_prefill;
+            printf("run %d (seed %llu): %.2f tok/s, %lld cycles\n", r, (unsigned long long) s2.seed, (g.st.emitted - 1) / d,
+                   (long long) g.st.cycles);
+            tdec += d;
+            ntok += g.st.emitted - 1;
+            ncyc += g.st.cycles;
+            tdraft += g.st.t_draft;
+            tver += g.st.t_verify;
+        }
+        printf("repeat %d: decode %.2f tok/s, %.2f tokens/cycle, per cycle draft %.1f ms verify %.1f ms\n", repeat, ntok / tdec,
+               (double) ntok / std::max<long long>(ncyc, 1), 1e3 * tdraft / std::max<long long>(ncyc, 1),
+               1e3 * tver / std::max<long long>(ncyc, 1));
+        return 0;
+    }
     GenResult a;
     if (!run_gen(m, prompt, n_gen, k, adaptive, mtp, echo, sp, a, err)) {
         fprintf(stderr, "generation failed: %s\n", err.c_str());
