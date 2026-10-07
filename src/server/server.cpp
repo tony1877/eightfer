@@ -144,6 +144,8 @@ struct Server {
     bool                             spec_auto = true;
     int                              mtp = 6;  // most MTP proposals per base pass while drafting (adaptive; 0 = off)
     bool                             echo = true;  // echo drafting (copies from the context)
+    // agent turns: earlier assistant turns' reasoning is not resent; no thinking right after a tool result
+    bool                             drop_reasoning = true, think_after_tool = false;
     // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;
     std::condition_variable          cv;
@@ -318,7 +320,26 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     } else {
     // ---- template
     common_chat_templates_inputs in;
-    in.messages = common_chat_msgs_parse_oaicompat(common_json::parse(body.at("messages").dump()));
+    json msgs = body.at("messages");
+    if (S.drop_reasoning && msgs.is_array()) {
+        // earlier assistant turns' reasoning: not resent (smaller, steadier prompts; the template may keep it)
+        for (auto & mm : msgs) {
+            if (!mm.is_object() || mm.value("role", "") != "assistant") continue;
+            mm.erase("reasoning_content");
+            mm.erase("reasoning");
+            if (mm.contains("content") && mm["content"].is_string()) {
+                std::string c = mm["content"].get<std::string>();
+                for (size_t a; (a = c.find("<think>")) != std::string::npos;) {
+                    const size_t b = c.find("</think>", a);
+                    c.erase(a, b == std::string::npos ? std::string::npos : b + 8 - a);
+                }
+                while (!c.empty() && (c.front() == '\n' || c.front() == ' ')) c.erase(0, 1);
+                mm["content"] = c;
+            }
+        }
+    }
+    const bool after_tool = msgs.is_array() && !msgs.empty() && msgs.back().is_object() && msgs.back().value("role", "") == "tool";
+    in.messages = common_chat_msgs_parse_oaicompat(common_json::parse(msgs.dump()));
     if (body.contains("tools") && !body["tools"].is_null()) {
         in.tools = common_chat_tools_parse_oaicompat(common_json::parse(body["tools"].dump()));
         if (const char * dir = std::getenv("E8_LOG_RAW")) {  // debugging: the tool schemas (not the messages)
@@ -344,6 +365,11 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     auto et = in.chat_template_kwargs.find("enable_thinking");
     if (et != in.chat_template_kwargs.end()) in.enable_thinking = et->second == "true";
+    if (after_tool && !S.think_after_tool) {
+        // the turn after a tool result: act on it without a reasoning pass (agent loops)
+        in.enable_thinking                        = false;
+        in.chat_template_kwargs["enable_thinking"] = "false";
+    }
     if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string()) {
         // as llama-server: the effort goes to the chat template ("none" turns thinking off)
         const std::string re = body["reasoning_effort"].get<std::string>();
@@ -642,6 +668,8 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--mtp") S->mtp = std::atoi(val().c_str());
         else if (a == "--echo") S->echo = std::atoi(val().c_str()) != 0;
+        else if (a == "--drop-reasoning") S->drop_reasoning = std::atoi(val().c_str()) != 0;
+        else if (a == "--think-after-tool") S->think_after_tool = std::atoi(val().c_str()) != 0;
         else if (a == "--idle-unload") idle_unload = std::atoi(val().c_str());
         else if (a == "--temperature" || a == "--temp") S->defaults.temp = (float) std::atof(val().c_str());
         else if (a == "--top-p") S->defaults.top_p = (float) std::atof(val().c_str());
