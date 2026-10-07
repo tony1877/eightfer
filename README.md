@@ -87,6 +87,15 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
     VRAM in row pieces (verify compute buffer 0.84 -> 0.23 GB); prompts past the VRAM ring run in 256-token sparse
     chunks instead of reserving 1.1 GB for exact staging. 256K: decode 18.2 -> 22.7 tok/s on a summary, prose
     ~13 -> 22 tok/s, prefill 403 -> 456 tok/s, needle recalled, 15.1 GB peak VRAM.
+  - Residual uploads overlap compute ([`patches/ggml-weight-prefetch.patch`](patches/ggml-weight-prefetch.patch),
+    applied by `build.ps1`): ggml's scheduler stages host weights in two VRAM slots from a second CUDA stream, the
+    next layer's residual uploading while the current one computes. A verify costs ~255 ms at any size (was 330 ms
+    from 32 tokens, 275-900 ms on the CPU below), so every verify runs on the GPU and drafts are at least 24 long.
+    Prefill runs in 1024-token batches; with the KV in RAM their attention runs in 256-query sub-chunks, so the
+    residual crosses PCIe once per 1024 tokens. Prefill: 6K prompt 725 -> 1170 tok/s, 64K prompt at 256K context
+    495 -> 730+, 261,776 tokens 456 -> 784 tok/s (586 -> 346 s, needle recalled, 15.4 GB peak VRAM). Decode, 8 seeds
+    at temp 1.0: prose 28, explain 36, code 43-49, reasoning 59 tok/s. Prose stays drafter-bound: the 4-bit base's
+    drafts are kept ~50% of the time, so about half the drafting is wasted (see `gen --repeat`).
   Output follows the base + residual distribution exactly (speculative sampling at both levels). Greedy output is
   token-identical to plain decoding up to rounding: verify batches of 16+ tokens can flip a near-tie (k=6 matches
   plain over 256 tokens).
