@@ -46,7 +46,8 @@ struct SpecStats {
     double  t_snap = 0, t_beval = 0, t_rback = 0, t_mtp = 0;
     // pipelined cycles (shadow model): first pre-drafted tokens tested / kept, time spent pre-drafting
     int64_t pipe_tested = 0, pipe_kept = 0, pipe_drafted = 0, pipe_rounds = 0;
-    int64_t rej_rank[21] = {};  // rejections by the correction's rank in the base's sorted candidates (20 = outside)
+    int64_t rej_rank[21] = {};
+    int64_t tree_cycles = 0, tree_tried = 0, tree_rescued = 0;  // tree cycles; alternatives tested / accepted  // rejections by the correction's rank in the base's sorted candidates (20 = outside)
     double  t_pipe = 0;
 };
 
@@ -99,6 +100,8 @@ private:
     int     gpu_topk() const { return sp_.temp > 0 && sp_.top_k > 0 && sp_.top_k <= 64 && no_penalties() ? sp_.top_k : 0; }
     bool    step_plain(std::vector<int32_t> & out, std::string & err);
     bool    step_shadow(std::vector<int32_t> & out, std::string & err);
+    bool    tree_cycle(std::vector<int32_t> & toks, std::vector<std::vector<std::pair<float, int32_t>>> & qd,
+                       std::vector<int32_t> & out, std::string & err, bool & done);
     int     choose_k() const;
     int     choose_mtp() const;
     double  verify_ms(int n) const;

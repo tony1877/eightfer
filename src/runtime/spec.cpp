@@ -522,6 +522,12 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
     draft_ms_ = 0.8 * draft_ms_ + 0.2 * (1e3 * td / k_);
     st_.drafted += k_;
 
+    {  // tree drafts: alternative branches at the least confident drafts, verified together (E8_TREE=0: off)
+        bool done = false;
+        if (!tree_cycle(toks, qd, out, err, done)) return false;
+        if (done) return true;
+    }
+
     // verify all k + 1 positions with base + residual
     t0 = now();
     // top-k on the GPU when the sampler needs no more (greedy: the top token only)
@@ -887,6 +893,190 @@ bool SpecDecoder::step_shadow(std::vector<int32_t> & out, std::string & err) {
     st_.emitted++;
     st_.t_rollback += now() - t0;
     last_ = next;
+    return true;
+}
+namespace {
+// norm(max(p - q, 0)) over p's support
+Dist residual_dist(const Dist & p, const Dist & q) {
+    std::unordered_map<int32_t, float> qm;
+    for (auto & e : q) qm.emplace(e.second, e.first);
+    Dist   r;
+    double tot = 0;
+    for (auto & e : p) {
+        const auto   it = qm.find(e.second);
+        const double d  = e.first - (it == qm.end() ? 0.0 : (double) it->second);
+        if (d > 0) {
+            r.emplace_back((float) d, e.second);
+            tot += d;
+        }
+    }
+    if (tot <= 0) return p;
+    for (auto & e : r) e.first = (float) (e.first / tot);
+    return r;
+}
+} // namespace
+
+// Tree cycle (sampling only). The chain toks[1..k] (base samples, distributions qd) gets up to E8_TREE extra branches,
+// at the drafts the base was least sure of: at draft a, an alternative drawn from the base's distribution there
+// without the chain's token (so the two are draws without replacement), continued by the base for up to E8_TREE_M
+// drafts. All sequences are verified in one pass (Qwen35 tree eval). Acceptance walks the chain; at a branch point the
+// chain token is tested as usual and, if rejected, the alternative is tested against the residual distribution
+// norm(max(p - q, 0)) with its own proposal distribution q without the chain token (recursive rejection sampling);
+// if that is rejected too, the next token is drawn from the second residual. Exact for the base + residual model.
+bool SpecDecoder::tree_cycle(std::vector<int32_t> & toks, std::vector<Dist> & qd, std::vector<int32_t> & out,
+                             std::string & err, bool & done) {
+    done = false;
+    static const int nbr  = std::getenv("E8_TREE") ? std::atoi(std::getenv("E8_TREE")) : 0;  // off: see docs/MULTISEQ.md
+    static const int mlen = std::getenv("E8_TREE_M") ? std::atoi(std::getenv("E8_TREE_M")) : 12;
+    const int        k    = (int) toks.size() - 1, L = k + 1;
+    if (nbr <= 0 || sp_.temp <= 0 || (int) qd.size() < k || k < 2 || !m_.has_mtp()) return true;
+    int B = 1 + nbr;
+    while (B > 1 && (B * L > m_.max_record() || !m_.can_tree(B * L))) B--;
+    if (B < 2) return true;
+    const double t0 = now();
+    // branch points: the drafts with the lowest base probability (that have an alternative)
+    std::vector<std::pair<double, int>> conf;
+    for (int a = 0; a < k; a++) {
+        if (qd[(size_t) a].size() >= 2) conf.emplace_back(at(qd[(size_t) a], toks[(size_t) a + 1]), a);
+    }
+    std::sort(conf.begin(), conf.end());
+    struct Br {
+        int                  a = 0, len = 0;  // branch point (draft index), real drafts in the sequence
+        int32_t              alt = -1;
+        Dist                 q2;              // the alternative's proposal distribution
+        std::vector<int32_t> toks;
+        std::vector<Dist>    qd;
+    };
+    std::vector<Br> br;
+    std::string     e2;
+    for (size_t i = 0; i < conf.size() && (int) br.size() < B - 1; i++) {
+        Br b;
+        b.a           = conf[i].second;
+        const int32_t c1 = toks[(size_t) b.a + 1];
+        double        rest = 0;
+        for (auto & e : qd[(size_t) b.a]) {
+            if (e.second != c1) {
+                b.q2.push_back(e);
+                rest += e.first;
+            }
+        }
+        if (rest <= 0) continue;
+        for (auto & e : b.q2) e.first = (float) (e.first / rest);
+        b.alt = draw(b.q2, rng_);
+        // the base's state after toks[0..a], then drafts from the alternative
+        m_.restore_state();
+        model::EvalOpts bo;
+        bo.residual  = false;
+        bo.window_ok = true;
+        if (!m_.eval(toks.data(), b.a + 1, bo, nullptr, nullptr, err)) return false;
+        b.toks.assign(toks.begin(), toks.begin() + b.a + 1);
+        b.toks.push_back(b.alt);
+        b.qd.assign(qd.begin(), qd.begin() + b.a);
+        b.qd.push_back(b.q2);
+        TokenCounts cb = counts_;
+        for (size_t j = 1; j < b.toks.size(); j++) cb[b.toks[j]]++;
+        if (!draft_rounds(std::min(b.a + 1 + mlen, k), b.toks, b.qd, cb, err)) return false;
+        b.len = (int) b.toks.size() - 1;
+        while ((int) b.toks.size() < L) b.toks.push_back(b.toks.back());  // padding: never tested
+        b.toks.resize((size_t) L);
+        b.len = std::min(b.len, k);
+        br.push_back(std::move(b));
+    }
+    m_.restore_state();
+    if (br.empty()) return true;
+    B = 1 + (int) br.size();
+    st_.t_draft += now() - t0;
+    st_.tree_cycles++;
+
+    // verify all sequences in one pass
+    const double         tv0 = now();
+    const int64_t        nv  = m_.hp().n_vocab;
+    const int            vk  = gpu_topk();
+    const int64_t        vr  = vk > 0 ? vk : nv;
+    std::vector<int32_t> all(toks.begin(), toks.end());
+    for (auto & b : br) all.insert(all.end(), b.toks.begin(), b.toks.end());
+    std::vector<float>   lg((size_t) (B * L) * vr);
+    std::vector<int32_t> vid(vk > 0 ? (size_t) (B * L * vk) : 0);
+    model::EvalOpts      vo;
+    vo.dry    = true;
+    vo.record = true;
+    vo.topk   = vk;
+    vo.n_seqs = B;
+    if (!m_.eval(all.data(), B * L, vo, lg.data(), vk > 0 ? vid.data() : nullptr, err)) return false;
+    st_.t_verify += now() - tv0;
+
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    TokenCounts cur = counts_;
+    auto row_dist = [&](int row, Dist & p) {
+        if (vk > 0) {
+            dist_topk(lg.data() + (size_t) row * vk, vid.data() + (size_t) row * vk, vk, p);
+        } else {
+            float * Lr = lg.data() + (size_t) row * nv;
+            apply_penalties(Lr, sp_, cur);
+            dist(Lr, p);
+        }
+    };
+    int     s = 0, acc = 0;  // current sequence (0 = chain), accepted drafts
+    int32_t next = -1;
+    for (;; acc++) {
+        const std::vector<int32_t> & S   = s == 0 ? toks : br[(size_t) s - 1].toks;
+        const std::vector<Dist> &    Q   = s == 0 ? qd : br[(size_t) s - 1].qd;
+        const int                    len = s == 0 ? k : br[(size_t) s - 1].len;
+        if (acc >= len) break;
+        const int32_t d = S[(size_t) acc + 1];
+        Dist          p;
+        row_dist(s * L + acc, p);
+        const Dist & q  = Q[(size_t) acc];
+        const double pd = at(p, d), qv = at(q, d);
+        if (qv > 0 && u(rng_) * qv < pd) {
+            emit(out, d);
+            cur[d]++;
+            continue;
+        }
+        int bi = -1;  // a branch at this draft off the chain?
+        if (s == 0) {
+            for (size_t i = 0; i < br.size(); i++) {
+                if (br[i].a == acc) bi = (int) i;
+            }
+        }
+        if (bi < 0) {
+            next = draw_residual(p, q, rng_);
+            break;
+        }
+        const Dist   p2 = residual_dist(p, q);
+        const Br &   b  = br[(size_t) bi];
+        const double p2v = at(p2, b.alt), q2v = at(b.q2, b.alt);
+        st_.tree_tried++;
+        if (q2v > 0 && u(rng_) * q2v < p2v) {
+            st_.tree_rescued++;
+            emit(out, b.alt);
+            cur[b.alt]++;
+            s = bi + 1;
+            continue;
+        }
+        next = draw_residual(p2, b.q2, rng_);
+        break;
+    }
+    if (next < 0) {  // the whole sequence accepted: bonus token from its last row
+        Dist pb;
+        row_dist(s * L + acc, pb);
+        next = draw(pb, rng_);
+        st_.full_cycles++;
+    }
+    st_.accepted += acc;
+    st_.emitted += acc + 1;
+    for (int j = 1; j <= kMaxK; j++) {
+        seen_[j] *= 0.95;
+        fail_[j] *= 0.95;
+    }
+    for (int j = 1; j <= std::min({ acc + 1, k, kMaxK }); j++) seen_[j] += 1;
+    if (acc < k && acc + 1 <= kMaxK) fail_[acc + 1] += 1;
+    const double tr0 = now();
+    if (!m_.commit(acc + 1, err, s)) return false;
+    st_.t_rollback += now() - tr0;
+    emit(out, next);
+    last_ = next;
+    done  = true;
     return true;
 }
 } // namespace e8::runtime

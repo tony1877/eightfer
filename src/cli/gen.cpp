@@ -10,6 +10,7 @@
 #include "runtime/spec.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -100,7 +101,8 @@ int gen(const std::vector<std::string> & args) {
     bool kv_q8 = false;
     bool                  compare = false, profile = false, adaptive = false;
     int                   repeat  = 1;
-    bool                  pipe    = false;  // --pipe: draft on a shadow model while verifying  // --repeat N: N runs with seeds seed..seed+N-1, aggregate decode speed
+    bool                  pipe    = false;
+    bool                  tree_test = false;  // --tree-test: a 3-sequence tree verify vs each sequence alone  // --pipe: draft on a shadow model while verifying  // --repeat N: N runs with seeds seed..seed+N-1, aggregate decode speed
     runtime::SamplerParams sp;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & a   = args[i];
@@ -128,6 +130,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--echo") echo = std::atoi(val().c_str()) != 0;
         else if (a == "--profile") profile = true;
         else if (a == "--pipe") pipe = true;
+        else if (a == "--tree-test") tree_test = true;
         else if (a == "--repeat") repeat = std::max(1, std::atoi(val().c_str()));
         else if (model.empty() && a[0] != '-') model = a;
         else {
@@ -149,7 +152,7 @@ int gen(const std::vector<std::string> & args) {
     if (kv_q8) o.kv_type = GGML_TYPE_Q8_0;
     o.n_threads     = threads;
     o.residual_path = res;
-    o.max_record    = std::max(k + 1, 64);  // echo proposals are checked in batches of up to 64
+    o.max_record    = std::max(k + 1, 128);  // echo proposals (64) and tree verifies (up to 128 tokens)
     o.mtp           = k > 0 && mtp > 0;
     if (const char * ub = std::getenv("E8_UBATCH")) o.n_ubatch = std::atoi(ub);
     model::Qwen35 m;
@@ -170,6 +173,70 @@ int gen(const std::vector<std::string> & args) {
             return 1;
         }
         g_shadow = &shadow;
+    }
+    if (tree_test) {
+        // prompt, then 3 sequences of L tokens (from the prompt itself, shifted): tree logits vs one at a time
+        const int L = 8, B = 3;
+        std::vector<int32_t> seqs((size_t) (B * L));
+        for (int b = 0; b < B; b++)
+            for (int j = 0; j < L; j++) {
+                const int bs = (b + (std::getenv("E8_TT_ROT") ? std::atoi(std::getenv("E8_TT_ROT")) : 0)) % B;
+                seqs[(size_t) (b * L + j)] = prompt[(size_t) ((bs * 7 + j) % prompt.size())];
+            }
+        const int64_t      nv = m.hp().n_vocab;
+        std::vector<float> lt((size_t) (B * L) * nv), ls((size_t) L * nv);
+        m.reset();
+        if (!m.eval(prompt.data(), (int) prompt.size(), model::EvalOpts{}, nullptr, nullptr, err)) { fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        model::EvalOpts to;
+        to.dry = to.record = true;
+        to.n_seqs = B;
+        if (!m.eval(seqs.data(), B * L, to, lt.data(), nullptr, err)) { fprintf(stderr, "tree eval: %s\n", err.c_str()); return 1; }
+        if (!m.commit(L, err, 2)) { fprintf(stderr, "commit: %s\n", err.c_str()); return 1; }
+        std::vector<float> nt((size_t) nv), ns2((size_t) nv);
+        const int32_t probe = prompt[0];
+        if (!m.eval(&probe, 1, model::EvalOpts{}, nt.data(), nullptr, err)) { fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        double worst = 0;
+        for (int bb = 0; bb < B + 1; bb++) {
+            const int b = bb == 0 ? 0 : bb - 1;  // sequence 0 twice: the first reference run after the tree eval
+            m.reset();
+            if (!m.eval(prompt.data(), (int) prompt.size(), model::EvalOpts{}, nullptr, nullptr, err)) return 1;
+            if (!m.eval(seqs.data() + b * L, L, model::EvalOpts{}, ls.data(), nullptr, err)) { fprintf(stderr, "%s\n", err.c_str()); return 1; }
+            double d = 0;
+            for (size_t i = 0; i < ls.size(); i++) d = std::max(d, (double) std::fabs(ls[i] - lt[(size_t) b * L * nv + i]));
+            printf("tree-test: sequence %d max |logit diff| %.4f; per row (diff, argmax same):", b, d);
+            for (int j = 0; j < L; j++) {
+                const float * a = ls.data() + (size_t) j * nv, * c = lt.data() + ((size_t) b * L + j) * nv;
+                double dj = 0;
+                for (int64_t v = 0; v < nv; v++) dj = std::max(dj, (double) std::fabs(a[v] - c[v]));
+                printf(" (%.2f,%d)", dj, (int) (std::max_element(a, a + nv) - a == std::max_element(c, c + nv) - c));
+            }
+            printf("\n");
+            worst = std::max(worst, d);
+            if (b == 2) {
+                if (!m.eval(&probe, 1, model::EvalOpts{}, ns2.data(), nullptr, err)) return 1;
+                double d2 = 0;
+                for (size_t i = 0; i < nt.size(); i++) d2 = std::max(d2, (double) std::fabs(nt[i] - ns2[i]));
+                printf("tree-test: next token after committing sequence 2, max |logit diff| %.4f\n", d2);
+                worst = std::max(worst, d2);
+            }
+        }
+        {  // reference noise: the copied-prompt sequence, batch of L vs one token at a time
+            const int bs = std::getenv("E8_TT_ROT") ? (B - std::atoi(std::getenv("E8_TT_ROT")) % B) % B : 0;
+            m.reset();
+            m.eval(prompt.data(), (int) prompt.size(), model::EvalOpts{}, nullptr, nullptr, err);
+            m.eval(seqs.data() + bs * L, L, model::EvalOpts{}, ls.data(), nullptr, err);
+            m.reset();
+            m.eval(prompt.data(), (int) prompt.size(), model::EvalOpts{}, nullptr, nullptr, err);
+            double d = 0;
+            std::vector<float> one((size_t) nv);
+            for (int j = 0; j < L; j++) {
+                m.eval(seqs.data() + bs * L + j, 1, model::EvalOpts{}, one.data(), nullptr, err);
+                for (int64_t v = 0; v < nv; v++) d = std::max(d, (double) std::fabs(one[(size_t) v] - ls[(size_t) j * nv + v]));
+            }
+            printf("tree-test: same sequence %d alone, batch %d vs one at a time: max |logit diff| %.4f\n", bs, L, d);
+        }
+        printf("tree-test: %s\n", worst < 0.5 ? "PASS" : "FAIL");
+        return worst < 0.5 ? 0 : 3;
     }
     if (profile) {
         // time a verify-sized eval (k+1 tokens) with and without the residual, from the same state each time
@@ -207,7 +274,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (repeat > 1) {
         double tdec = 0, tdraft = 0, tver = 0;
-        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0, rr[21] = {};
+        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0, rr[21] = {}, tcyc = 0, ttry = 0, tres = 0;
         for (int r = 0; r < repeat; r++) {
             runtime::SamplerParams s2 = sp;
             s2.seed                   = sp.seed + (uint64_t) r;
@@ -224,6 +291,9 @@ int gen(const std::vector<std::string> & args) {
             ncyc += g.st.cycles;
             nfull += g.st.full_cycles;
             ptest += g.st.pipe_tested;
+            tcyc += g.st.tree_cycles;
+            ttry += g.st.tree_tried;
+            tres += g.st.tree_rescued;
             pkept += g.st.pipe_kept;
             tdraft += g.st.t_draft;
             tver += g.st.t_verify;
@@ -231,6 +301,7 @@ int gen(const std::vector<std::string> & args) {
         }
         printf("full-accept cycles: %.1f%%\n", 100.0 * nfull / std::max<long long>(ncyc, 1));
         printf("pipelined: %lld first tokens tested, %lld kept\n", ptest, pkept);
+        printf("tree: %lld cycles, %lld alternatives tested, %lld accepted\n", tcyc, ttry, tres);
         long long rt = 0;
         for (long long v : rr) rt += v;
         printf("rejections %lld; correction is the base's candidate #", rt);

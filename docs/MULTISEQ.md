@@ -33,3 +33,15 @@ still ~255 ms); drafting batches the B streams' base passes. Expected aggregate 
 
 Each phase lands only after: greedy compare against plain decoding per slot, PPL/KLD unchanged, 256K needle,
 server smoke test.
+
+## Tree drafts v1 (2026-10-07)
+
+`Qwen35::eval` with `n_seqs > 1` verifies several sequences from the committed state in one pass (DeltaNet with
+n_seqs, per-sequence causal masks over the VRAM ring, `commit(keep, err, seq)` replays the kept sequence and moves
+its K/V). Matches single-sequence evals within the model's own batch-size noise (`gen --tree-test`).
+`SpecDecoder::tree_cycle` (E8_TREE=n extra branches, E8_TREE_M continuation): alternatives drawn without replacement
+at the least confident drafts, recursive rejection sampling. 6 seeds, temp 1.0, E8_TREE=2:
+- tokens/cycle prose 17.4 -> 19.0, explain 20.0 -> 24.4; alternatives accepted when tested 10/15, 13/13
+- but branches are drafted one after another: draft time 396 -> 671 ms, so tok/s fell (26.5 -> 20.1, 33.5 -> 27.2).
+- only ~18% of tree cycles hit a rejection at a branch point: branch-point choice by base confidence is weak.
+Next: draft all branches in the same base passes (multi-sequence drafting), and branch where rejections happen.

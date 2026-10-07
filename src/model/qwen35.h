@@ -90,6 +90,9 @@ struct EvalOpts {
     int  topk      = 0;      // > 0 (not argmax): only each row's top-k logits, best first: `logits` gets n*topk values,
                              // `ids` n*topk token ids (sampling with top_k <= topk needs nothing else)
     bool window_ok = false;  // attention may see only the VRAM window of recent tokens (speculative drafts)
+    // > 1 (tree verify): the n tokens are n_seqs sequences of n / n_seqs, each continuing the committed state on its
+    // own (dry + record only; KV within the VRAM ring). commit(keep, err, seq) then keeps one of them.
+    int  n_seqs    = 1;
 };
 
 struct LoadOptions {
@@ -143,7 +146,9 @@ public:
     // tokens through the DeltaNet layers (attention KV is kept as written). n_past becomes snapshot + keep.
     bool rollback(int keep, std::string & err, int slot = 0);
     // After a dry recorded eval: run the first `keep` tokens through the DeltaNet recurrence and advance n_past by keep
-    bool commit(int keep, std::string & err);
+    bool commit(int keep, std::string & err, int seq = 0);
+    // whether a tree verify of n tokens fits now (KV exact in the VRAM ring)
+    bool can_tree(int n) const { return n_past_ + n <= W_ && n <= opt_.max_record && n <= opt_.n_ubatch; }
 
     bool has_mtp() const { return mtp_on_; }
     // row of the last eval's hidden states that belongs to position n_past() - 1, or -1 when unknown
@@ -203,12 +208,12 @@ private:
     // DeltaNet recurrence for layer il on pre-conv qkv [C, n, 1], g/beta [1, Hv, n, 1]: updates conv and ssm state,
     // returns the attention output [S, Hv, n, 1].
     ggml_tensor * gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il, ggml_tensor * qkv, ggml_tensor * g,
-                           ggml_tensor * beta, int n);
+                           ggml_tensor * beta, int n, int ns = 1);
     // x*W^T, plus x*R^T when the residual is active and W has one
     ggml_tensor * mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x);
     bool load_residual(const std::string & path, std::string & err);
     bool compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err);
-    bool replay(int keep, std::string & err);  // the first keep recorded tokens through the DeltaNet recurrence
+    bool replay(int keep, std::string & err, int row0 = 0);  // the first keep recorded tokens through the DeltaNet recurrence
     bool write_state_ = true;                  // while building: gdn_core updates the recurrent state
     ggml_tensor * out_ids_ = nullptr;          // while building: the top-k ids output (EvalOpts::topk)
     // MTP: the layer input from embeddings and hidden states [n_embd, n]
@@ -267,7 +272,8 @@ private:
     int         saved_n_past_ = 0;
     int         recorded_n_ = 0;  // recorded tokens of the last recorded eval (0 = none)
     int         recorded_full_ = 0;  // its batch size (rollback beyond recorded_n_ is only possible to keep all)
-    bool        dry_pending_ = false;  // the last recorded eval was dry: commit() before anything else
+    bool        dry_pending_ = false;
+    int         rec_seqs_ = 1;  // sequences of the last recorded eval (tree verify)  // the last recorded eval was dry: commit() before anything else
     int         debug_layer_ = -1;
     bool        shadow_ = false;
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
