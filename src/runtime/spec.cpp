@@ -412,6 +412,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
                 }
                 next = draw_residual(pb, pq[(size_t) a], rng_);
                 qd.push_back(std::move(pb));
+                mtp_dis_.push_back((int) toks.size());  // this draft's index: the base overruled MTP here
                 break;
             }
         }
@@ -483,6 +484,7 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
     std::vector<float> dl(sampled ? (size_t) nv : 0);
     TokenCounts        cur = counts_;  // penalties at each position include the drafts before it
     const bool use_mtp = echo_ || (mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0);
+    mtp_dis_.clear();
     if (use_mtp) {
         qd.clear();
         last_echo_full_ = false;
@@ -576,6 +578,28 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
                 continue;
             }
             next = draw_residual(pdist, q, rng_);
+            {  // where rejections land: rank of this draft among the cycle's drafts by three confidence scores
+                auto rank_by = [&](auto score) {
+                    const double v = score(acc);
+                    int          r = 0;
+                    for (int j = 0; j < k_; j++) r += score(j) < v;
+                    return std::min(r, 15);
+                };
+                auto sc_tok = [&](int j) { return at(qd[(size_t) j], toks[(size_t) j + 1]); };
+                auto sc_top = [&](int j) { return qd[(size_t) j].empty() ? 1.0 : (double) qd[(size_t) j][0].first; };
+                auto sc_ent = [&](int j) {
+                    double e = 0;
+                    for (auto & x : qd[(size_t) j]) e += x.first > 0 ? x.first * std::log(x.first) : 0.0;  // -entropy
+                    return e;
+                };
+                st_.rk_tok[rank_by(sc_tok)]++;
+                // MTP disagreement: rejection at a flagged draft (draft index acc + 1)?
+                st_.dis_flags += (int64_t) mtp_dis_.size();
+                st_.dis_drafts += k_;
+                for (int x : mtp_dis_) if (x == acc + 1) st_.dis_hit++;
+                st_.rk_top[rank_by(sc_top)]++;
+                st_.rk_ent[rank_by(sc_ent)]++;
+            }
             {  // tree-draft study: rank of the verifier's correction among the base's candidates there
                 int r = 0;
                 while (r < (int) q.size() && q[(size_t) r].second != next) r++;

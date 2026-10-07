@@ -47,7 +47,9 @@ struct SpecStats {
     // pipelined cycles (shadow model): first pre-drafted tokens tested / kept, time spent pre-drafting
     int64_t pipe_tested = 0, pipe_kept = 0, pipe_drafted = 0, pipe_rounds = 0;
     int64_t rej_rank[21] = {};
-    int64_t tree_cycles = 0, tree_tried = 0, tree_rescued = 0;  // tree cycles; alternatives tested / accepted  // rejections by the correction's rank in the base's sorted candidates (20 = outside)
+    int64_t tree_cycles = 0, tree_tried = 0, tree_rescued = 0;
+    int64_t rk_tok[16] = {}, rk_top[16] = {}, rk_ent[16] = {};
+    int64_t dis_flags = 0, dis_drafts = 0, dis_hit = 0;  // MTP-disagreement drafts, drafts, rejections landing on one  // rejection position's rank by drafted-token prob / top prob / -entropy  // tree cycles; alternatives tested / accepted  // rejections by the correction's rank in the base's sorted candidates (20 = outside)
     double  t_pipe = 0;
 };
 
@@ -150,6 +152,7 @@ private:
     model::Qwen35 *      d_       = nullptr;
     bool                 d_dirty_ = true;   // the shadow must take over the main model's state before drafting
     bool                 no_echo_ = false;  // while pre-drafting
+    std::vector<int>     mtp_dis_;          // this cycle's drafts the base drew after rejecting an MTP proposal
     const std::atomic<bool> * stop_ = nullptr;  // pre-drafting stops between rounds once this is set
     bool                 pending_ = false;  // ptoks_[1..] were pre-drafted during a verify that accepted everything
     std::vector<int32_t> ptoks_;

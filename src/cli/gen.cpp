@@ -274,7 +274,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (repeat > 1) {
         double tdec = 0, tdraft = 0, tver = 0;
-        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0, rr[21] = {}, tcyc = 0, ttry = 0, tres = 0;
+        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0, rr[21] = {}, tcyc = 0, ttry = 0, tres = 0, rk[3][16] = {}, dflag = 0, ddraft = 0, dhit = 0;
         for (int r = 0; r < repeat; r++) {
             runtime::SamplerParams s2 = sp;
             s2.seed                   = sp.seed + (uint64_t) r;
@@ -292,6 +292,14 @@ int gen(const std::vector<std::string> & args) {
             nfull += g.st.full_cycles;
             ptest += g.st.pipe_tested;
             tcyc += g.st.tree_cycles;
+            dflag += g.st.dis_flags;
+            ddraft += g.st.dis_drafts;
+            dhit += g.st.dis_hit;
+            for (int i = 0; i < 16; i++) {
+                rk[0][i] += g.st.rk_tok[i];
+                rk[1][i] += g.st.rk_top[i];
+                rk[2][i] += g.st.rk_ent[i];
+            }
             ttry += g.st.tree_tried;
             tres += g.st.tree_rescued;
             pkept += g.st.pipe_kept;
@@ -302,6 +310,21 @@ int gen(const std::vector<std::string> & args) {
         printf("full-accept cycles: %.1f%%\n", 100.0 * nfull / std::max<long long>(ncyc, 1));
         printf("pipelined: %lld first tokens tested, %lld kept\n", ptest, pkept);
         printf("tree: %lld cycles, %lld alternatives tested, %lld accepted\n", tcyc, ttry, tres);
+        printf("MTP disagreement: %.1f flagged drafts per rejected cycle (of %.1f), rejection lands on one in %.0f%% of cycles\n",
+               (double) dflag / std::max(1LL, (long long) (rr[0] + rr[1] + rr[2] + rr[3] + rr[4] + rr[5] + rr[6] + rr[7] + rr[8] + rr[9] + rr[10] + rr[11] + rr[12] + rr[13] + rr[14] + rr[15] + rr[16] + rr[17] + rr[18] + rr[19] + rr[20])),
+               (double) ddraft / std::max(1LL, (long long) (rr[0] + rr[1] + rr[2] + rr[3] + rr[4] + rr[5] + rr[6] + rr[7] + rr[8] + rr[9] + rr[10] + rr[11] + rr[12] + rr[13] + rr[14] + rr[15] + rr[16] + rr[17] + rr[18] + rr[19] + rr[20])),
+               100.0 * dhit / std::max(1LL, (long long) (rr[0] + rr[1] + rr[2] + rr[3] + rr[4] + rr[5] + rr[6] + rr[7] + rr[8] + rr[9] + rr[10] + rr[11] + rr[12] + rr[13] + rr[14] + rr[15] + rr[16] + rr[17] + rr[18] + rr[19] + rr[20])));
+        static const char * nm[3] = { "drafted-token prob", "top prob", "-entropy" };
+        for (int s = 0; s < 3; s++) {
+            long long tot = 0, c = 0;
+            for (long long v : rk[s]) tot += v;
+            printf("rejection at the least-confident draft by %s: cumulative", nm[s]);
+            for (int i = 0; i < 8; i++) {
+                c += rk[s][i];
+                printf(" top%d %.0f%%", i + 1, 100.0 * c / std::max(tot, 1LL));
+            }
+            printf("\n");
+        }
         long long rt = 0;
         for (long long v : rr) rt += v;
         printf("rejections %lld; correction is the base's candidate #", rt);
