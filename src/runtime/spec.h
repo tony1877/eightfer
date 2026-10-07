@@ -32,6 +32,7 @@ using TokenCounts = std::unordered_map<int32_t, int>;
 void apply_penalties(float * logits, const SamplerParams & sp, const TokenCounts & counts);
 
 struct SpecStats {
+    int64_t full_cycles = 0;  // cycles whose verify accepted every draft
     int64_t cycles = 0, drafted = 0, accepted = 0, emitted = 0;
     int64_t k_hist[64] = {};  // cycles per chosen k (0..SpecDecoder::kMaxK)
     double  t_draft = 0, t_verify = 0, t_rollback = 0, t_prefill = 0;

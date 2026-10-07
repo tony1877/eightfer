@@ -189,7 +189,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (repeat > 1) {
         double tdec = 0, tdraft = 0, tver = 0;
-        long long ntok = 0, ncyc = 0;
+        long long ntok = 0, ncyc = 0, nfull = 0;
         for (int r = 0; r < repeat; r++) {
             runtime::SamplerParams s2 = sp;
             s2.seed                   = sp.seed + (uint64_t) r;
@@ -204,9 +204,11 @@ int gen(const std::vector<std::string> & args) {
             tdec += d;
             ntok += g.st.emitted - 1;
             ncyc += g.st.cycles;
+            nfull += g.st.full_cycles;
             tdraft += g.st.t_draft;
             tver += g.st.t_verify;
         }
+        printf("full-accept cycles: %.1f%%\n", 100.0 * nfull / std::max<long long>(ncyc, 1));
         printf("repeat %d: decode %.2f tok/s, %.2f tokens/cycle, per cycle draft %.1f ms verify %.1f ms\n", repeat, ntok / tdec,
                (double) ntok / std::max<long long>(ncyc, 1), 1e3 * tdraft / std::max<long long>(ncyc, 1),
                1e3 * tver / std::max<long long>(ncyc, 1));

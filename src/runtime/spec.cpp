@@ -593,6 +593,7 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
         next = draw_residual(pdist, q, rng_);
         break;
     }
+    if (acc == k_) st_.full_cycles++;
     if (acc == k_) {  // all accepted: bonus token from the last position
         if (vk > 0) {
             if (!sampled) {
