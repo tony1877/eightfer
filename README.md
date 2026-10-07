@@ -93,8 +93,8 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
     from 32 tokens, 275-900 ms on the CPU below), so every verify runs on the GPU and drafts are at least 24 long.
     Prefill runs in 1024-token batches; with the KV in RAM their attention runs in 256-query sub-chunks, so the
     residual crosses PCIe once per 1024 tokens. Prefill: 6K prompt 725 -> 1170 tok/s, 64K prompt at 256K context
-    495 -> 730+, 261,776 tokens 456 -> 784 tok/s (586 -> 346 s, needle recalled, 15.4 GB peak VRAM). Decode, 8 seeds
-    at temp 1.0: prose 28, explain 36, code 43-49, reasoning 59 tok/s. Prose stays drafter-bound: the 4-bit base's
+    495 -> 952, 261,776 tokens 456 -> 835 tok/s (586 -> 324 s, decode 24.4 tok/s at full context, needle recalled,
+    15.4 GB peak VRAM). Decode, 8 seeds at temp 1.0: prose 28, explain 36-38, code 43-49, reasoning 59 tok/s. Prose stays drafter-bound: the 4-bit base's
     drafts are kept ~50% of the time, so about half the drafting is wasted (see `gen --repeat`).
   Output follows the base + residual distribution exactly (speculative sampling at both levels). Greedy output is
   token-identical to plain decoding up to rounding: verify batches of 16+ tokens can flip a near-tie (k=6 matches
