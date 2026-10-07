@@ -144,7 +144,8 @@ struct Server {
     bool                             spec_auto = true;
     int                              mtp = 6;  // most MTP proposals per base pass while drafting (adaptive; 0 = off)
     bool                             echo = true;  // echo drafting (copies from the context)
-    // agent turns: earlier assistant turns' reasoning is not resent; no thinking right after a tool result
+    // agent turns: earlier assistant turns' reasoning is not resent; no thinking right after a routine tool result
+    // (errors, failures and tracebacks in the results still get a reasoning pass)
     bool                             drop_reasoning = true, think_after_tool = false;
     // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;
@@ -339,6 +340,18 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         }
     }
     const bool after_tool = msgs.is_array() && !msgs.empty() && msgs.back().is_object() && msgs.back().value("role", "") == "tool";
+    // ... unless a tool result since the last assistant message reports trouble (then the model should reason about it)
+    bool tool_trouble = false;
+    if (after_tool) {
+        static const char * const kTrouble[] = { "Traceback", "Error", "error:", "ERROR", "FAIL", "Failed", "failed",
+                                                 "Exception", "exception", "assert", "not found", "No such file",
+                                                 "denied", "exit code", "Exit code", "non-zero", "SyntaxError" };
+        for (size_t i = msgs.size(); i-- > 0 && msgs[i].is_object() && msgs[i].value("role", "") == "tool";) {
+            const json & c  = msgs[i].contains("content") ? msgs[i]["content"] : json();
+            const std::string s = c.is_string() ? c.get<std::string>() : c.dump();
+            for (const char * k : kTrouble) tool_trouble = tool_trouble || s.find(k) != std::string::npos;
+        }
+    }
     in.messages = common_chat_msgs_parse_oaicompat(common_json::parse(msgs.dump()));
     if (body.contains("tools") && !body["tools"].is_null()) {
         in.tools = common_chat_tools_parse_oaicompat(common_json::parse(body["tools"].dump()));
@@ -365,7 +378,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     auto et = in.chat_template_kwargs.find("enable_thinking");
     if (et != in.chat_template_kwargs.end()) in.enable_thinking = et->second == "true";
-    if (after_tool && !S.think_after_tool) {
+    if (after_tool && !tool_trouble && !S.think_after_tool) {
         // the turn after a tool result: act on it without a reasoning pass (agent loops)
         in.enable_thinking                        = false;
         in.chat_template_kwargs["enable_thinking"] = "false";
