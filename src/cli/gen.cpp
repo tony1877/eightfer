@@ -26,12 +26,15 @@ struct GenResult {
     double               t_total = 0;
 };
 
+model::Qwen35 * g_shadow = nullptr;  // --pipe
+
 bool run_gen(model::Qwen35 & m, const std::vector<int32_t> & prompt, int n_gen, int k, bool adaptive, int mtp, bool echo,
              const runtime::SamplerParams & sp, GenResult & r, std::string & err) {
     m.reset();
     runtime::SpecDecoder dec(m, k, sp, adaptive);
     dec.set_mtp(mtp);
     dec.set_echo(echo);
+    if (k > 0) dec.set_shadow(g_shadow);
     const auto           t0 = std::chrono::steady_clock::now();
     if (!dec.prefill(prompt, r.toks, err)) return false;
     while ((int) r.toks.size() < n_gen) {
@@ -64,6 +67,11 @@ void report(const char * label, const GenResult & r, int k) {
                (long long) s.rounds_echo, (long long) s.rounds_mtp, (long long) s.rounds_plain, 1e3 * s.t_snap,
                1e3 * s.t_beval, 1e3 * s.t_rback, 1e3 * s.t_mtp, (long long) s.long_cycles, (long long) s.reruns);
     }
+    if (s.pipe_rounds > 0) {
+        printf("  pre-drafting: %lld tokens in %lld rounds, %.1f ms (%.1f ms per round, %.1f per token)\n",
+               (long long) s.pipe_drafted, (long long) s.pipe_rounds, 1e3 * s.t_pipe, 1e3 * s.t_pipe / s.pipe_rounds,
+               1e3 * s.t_pipe / std::max<int64_t>(s.pipe_drafted, 1));
+    }
     if (s.echo_proposed > 0) {
         printf("  echo: %lld tokens proposed from the context, %.3f kept by the base\n", (long long) s.echo_proposed,
                (double) s.echo_accepted / (double) s.echo_proposed);
@@ -91,7 +99,8 @@ int gen(const std::vector<std::string> & args) {
     bool echo  = true;
     bool kv_q8 = false;
     bool                  compare = false, profile = false, adaptive = false;
-    int                   repeat  = 1;  // --repeat N: N runs with seeds seed..seed+N-1, aggregate decode speed
+    int                   repeat  = 1;
+    bool                  pipe    = false;  // --pipe: draft on a shadow model while verifying  // --repeat N: N runs with seeds seed..seed+N-1, aggregate decode speed
     runtime::SamplerParams sp;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & a   = args[i];
@@ -118,6 +127,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--mtp") mtp = std::atoi(val().c_str());
         else if (a == "--echo") echo = std::atoi(val().c_str()) != 0;
         else if (a == "--profile") profile = true;
+        else if (a == "--pipe") pipe = true;
         else if (a == "--repeat") repeat = std::max(1, std::atoi(val().c_str()));
         else if (model.empty() && a[0] != '-') model = a;
         else {
@@ -153,6 +163,14 @@ int gen(const std::vector<std::string> & args) {
            std::chrono::duration<double>(std::chrono::steady_clock::now() - tl).count(), m.gpu_weight_bytes() / 1e9,
            m.cpu_weight_bytes() / 1e9, m.residual_bytes() / 1e9);
 
+    model::Qwen35 shadow;
+    if (pipe) {
+        if (!shadow.make_shadow(m, err)) {
+            fprintf(stderr, "shadow: %s\n", err.c_str());
+            return 1;
+        }
+        g_shadow = &shadow;
+    }
     if (profile) {
         // time a verify-sized eval (k+1 tokens) with and without the residual, from the same state each time
         m.reset();
@@ -189,7 +207,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (repeat > 1) {
         double tdec = 0, tdraft = 0, tver = 0;
-        long long ntok = 0, ncyc = 0, nfull = 0;
+        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0;
         for (int r = 0; r < repeat; r++) {
             runtime::SamplerParams s2 = sp;
             s2.seed                   = sp.seed + (uint64_t) r;
@@ -205,10 +223,13 @@ int gen(const std::vector<std::string> & args) {
             ntok += g.st.emitted - 1;
             ncyc += g.st.cycles;
             nfull += g.st.full_cycles;
+            ptest += g.st.pipe_tested;
+            pkept += g.st.pipe_kept;
             tdraft += g.st.t_draft;
             tver += g.st.t_verify;
         }
         printf("full-accept cycles: %.1f%%\n", 100.0 * nfull / std::max<long long>(ncyc, 1));
+        printf("pipelined: %lld first tokens tested, %lld kept\n", ptest, pkept);
         printf("repeat %d: decode %.2f tok/s, %.2f tokens/cycle, per cycle draft %.1f ms verify %.1f ms\n", repeat, ntok / tdec,
                (double) ntok / std::max<long long>(ncyc, 1), 1e3 * tdraft / std::max<long long>(ncyc, 1),
                1e3 * tver / std::max<long long>(ncyc, 1));

@@ -121,6 +121,11 @@ public:
     ~Qwen35() override;
 
     bool load(const std::string & path, const LoadOptions & opt, std::string & err);
+    // A second sequence over src's weights and KV cache (own recurrent state, CUDA stream, scheduler): drafts while
+    // src verifies. sync_from() makes it continue from src's committed state.
+    bool make_shadow(const Qwen35 & src, std::string & err);
+    void sync_from(const Qwen35 & src);
+    bool is_shadow() const { return shadow_; }
 
     // Runs `n` tokens (n <= n_ubatch) at positions [n_past(), n_past() + n). Writes n * n_vocab logits to
     // `logits` (row i = token i) when it is non-null, otherwise only advances the state.
@@ -264,6 +269,7 @@ private:
     int         recorded_full_ = 0;  // its batch size (rollback beyond recorded_n_ is only possible to keep all)
     bool        dry_pending_ = false;  // the last recorded eval was dry: commit() before anything else
     int         debug_layer_ = -1;
+    bool        shadow_ = false;
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context
     std::vector<uint8_t> graph_meta_draft_, graph_meta_mtp_;  // single-token draft evals / MTP steps (CUDA graph reuse)

@@ -506,8 +506,121 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
     return true;
 }
 
-void Qwen35::reset() {
+bool Qwen35::make_shadow(const Qwen35 & src, std::string & err) {
+    // a second sequence over the same weights and KV: own recurrent state, records, MTP hidden rows, backends
+    // (own CUDA stream, own CPU threads) and scheduler, so it can draft while `src` verifies
+    const auto & h = src.hp_;
+    shadow_        = true;
+    hp_            = h;
+    opt_           = src.opt_;
+    opt_.n_ubatch  = std::min(src.opt_.n_ubatch, 128);  // drafts and their checks only
+    opt_.residual_path.clear();
+    n_ctx_ = src.n_ctx_;
+    W_     = src.W_;
+    Kd_    = src.Kd_;
+    mtp_on_ = src.mtp_on_;
+    Wm_     = src.Wm_;
+    tok_embd_ = src.tok_embd_;
+    out_norm_ = src.out_norm_;
+    output_   = src.output_;
+    layers_   = src.layers_;
+    mtp_      = src.mtp_;
+    mtp_eh_   = src.mtp_eh_;
+    mtp_enorm_ = src.mtp_enorm_;
+    mtp_hnorm_ = src.mtp_hnorm_;
+    mtp_norm_  = src.mtp_norm_;
+    mtp_k_     = src.mtp_k_;
+    mtp_v_     = src.mtp_v_;
+    k_cache_   = src.k_cache_;
+    v_cache_   = src.v_cache_;
+    hk_        = src.hk_;
+    hv_        = src.hv_;
+    pmid_      = src.pmid_;
+    host_gpu_min_ = src.host_gpu_min_;
+    cpu_ = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (!cpu_) {
+        err = "shadow: cannot initialize the CPU backend";
+        return false;
+    }
+    ggml_backend_cpu_set_n_threads(cpu_, 4);
+    if (src.gpu_) gpu_ = ggml_backend_dev_init(ggml_backend_get_device(src.gpu_), nullptr);
+    ggml_init_params sp = { ggml_tensor_overhead() * (size_t) (h.n_layer * 14 + 16), nullptr, true };
+    sctx_[0]            = ggml_init(sp);
+    sctx_[1]            = ggml_init(sp);
+    const size_t nl     = (size_t) h.n_layer;
+    conv_state_.assign(nl, nullptr);
+    ssm_state_.assign(nl, nullptr);
+    conv_bak_.assign(nl, nullptr);
+    ssm_bak_.assign(nl, nullptr);
+    conv_bak1_.assign(nl, nullptr);
+    ssm_bak1_.assign(nl, nullptr);
+    conv_ck_.assign(nl, nullptr);
+    ssm_ck_.assign(nl, nullptr);
+    rec_qkv_.assign(nl, nullptr);
+    rec_g_.assign(nl, nullptr);
+    rec_beta_.assign(nl, nullptr);
+    const int64_t n_rec = std::max(1, opt_.max_record);
+    for (size_t il = 0; il < nl; il++) {
+        if (!src.conv_state_[il]) continue;
+        ggml_context * c = sctx_[src.layers_[il].on_gpu ? 0 : 1];
+        conv_state_[il]  = ggml_dup_tensor(c, src.conv_state_[il]);
+        ssm_state_[il]   = ggml_dup_tensor(c, src.ssm_state_[il]);
+        rec_qkv_[il]     = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.conv_channels(), n_rec);
+        rec_g_[il]       = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
+        rec_beta_[il]    = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
+    }
+    if (mtp_on_) {
+        mtp_hid_   = ggml_new_tensor_2d(sctx_[0], GGML_TYPE_F32, h.n_embd, opt_.n_ubatch);
+        mtp_chain_ = ggml_new_tensor_2d(sctx_[0], GGML_TYPE_F32, h.n_embd, 1);
+    }
     for (int i = 0; i < 2; i++) {
+        ggml_backend_t be = i == 0 ? gpu_ : cpu_;
+        if (!be || !ggml_get_first_tensor(sctx_[i])) continue;
+        sbuf_[i] = ggml_backend_alloc_ctx_tensors_from_buft(sctx_[i], ggml_backend_get_default_buffer_type(be));
+        if (!sbuf_[i]) {
+            err = "shadow: not enough VRAM for a second recurrent state";
+            return false;
+        }
+    }
+    reset();
+    std::vector<ggml_backend_t> bes;
+    if (gpu_) bes.push_back(gpu_);
+    bes.push_back(cpu_);
+    sched_ = ggml_backend_sched_new(bes.data(), nullptr, (int) bes.size(), kGraphSize, false, true);
+    graph_meta_.resize(ggml_tensor_overhead() * kGraphSize + ggml_graph_overhead_custom(kGraphSize, false));
+    graph_meta_draft_.resize(graph_meta_.size());
+    graph_meta_mtp_.resize(graph_meta_.size());
+    return true;
+}
+
+void Qwen35::sync_from(const Qwen35 & src) {
+    // take over src's committed sequence: recurrent state, position, KV bookkeeping and the MTP hidden row
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        if (conv_state_[il]) {
+            ggml_backend_tensor_copy(src.conv_state_[il], conv_state_[il]);
+            ggml_backend_tensor_copy(src.ssm_state_[il], ssm_state_[il]);
+        }
+    }
+    n_past_       = src.n_past_;
+    slot_pos_     = src.slot_pos_;
+    mtp_slot_pos_ = src.mtp_slot_pos_;
+    host_valid_   = src.host_valid_;
+    exact_upto_   = src.exact_upto_;
+    sum_upto_     = src.sum_upto_;
+    far_rows_     = src.far_rows_;
+    far_ws_       = src.far_ws_;
+    recorded_n_ = recorded_full_ = 0;
+    dry_pending_ = false;
+    hid_row_     = -1;
+    if (mtp_on_ && src.hid_row_ >= 0 && src.mtp_hid_) {
+        std::vector<float> row((size_t) hp_.n_embd);
+        ggml_backend_tensor_get(src.mtp_hid_, row.data(), src.mtp_hid_->nb[1] * (size_t) src.hid_row_, row.size() * sizeof(float));
+        ggml_backend_tensor_set(mtp_hid_, row.data(), 0, row.size() * sizeof(float));
+        hid_row_ = 0;
+    }
+}
+
+void Qwen35::reset() {    for (int i = 0; i < 2; i++) {
         if (sbuf_[i]) {
             ggml_backend_buffer_clear(sbuf_[i], 0);
         }

@@ -1,5 +1,8 @@
 #include "runtime/spec.h"
 
+#include <atomic>
+#include <thread>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -297,18 +300,20 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
     //  - else none: the base pass adds one token.
     // The kept tokens are exact samples from the base, so they and the base's distributions are the drafts for the
     // base + residual verify.
-    const int64_t      nv      = m_.hp().n_vocab;
+    model::Qwen35 &    dm      = d_ ? *d_ : m_;  // the shadow drafts when there is one
+    const int64_t      nv      = dm.hp().n_vocab;
     const bool         sampled = sp_.temp > 0;
     const int          tk      = sampled ? gpu_topk() : 0;  // > 0: rows come back as their top-k only
     const int64_t      rw      = tk > 0 ? tk : nv;          // floats per row
     std::vector<float> ml(sampled ? (size_t) rw : 0), lg;
     std::vector<int32_t> mid(tk > 0 ? (size_t) tk : 1), lid;
     while ((int) toks.size() - 1 < k) {
+        if (stop_ && stop_->load()) break;  // pre-drafting: the verify is done
         const int            need = k - ((int) toks.size() - 1);
         std::vector<int32_t> in(1, toks.back());
         std::vector<Dist>    pq;
         bool                 echo = false;
-        if (echo_ && need > 1) {
+        if (echo_ && !no_echo_ && need > 1) {
             // the last kEchoN tokens of history + this cycle's drafts
             std::vector<int32_t> tail;
             const int            nd = (int) toks.size() - 1;  // drafts so far (toks[0] = last_, already in hist_)
@@ -324,7 +329,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             const int j = (int) tail.size() == kEchoN ? find_copy(tail.data()) : -1;
             if (j >= 0) {
                 // the base's check of the copy must be rollback-able: at most max_record - 1 proposals
-                const int len = std::min({ need - 1, 63, m_.max_record() - 1, (int) hist_.size() - j });
+                const int len = std::min({ need - 1, 63, dm.max_record() - 1, (int) hist_.size() - j });
                 for (int t = 0; t < len; t++) {
                     in.push_back(hist_[(size_t) (j + t)]);
                     if (sampled) pq.push_back(Dist{ { 1.0f, hist_[(size_t) (j + t)] } });
@@ -334,13 +339,13 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         }
         if (extend && !echo) break;  // extending a long copy: only further copies
         const double tm0 = now();
-        if (!echo && mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0) {
+        if (!echo && mtp_n_ > 0 && dm.has_mtp() && dm.hidden_row() >= 0) {
             const int   mt  = std::min(choose_mtp(), need - 1);
-            const int   row = m_.hidden_row();
+            const int   row = dm.hidden_row();
             TokenCounts cm  = sampled ? cur : TokenCounts{};
             for (int j = 0; j < mt; j++) {  // MTP chain: position of toks.back() is n_past()
                 int32_t id = -1;
-                if (!m_.mtp_step(in.back(), m_.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr,
+                if (!dm.mtp_step(in.back(), dm.n_past() - 1 + j, j == 0 ? row : -1, sampled ? ml.data() : nullptr,
                                  tk > 0 ? mid.data() : &id, err, tk)) {
                     return false;
                 }
@@ -375,7 +380,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
         std::vector<int32_t> bid((size_t) nb);
         lg.resize(sampled ? (size_t) (nb * rw) : 0);
         lid.resize(tk > 0 ? (size_t) (nb * tk) : 0);
-        if (!m_.eval(in.data(), nb, bo, sampled ? lg.data() : nullptr, tk > 0 ? lid.data() : bid.data(), err)) return false;
+        if (!dm.eval(in.data(), nb, bo, sampled ? lg.data() : nullptr, tk > 0 ? lid.data() : bid.data(), err)) return false;
         st_.t_beval += now() - tb0;
         int     a    = 0;
         int32_t next = -1;
@@ -429,7 +434,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
             step_ms_  = 0.9 * step_ms_ + 0.1 * 1e3 * (ts0 - tm0) / mt;
         }
         const double tr0 = now();
-        if (mt > 0 && !m_.commit(a + 1, err)) return false;  // keep toks.back() before this round + the kept proposals
+        if (mt > 0 && !dm.commit(a + 1, err)) return false;  // keep toks.back() before this round + the kept proposals
         st_.t_rback += now() - tr0;
         last_echo_full_ = echo && a == mt;
         if (extend && !last_echo_full_) break;
@@ -438,6 +443,11 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
 }
 
 bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
+    if (d_ && k_ > 0 && mtp_n_ > 0 && m_.has_mtp()) return step_shadow(out, err);
+    return step_plain(out, err);
+}
+
+bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
     const int64_t nv = m_.hp().n_vocab;
     int           k_ = adaptive_ ? choose_k() : this->k_;
     const int     base_past = m_.n_past();
@@ -634,4 +644,244 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     return true;
 }
 
+// Pipelined cycle (with a shadow model): the shadow drafts; while the main model verifies those drafts on its own
+// thread and CUDA stream, the shadow keeps drafting from the last draft as if all were accepted. When the verify
+// accepts every draft, its last row (normally the bonus token's distribution) tests the first pre-drafted token
+// instead, and the rest become the next cycle's drafts: that cycle skips its drafting. Exact: every emitted token
+// is a draft accepted by speculative sampling against base + residual, or a token sampled from it.
+bool SpecDecoder::step_shadow(std::vector<int32_t> & out, std::string & err) {
+    const int64_t nv      = m_.hp().n_vocab;
+    const bool    sampled = sp_.temp > 0;
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    auto at = [](const Dist & v, int32_t t) {
+        for (auto & e : v) {
+            if (e.second == t) return (double) e.first;
+        }
+        return 0.0;
+    };
+    std::vector<int32_t> toks;
+    std::vector<Dist>    qd;
+    TokenCounts          cur = counts_;
+    if (pending_) {
+        pending_         = false;
+        const int32_t x1 = ptoks_[1];
+        bool          ok;
+        int32_t       corr = -1;
+        if (!sampled) {
+            ok   = x1 == pend_top_;
+            corr = pend_top_;
+        } else {
+            const double pv = at(pend_p_, x1), qv = at(pqd_[0], x1);
+            ok = qv > 0 && u(rng_) * qv < pv;
+            if (!ok) corr = draw_residual(pend_p_, pqd_[0], rng_);
+        }
+        st_.drafted++;
+        st_.pipe_tested++;
+        if (!ok) {  // the pre-drafted tokens are off: the correction is the next token, the shadow starts over
+            emit(out, corr);
+            st_.emitted++;
+            last_    = corr;
+            d_dirty_ = true;
+            return true;
+        }
+        st_.accepted++;
+        st_.pipe_kept++;
+        emit(out, x1);
+        st_.emitted++;
+        last_ = x1;
+        toks.assign(ptoks_.begin() + 1, ptoks_.end());
+        if (sampled) qd.assign(pqd_.begin() + 1, pqd_.end());
+        cur = counts_;
+        for (size_t i = 1; i < toks.size(); i++) cur[toks[i]]++;
+    }
+    const int room = m_.n_ctx() - m_.n_past() - 2;
+    int       k    = std::min({ adaptive_ ? choose_k() : k_, room, m_.max_verify() - 1 });
+    if (k < 1) {
+        d_dirty_ = true;
+        k_       = 0;
+        return step_plain(out, err);
+    }
+    st_.cycles++;
+    double t0 = now();
+    if (toks.empty()) {
+        if (d_dirty_) {
+            d_->sync_from(m_);
+            d_dirty_ = false;
+        }
+        toks.assign(1, last_);
+    }
+    // pre-drafted tokens kept: verify just those (this cycle has no drafting phase) when there are enough
+    static const int pipe_min = std::getenv("E8_PIPE_MIN") ? std::atoi(std::getenv("E8_PIPE_MIN")) : 4;
+    if (toks.size() > 1 && (int) toks.size() - 1 >= pipe_min) k = (int) toks.size() - 1;
+    if ((int) toks.size() - 1 < k) {
+        no_echo_ = false;
+        if (!draft_rounds(k, toks, qd, cur, err)) return false;
+    }
+    const int kk = (int) toks.size() - 1;  // pre-drafted tokens may exceed k: verify them all
+    st_.k_hist[std::min(kk, kMaxK)]++;
+    const double td = now() - t0;
+    st_.t_draft += td;
+    st_.drafted += kk;
+
+    // verify on the main model (own thread), pre-draft on the shadow meanwhile
+    t0 = now();
+    m_.save_state();
+    const int            vk = sampled ? gpu_topk() : (no_penalties() ? 1 : 0);
+    const int64_t        vr = vk > 0 ? vk : nv;
+    std::vector<float>   lg((size_t) ((kk + 1) * vr));
+    std::vector<int32_t> vid(vk > 0 ? (size_t) ((kk + 1) * vk) : 0);
+    model::EvalOpts      vopt;
+    vopt.record = true;
+    vopt.topk   = vk;
+    if (std::getenv("E8_TEST_VERIFY_NORES")) vopt.residual = false;  // timing experiment only (not exact)
+    bool              vok = false;
+    std::string       verr;
+    std::atomic<bool> vdone{ false };
+    std::thread       vt([&] {
+        vok = m_.eval(toks.data(), kk + 1, vopt, lg.data(), vk > 0 ? vid.data() : nullptr, verr);
+        vdone = true;
+    });
+    ptoks_.assign(1, toks.back());
+    pqd_.clear();
+    bool        pok = false;
+    std::string perr;
+    {
+        const int kp = std::min({ std::max(k, 8), m_.max_verify() - 1, room - kk - 1 });
+        if (kp >= 1) {
+            TokenCounts pc = cur;
+            no_echo_       = true;  // history lags the drafts here
+            const double  tp0     = now();
+            const int64_t rounds0 = st_.rounds_mtp + st_.rounds_plain + st_.rounds_echo;
+            stop_            = &vdone;
+            pok              = draft_rounds(kp, ptoks_, pqd_, pc, perr);
+            stop_            = nullptr;
+            st_.t_pipe += now() - tp0;
+            st_.pipe_drafted += (int64_t) ptoks_.size() - 1;
+            st_.pipe_rounds += st_.rounds_mtp + st_.rounds_plain + st_.rounds_echo - rounds0;
+            no_echo_ = false;
+        }
+    }
+    vt.join();
+    if (!vok) {
+        err = verr;
+        return false;
+    }
+    const double tv = 1e3 * (now() - t0);
+    st_.t_verify += tv / 1e3;
+    for (int n = 1; n <= kMaxK + 1; n++) {
+        vt_[n] *= 0.9;
+        vn_[n] *= 0.9;
+    }
+    if (kk + 1 <= kMaxK + 1) {
+        vt_[kk + 1] += tv;
+        vn_[kk + 1] += 1;
+    }
+    draft_ms_ = 0.8 * draft_ms_ + 0.2 * (1e3 * (td > 0 ? td : 0) / std::max(kk, 1));
+
+    int     acc  = 0;
+    int32_t next = -1;
+    cur          = counts_;
+    auto row_dist = [&](int i, Dist & p) {
+        if (vk > 0) {
+            dist_topk(lg.data() + (size_t) i * vk, vid.data() + (size_t) i * vk, vk, p);
+        } else {
+            float * L = lg.data() + (size_t) i * nv;
+            apply_penalties(L, sp_, cur);
+            dist(L, p);
+        }
+    };
+    for (; acc < kk; acc++) {
+        const int32_t d = toks[(size_t) acc + 1];
+        if (!sampled) {
+            int32_t top;
+            if (vk > 0) {
+                top = vid[(size_t) acc];
+            } else {
+                float * L = lg.data() + (size_t) acc * nv;
+                apply_penalties(L, sp_, cur);
+                top = (int32_t) (std::max_element(L, L + nv) - L);
+            }
+            cur[d]++;
+            if (top == d) {
+                emit(out, d);
+                continue;
+            }
+            next = top;
+            break;
+        }
+        Dist pdist;
+        row_dist(acc, pdist);
+        cur[d]++;
+        const Dist & q  = qd[(size_t) acc];
+        const double pd = at(pdist, d), qv = at(q, d);
+        if (qv > 0 && u(rng_) * qv < pd) {
+            emit(out, d);
+            continue;
+        }
+        next = draw_residual(pdist, q, rng_);
+        break;
+    }
+    st_.accepted += acc;
+    for (int j = 1; j <= kMaxK; j++) {
+        seen_[j] *= 0.95;
+        fail_[j] *= 0.95;
+    }
+    for (int j = 1; j <= std::min({ acc + 1, kk, kMaxK }); j++) seen_[j] += 1;
+    if (acc < kk && acc + 1 <= kMaxK) fail_[acc + 1] += 1;
+
+    t0 = now();
+    if (acc == kk) {
+        st_.full_cycles++;
+        st_.emitted += acc;
+        if (!m_.rollback(kk + 1, err)) return false;  // keeps everything (clears the record)
+        if (pok && ptoks_.size() >= 2) {
+            // the last row tests the first pre-drafted token next cycle; no bonus token
+            if (!sampled) {
+                if (vk > 0) {
+                    pend_top_ = vid[(size_t) kk];
+                } else {
+                    float * L = lg.data() + (size_t) kk * nv;
+                    apply_penalties(L, sp_, cur);
+                    pend_top_ = (int32_t) (std::max_element(L, L + nv) - L);
+                }
+            } else {
+                row_dist(kk, pend_p_);
+            }
+            pending_ = true;
+            st_.t_rollback += now() - t0;
+            return true;
+        }
+        Dist pb;
+        if (!sampled) {
+            if (vk > 0) {
+                next = vid[(size_t) kk];
+            } else {
+                float * L = lg.data() + (size_t) kk * nv;
+                apply_penalties(L, sp_, cur);
+                next = (int32_t) (std::max_element(L, L + nv) - L);
+            }
+        } else {
+            row_dist(kk, pb);
+            next = draw(pb, rng_);
+        }
+        d_dirty_ = true;
+    } else {
+        st_.emitted += acc;
+        d_dirty_ = true;
+        if (m_.can_rollback(acc + 1)) {
+            if (!m_.rollback(acc + 1, err)) return false;
+        } else {
+            std::string e2;
+            m_.rollback(kk + 1, e2);
+            m_.restore_state();
+            if (!m_.eval(toks.data(), acc + 1, model::EvalOpts{}, nullptr, nullptr, err)) return false;
+            st_.reruns++;
+        }
+    }
+    emit(out, next);
+    st_.emitted++;
+    st_.t_rollback += now() - t0;
+    last_ = next;
+    return true;
+}
 } // namespace e8::runtime

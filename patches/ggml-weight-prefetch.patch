@@ -191,3 +191,85 @@ index 5bdade6de..435853fee 100644
      for (int b = 0; b < sched->n_backends; b++) {
          for (int c = 0; c < sched->n_copies; c++) {
              ggml_backend_event_free(sched->events[b][c]);
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 303c9f463..e337e5230 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -776,18 +776,77 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+ 
++// eightfer: small host-to-device uploads (graph inputs) are read by a kernel from mapped pinned memory instead of
++// going through the copy engine, where they would queue behind streamed weights (ggml-weight-prefetch.patch)
++static __global__ void k_e8_small_copy(const uint4 * src, uint4 * dst, size_t n16, const char * srcb, char * dstb, size_t tail) {
++    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
++    if (i < n16) dst[i] = src[i];
++    if (i < tail) dstb[i] = srcb[i];
++}
++
++static bool ggml_cuda_e8_small_upload(void * dst, const void * data, size_t size) {
++    static const size_t lim = getenv("E8_SMALL_UPLOAD") ? (size_t) atoll(getenv("E8_SMALL_UPLOAD")) : (size_t) 4 << 20;
++    if (size == 0 || size > lim || ((uintptr_t) dst % 16) != 0) return false;
++    thread_local char * host = nullptr;
++    thread_local char * dev  = nullptr;
++    if (!host) {
++        if (cudaHostAlloc((void **) &host, lim, cudaHostAllocMapped) != cudaSuccess) {
++            (void) cudaGetLastError();
++            host = (char *) 1;  // unavailable: remember
++            return false;
++        }
++        if (cudaHostGetDevicePointer((void **) &dev, host, 0) != cudaSuccess) {
++            (void) cudaGetLastError();
++            host = (char *) 1;
++            return false;
++        }
++    }
++    if (host == (char *) 1) return false;
++    memcpy(host, data, size);
++    const size_t n16 = size / 16, tail = size % 16, n = std::max(n16, tail);
++    k_e8_small_copy<<<(unsigned) ((n + 255) / 256), 256, 0, cudaStreamPerThread>>>(
++        (const uint4 *) dev, (uint4 *) dst, n16, dev + n16 * 16, (char *) dst + n16 * 16, tail);
++    CUDA_CHECK(cudaGetLastError());
++    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++    return true;
++}
++
+ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+ 
+     ggml_cuda_set_device(ctx->device);
++    if (ggml_cuda_e8_small_upload((char *) tensor->data + offset, data, size)) return;
+     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+ 
++static bool ggml_cuda_e8_small_download(void * data, const void * src, size_t size) {
++    static const size_t lim = getenv("E8_SMALL_UPLOAD") ? (size_t) atoll(getenv("E8_SMALL_UPLOAD")) : (size_t) 4 << 20;
++    if (size == 0 || size > lim || ((uintptr_t) src % 16) != 0) return false;
++    thread_local char * host = nullptr;
++    thread_local char * dev  = nullptr;
++    if (!host) {
++        if (cudaHostAlloc((void **) &host, lim, cudaHostAllocMapped) != cudaSuccess ||
++            cudaHostGetDevicePointer((void **) &dev, host, 0) != cudaSuccess) {
++            (void) cudaGetLastError();
++            host = (char *) 1;
++            return false;
++        }
++    }
++    if (host == (char *) 1) return false;
++    const size_t n16 = size / 16, tail = size % 16, n = std::max(n16, tail);
++    k_e8_small_copy<<<(unsigned) ((n + 255) / 256), 256, 0, cudaStreamPerThread>>>(
++        (const uint4 *) src, (uint4 *) dev, n16, (const char *) src + n16 * 16, dev + n16 * 16, tail);
++    CUDA_CHECK(cudaGetLastError());
++    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++    memcpy(data, host, size);
++    return true;
++}
+ static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
+ 
+     ggml_cuda_set_device(ctx->device);
++    if (ggml_cuda_e8_small_download(data, (const char *) tensor->data + offset, size)) return;
+     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }

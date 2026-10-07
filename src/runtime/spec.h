@@ -7,6 +7,7 @@
 
 #include "model/qwen35.h"
 
+#include <atomic>
 #include <cstdint>
 #include <random>
 #include <string>
@@ -43,6 +44,9 @@ struct SpecStats {
     // draft rounds by proposal source, and where their time goes (seconds)
     int64_t rounds_echo = 0, rounds_mtp = 0, rounds_plain = 0;
     double  t_snap = 0, t_beval = 0, t_rback = 0, t_mtp = 0;
+    // pipelined cycles (shadow model): first pre-drafted tokens tested / kept, time spent pre-drafting
+    int64_t pipe_tested = 0, pipe_kept = 0, pipe_drafted = 0, pipe_rounds = 0;
+    double  t_pipe = 0;
 };
 
 class SpecDecoder {
@@ -69,6 +73,12 @@ public:
     void begin(const float * last_logits, std::vector<int32_t> & out);
     // One cycle: appends 1..k+1 tokens to `out`.
     bool step(std::vector<int32_t> & out, std::string & err);
+    // drafts on `d` (a shadow of the verifying model, see Qwen35::make_shadow), pipelined with the verifies
+    void set_shadow(model::Qwen35 * d) {
+        d_       = d;
+        d_dirty_ = true;
+        pending_ = false;
+    }
 
     const SpecStats & stats() const { return st_; }
 
@@ -86,6 +96,8 @@ private:
     bool    no_penalties() const { return sp_.presence_penalty == 0 && sp_.frequency_penalty == 0; }
     // top-k to take on the GPU when sampling needs only that (penalties change logits on the CPU), else 0
     int     gpu_topk() const { return sp_.temp > 0 && sp_.top_k > 0 && sp_.top_k <= 64 && no_penalties() ? sp_.top_k : 0; }
+    bool    step_plain(std::vector<int32_t> & out, std::string & err);
+    bool    step_shadow(std::vector<int32_t> & out, std::string & err);
     int     choose_k() const;
     int     choose_mtp() const;
     double  verify_ms(int n) const;
@@ -130,6 +142,16 @@ private:
     std::unordered_map<uint64_t, int> ngram_;  // kEchoN-gram -> history position after its latest occurrence
     int                  ngram_upto_ = 0;
     SpecStats          st_;
+    // pipelining with a shadow model
+    model::Qwen35 *      d_       = nullptr;
+    bool                 d_dirty_ = true;   // the shadow must take over the main model's state before drafting
+    bool                 no_echo_ = false;  // while pre-drafting
+    const std::atomic<bool> * stop_ = nullptr;  // pre-drafting stops between rounds once this is set
+    bool                 pending_ = false;  // ptoks_[1..] were pre-drafted during a verify that accepted everything
+    std::vector<int32_t> ptoks_;
+    std::vector<std::vector<std::pair<float, int32_t>>> pqd_;
+    std::vector<std::pair<float, int32_t>>              pend_p_;  // that verify's last row (sampling)
+    int32_t              pend_top_ = -1;                          // its argmax (greedy)
 };
 
 } // namespace e8::runtime
