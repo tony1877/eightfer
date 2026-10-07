@@ -570,6 +570,11 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
                 continue;
             }
             next = draw_residual(pdist, q, rng_);
+            {  // tree-draft study: rank of the verifier's correction among the base's candidates there
+                int r = 0;
+                while (r < (int) q.size() && q[(size_t) r].second != next) r++;
+                st_.rej_rank[std::min(r, 20)]++;
+            }
             break;
         }
         float * L = lg.data() + (size_t) acc * nv;

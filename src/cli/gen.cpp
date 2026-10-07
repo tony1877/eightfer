@@ -207,7 +207,7 @@ int gen(const std::vector<std::string> & args) {
 
     if (repeat > 1) {
         double tdec = 0, tdraft = 0, tver = 0;
-        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0;
+        long long ntok = 0, ncyc = 0, nfull = 0, ptest = 0, pkept = 0, rr[21] = {};
         for (int r = 0; r < repeat; r++) {
             runtime::SamplerParams s2 = sp;
             s2.seed                   = sp.seed + (uint64_t) r;
@@ -227,9 +227,17 @@ int gen(const std::vector<std::string> & args) {
             pkept += g.st.pipe_kept;
             tdraft += g.st.t_draft;
             tver += g.st.t_verify;
+            for (int i = 0; i <= 20; i++) rr[i] += g.st.rej_rank[i];
         }
         printf("full-accept cycles: %.1f%%\n", 100.0 * nfull / std::max<long long>(ncyc, 1));
         printf("pipelined: %lld first tokens tested, %lld kept\n", ptest, pkept);
+        long long rt = 0;
+        for (long long v : rr) rt += v;
+        printf("rejections %lld; correction is the base's candidate #", rt);
+        for (int i = 0; i < 6; i++) printf(" %d: %.1f%%", i + 1, 100.0 * rr[i] / std::max(rt, 1LL));
+        long long top4 = rr[0] + rr[1] + rr[2] + rr[3], top8 = top4 + rr[4] + rr[5] + rr[6] + rr[7];
+        printf(" | within top 4: %.1f%%, top 8: %.1f%%, outside top 20: %.1f%%\n", 100.0 * top4 / std::max(rt, 1LL),
+               100.0 * top8 / std::max(rt, 1LL), 100.0 * rr[20] / std::max(rt, 1LL));
         printf("repeat %d: decode %.2f tok/s, %.2f tokens/cycle, per cycle draft %.1f ms verify %.1f ms\n", repeat, ntok / tdec,
                (double) ntok / std::max<long long>(ncyc, 1), 1e3 * tdraft / std::max<long long>(ncyc, 1),
                1e3 * tver / std::max<long long>(ncyc, 1));

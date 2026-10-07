@@ -46,6 +46,7 @@ struct SpecStats {
     double  t_snap = 0, t_beval = 0, t_rback = 0, t_mtp = 0;
     // pipelined cycles (shadow model): first pre-drafted tokens tested / kept, time spent pre-drafting
     int64_t pipe_tested = 0, pipe_kept = 0, pipe_drafted = 0, pipe_rounds = 0;
+    int64_t rej_rank[21] = {};  // rejections by the correction's rank in the base's sorted candidates (20 = outside)
     double  t_pipe = 0;
 };
 
