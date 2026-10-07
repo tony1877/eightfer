@@ -194,7 +194,7 @@ bool SpecDecoder::prefill(const std::vector<int32_t> & prompt, std::vector<int32
     const double  t0 = now();
     const int64_t nv = m_.hp().n_vocab;
     logits_.resize((size_t) nv);
-    const size_t ub = 512;
+    const size_t ub = (size_t) m_.max_batch();
     for (size_t i = 0; i < prompt.size(); i += ub) {
         const int       n     = (int) std::min(prompt.size() - i, ub);
         const bool      final = i + (size_t) n == prompt.size();

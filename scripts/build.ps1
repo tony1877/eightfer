@@ -73,6 +73,16 @@ if (-not (Test-Path (Join-Path $root 'third_party\llama.cpp\ggml\CMakeLists.txt'
     if ($LASTEXITCODE -ne 0) { Fail 'git submodule update failed' }
 }
 
+# 4b. eightfer's ggml patches (patches\ggml-*.patch), applied once: `git apply --check` fails when already applied.
+foreach ($p in Get-ChildItem (Join-Path $root 'patches') -Filter 'ggml-*.patch' -ErrorAction SilentlyContinue | Sort-Object Name) {
+    git -C (Join-Path $root 'third_party\llama.cpp') apply --check $p.FullName 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        git -C (Join-Path $root 'third_party\llama.cpp') apply $p.FullName
+        if ($LASTEXITCODE -ne 0) { Fail "could not apply $($p.Name)" }
+        Write-Host "applied $($p.Name)"
+    }
+}
+
 # 5. Configure and build. The first CUDA build compiles ggml's kernels and takes several minutes.
 if ($Clean -and (Test-Path $build)) {
     Remove-Item -Recurse -Force $build

@@ -1,0 +1,193 @@
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 5bdade6de..435853fee 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -978,6 +978,16 @@ struct ggml_backend_sched {
+     int debug_realloc;
+     int debug_graph_size;
+     int debug_prev_graph_size;
++
++    // eightfer: weights in host buffers that splits on the first (GPU) backend use are staged in two VRAM slots by a
++    // second backend instance (its own stream), the next split's weights uploading while the current split computes
++    ggml_backend_t        e8_copy_be;
++    ggml_backend_buffer_t e8_slot[2];
++    size_t                e8_slot_size;
++    ggml_backend_event_t  e8_filled[2], e8_free[2];
++    std::vector<int>    * e8_wsplits;  // split ids with staged weights, in order
++    std::vector<int>    * e8_split_slot;  // per split: slot or -1
++    bool                  e8_off;
+ };
+ 
+ #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
+@@ -1744,8 +1754,99 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+     }
+ }
+ 
+-static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+-    bool backend_ids_changed = false;
++// eightfer: see e8_copy_be. Returns with the weight copies of eligible splits pointing into the slots (so the graph
++// allocator skips them), or with nothing staged when it is off or the slots cannot be allocated.
++static void ggml_backend_sched_e8_assign(ggml_backend_sched_t sched) {
++    if (!sched->e8_wsplits) {
++        sched->e8_wsplits    = new std::vector<int>();
++        sched->e8_split_slot = new std::vector<int>();
++        sched->e8_off        = getenv("E8_NO_PREFETCH") != nullptr ||
++                               ggml_backend_dev_type(ggml_backend_get_device(sched->backends[0])) != GGML_BACKEND_DEVICE_TYPE_GPU;
++    }
++    sched->e8_wsplits->clear();
++    sched->e8_split_slot->assign(sched->n_splits, -1);
++    if (sched->e8_off) return;
++    const size_t cap = 160u << 20, align = 4096, pad = 4096;
++    auto is_w = [&](const ggml_tensor * in) {
++        return in->buffer && ggml_backend_buffer_is_host(in->buffer) &&
++               ggml_backend_buffer_get_usage(in->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
++    };
++    size_t need = 0;
++    std::vector<size_t> tot(sched->n_splits, 0);
++    for (int s = 0; s < sched->n_splits; s++) {
++        const ggml_backend_sched_split & sp = sched->splits[s];
++        if (sp.backend_id != 0) continue;
++        for (int i = 0; i < sp.n_inputs; i++) {
++            if (is_w(sp.inputs[i])) tot[s] += GGML_PAD(ggml_nbytes(sp.inputs[i]), align) + pad;
++        }
++        if (tot[s] > 0 && tot[s] <= cap) need = std::max(need, tot[s]);
++    }
++    if (need == 0) return;
++    if (need > sched->e8_slot_size) {
++        ggml_backend_synchronize(sched->backends[0]);
++        if (sched->e8_copy_be) ggml_backend_synchronize(sched->e8_copy_be);
++        for (int k = 0; k < 2; k++) {
++            if (sched->e8_slot[k]) ggml_backend_buffer_free(sched->e8_slot[k]);
++            sched->e8_slot[k] = ggml_backend_buft_alloc_buffer(sched->bufts[0], need);
++        }
++        if (!sched->e8_slot[0] || !sched->e8_slot[1]) {
++            for (int k = 0; k < 2; k++) {
++                if (sched->e8_slot[k]) ggml_backend_buffer_free(sched->e8_slot[k]);
++                sched->e8_slot[k] = nullptr;
++            }
++            sched->e8_slot_size = 0;
++            sched->e8_off       = true;
++            fprintf(stderr, "%s: no VRAM for weight staging slots (%.1f MB); uploads stay serial\n", __func__, 2.0 * need / 1e6);
++            return;
++        }
++        for (int k = 0; k < 2; k++) ggml_backend_buffer_clear(sched->e8_slot[k], 0);
++        sched->e8_slot_size = need;
++        if (!sched->e8_copy_be) {
++            ggml_backend_dev_t dev = ggml_backend_get_device(sched->backends[0]);
++            sched->e8_copy_be      = ggml_backend_dev_init(dev, nullptr);
++            for (int k = 0; k < 2; k++) {
++                sched->e8_filled[k] = ggml_backend_event_new(dev);
++                sched->e8_free[k]   = ggml_backend_event_new(dev);
++            }
++            if (!sched->e8_copy_be || !sched->e8_filled[0] || !sched->e8_filled[1] || !sched->e8_free[0] || !sched->e8_free[1]) {
++                sched->e8_off = true;
++                return;
++            }
++        }
++    }
++    int k = 0;
++    for (int s = 0; s < sched->n_splits; s++) {
++        if (tot[s] == 0 || tot[s] > cap) continue;
++        const ggml_backend_sched_split & sp = sched->splits[s];
++        char * base = (char *) ggml_backend_buffer_get_base(sched->e8_slot[k]);
++        size_t off  = 0;
++        for (int i = 0; i < sp.n_inputs; i++) {
++            if (!is_w(sp.inputs[i])) continue;
++            ggml_tensor * c = tensor_copy(sp.inputs[i], 0, sched->cur_copy);
++            c->data         = base + off;
++            c->buffer       = sched->e8_slot[k];
++            off += GGML_PAD(ggml_nbytes(sp.inputs[i]), align) + pad;
++        }
++        (*sched->e8_split_slot)[s] = k;
++        sched->e8_wsplits->push_back(s);
++        k ^= 1;
++    }
++}
++
++// eightfer: upload split s's staged weights on the copy stream once its slot is free
++static void ggml_backend_sched_e8_prefetch(ggml_backend_sched_t sched, int s) {
++    const int k = (*sched->e8_split_slot)[s];
++    const ggml_backend_sched_split & sp = sched->splits[s];
++    ggml_backend_event_wait(sched->e8_copy_be, sched->e8_free[k]);
++    for (int i = 0; i < sp.n_inputs; i++) {
++        ggml_tensor * in = sp.inputs[i];
++        ggml_tensor * c  = tensor_copy(in, 0, sched->cur_copy);
++        if (c->buffer == sched->e8_slot[k]) ggml_backend_tensor_set_async(sched->e8_copy_be, c, in->data, 0, ggml_nbytes(in));
++    }
++    ggml_backend_event_record(sched->e8_filled[k], sched->e8_copy_be);
++}
++
++static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {    bool backend_ids_changed = false;
+     for (int i = 0; i < sched->graph.n_nodes; i++) {
+         if (sched->node_backend_ids[i] != sched->prev_node_backend_ids[i] &&
+             sched->bufts[sched->node_backend_ids[i]] != sched->bufts[sched->prev_node_backend_ids[i]]) {
+@@ -1763,6 +1864,8 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+         }
+     }
+ 
++    ggml_backend_sched_e8_assign(sched);
++
+     // allocate graph
+     if (backend_ids_changed || !ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
+ #ifndef NDEBUG
+@@ -1809,10 +1912,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+ 
+     int prev_backend_id = -1;
+ 
++    // eightfer: staged weights (see e8_copy_be): the first upload starts now, each next one when a split is launched
++    const bool e8_on = sched->e8_wsplits && !sched->e8_wsplits->empty() && !sched->e8_off &&
++                       (int) sched->e8_split_slot->size() == sched->n_splits;
++    size_t     e8_next = 0;
++    if (e8_on) ggml_backend_sched_e8_prefetch(sched, (*sched->e8_wsplits)[e8_next++]);
++
+     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
+         struct ggml_backend_sched_split * split = &splits[split_id];
+         int split_backend_id = split->backend_id;
+         ggml_backend_t split_backend = sched->backends[split_backend_id];
++        const int e8_slot = e8_on ? (*sched->e8_split_slot)[split_id] : -1;
+ 
+         // ensure the previous split's async work has completed before we start
+         // this split, the allocator may have reused buffer regions across splits
+@@ -1830,6 +1940,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+             struct ggml_tensor * input = split->inputs[input_id];
+             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+ 
++            if (e8_slot >= 0 && input_cpy->buffer == sched->e8_slot[e8_slot]) {
++                continue;  // uploaded by ggml_backend_sched_e8_prefetch
++            }
+             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
+                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
+                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+@@ -1951,11 +2064,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+             }
+         }
+ 
++        if (e8_slot >= 0) ggml_backend_event_wait(split_backend, sched->e8_filled[e8_slot]);
+         if (!sched->callback_eval) {
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+             if (ec != GGML_STATUS_SUCCESS) {
+                 return ec;
+             }
++            if (e8_slot >= 0) {
++                ggml_backend_event_record(sched->e8_free[e8_slot], split_backend);
++                if (e8_next < sched->e8_wsplits->size()) ggml_backend_sched_e8_prefetch(sched, (*sched->e8_wsplits)[e8_next++]);
++            }
+         } else {
+             // similar to ggml_backend_compare_graph_backend
+             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
+@@ -2077,6 +2195,15 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
+     if (sched == NULL) {
+         return;
+     }
++    if (sched->e8_copy_be) ggml_backend_synchronize(sched->e8_copy_be);
++    for (int k = 0; k < 2; k++) {
++        if (sched->e8_slot[k]) ggml_backend_buffer_free(sched->e8_slot[k]);
++        if (sched->e8_filled[k]) ggml_backend_event_free(sched->e8_filled[k]);
++        if (sched->e8_free[k]) ggml_backend_event_free(sched->e8_free[k]);
++    }
++    if (sched->e8_copy_be) ggml_backend_free(sched->e8_copy_be);
++    delete sched->e8_wsplits;
++    delete sched->e8_split_slot;
+     for (int b = 0; b < sched->n_backends; b++) {
+         for (int c = 0; c < sched->n_copies; c++) {
+             ggml_backend_event_free(sched->events[b][c]);

@@ -139,6 +139,7 @@ int gen(const std::vector<std::string> & args) {
     o.residual_path = res;
     o.max_record    = std::max(k + 1, 64);  // echo proposals are checked in batches of up to 64
     o.mtp           = k > 0 && mtp > 0;
+    if (const char * ub = std::getenv("E8_UBATCH")) o.n_ubatch = std::atoi(ub);
     model::Qwen35 m;
     std::string   err;
     const auto    tl = std::chrono::steady_clock::now();

@@ -97,7 +97,7 @@ struct LoadOptions {
     int       n_ctx        = 4096;  // KV capacity, rounded up to a multiple of 256
     ggml_type kv_type      = GGML_TYPE_F16;
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
-    int       n_ubatch     = 512;   // most tokens per eval() call
+    int       n_ubatch     = 1024;  // most tokens per eval() call (prefill batches; one pass over the weights each)
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
     bool      mtp          = false; // load the MTP block for drafting (when the GGUF has one and a GPU exists)
@@ -169,6 +169,7 @@ public:
     int                   max_verify() const { return 64; }
     // largest verify for long copied drafts: rollback works within the first max_record tokens, else the kept prefix
     // is evaluated again
+    int                   max_batch() const { return opt_.n_ubatch; }
     int                   max_long_verify() const { return std::min(128, opt_.n_ubatch); }
     bool                  can_rollback(int keep) const { return keep == recorded_full_ || keep <= recorded_n_; }
     int                   max_record() const { return opt_.max_record; }
@@ -258,6 +259,7 @@ private:
     uint64_t    gpu_bytes_ = 0, cpu_bytes_ = 0;
     std::vector<uint8_t> graph_meta_;  // memory for the per-eval graph context
     std::vector<uint8_t> graph_meta_draft_, graph_meta_mtp_;  // single-token draft evals / MTP steps (CUDA graph reuse)
+    std::vector<uint8_t> graph_meta_small_[34];  // base-only batches of 2..16 tokens, by size and dry/not
     // KV rows written by this eval (I64 [n]): an input, not a view offset, so the graph is the same from token to
     // token and CUDA graphs can be replayed
     ggml_tensor *        inp_kvidx_ = nullptr;
