@@ -14,6 +14,7 @@ int logits(const std::vector<std::string> & args);
 int pack(const std::vector<std::string> & args);
 int gen(const std::vector<std::string> & args);
 int dump(const std::vector<std::string> & args);
+int parsetest(const std::vector<std::string> & args);
 int decode(const std::vector<std::string> & args);
 int serve(const std::vector<std::string> & args);
 

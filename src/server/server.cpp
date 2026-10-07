@@ -56,6 +56,74 @@ namespace {
 
 using json = nlohmann::ordered_json;
 
+// llama.cpp's Qwen XML tool-call grammar rejects a call whose optional parameters come before a required one (the
+// model often writes str_replace_editor's file_text before path) and the call then vanishes: the turn looks like it
+// ends mid-sentence. When the strict parse of the final text finds no call although the text has a <tool_call>, this
+// reads <tool_call><function=NAME><parameter=P>VALUE</parameter>...</function></tool_call> blocks in any order,
+// typing each value by the tool's JSON schema (strings as written, anything else parsed as JSON).
+void lenient_tool_calls(const std::string & text, const std::vector<common_chat_tool> & tools, common_chat_msg & msg) {
+    if (!msg.tool_calls.empty()) return;
+    size_t p = text.find("<tool_call>");
+    if (p == std::string::npos) return;
+    const size_t first = p;
+    auto trim1 = [](std::string v) {
+        if (!v.empty() && v.front() == '\n') v.erase(0, 1);
+        if (!v.empty() && v.back() == '\n') v.pop_back();
+        return v;
+    };
+    while (p != std::string::npos) {
+        const size_t end  = text.find("</tool_call>", p);
+        const std::string blk = text.substr(p, end == std::string::npos ? std::string::npos : end - p);
+        const size_t fn   = blk.find("<function=");
+        if (fn == std::string::npos) break;
+        const size_t fe   = blk.find('>', fn);
+        if (fe == std::string::npos) break;
+        const std::string name = blk.substr(fn + 10, fe - fn - 10);
+        json schema = json::object();
+        for (const auto & t : tools) {
+            if (t.name == name) {
+                try {
+                    schema = json::parse(t.parameters).value("properties", json::object());
+                } catch (...) {}
+            }
+        }
+        json   args = json::object();
+        size_t q    = fe;
+        while ((q = blk.find("<parameter=", q)) != std::string::npos) {
+            const size_t ne = blk.find('>', q);
+            const size_t ve = blk.find("</parameter>", ne);
+            if (ne == std::string::npos || ve == std::string::npos) break;
+            const std::string pn = blk.substr(q + 11, ne - q - 11);
+            const std::string v  = trim1(blk.substr(ne + 1, ve - ne - 1));
+            const std::string ty = schema.contains(pn) && schema[pn].contains("type") && schema[pn]["type"].is_string()
+                                       ? schema[pn]["type"].get<std::string>() : "string";
+            if (ty == "string") {
+                args[pn] = v;
+            } else {
+                try {
+                    args[pn] = json::parse(v);
+                } catch (...) {
+                    args[pn] = v;
+                }
+            }
+            q = ve + 12;
+        }
+        common_chat_tool_call tc;
+        tc.name      = name;
+        tc.arguments = args.dump();
+        msg.tool_calls.push_back(tc);
+        p = end == std::string::npos ? std::string::npos : text.find("<tool_call>", end);
+    }
+    if (!msg.tool_calls.empty()) {
+        const size_t c = msg.content.find("<tool_call>");
+        if (c != std::string::npos) msg.content.erase(c);
+        while (!msg.content.empty() && (msg.content.back() == '\n' || msg.content.back() == ' ')) msg.content.pop_back();
+        fprintf(stderr, "tool call recovered by the lenient parser (strict grammar rejected it): %s\n", msg.tool_calls[0].name.c_str());
+    }
+    (void) first;
+}
+
+
 // a model this server can load: tokenizer and chat templates stay loaded, the weights only while it is active
 struct Entry {
     std::string               alias, path, res;
@@ -236,6 +304,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     std::vector<int32_t>      prompt;
     size_t                    n_head = 0;  // the prompt-reuse checkpoint goes after this many tokens
     common_chat_parser_params pp;
+    std::vector<common_chat_tool> req_tools;
     if (!chat) {
         // ---- completion: the prompt as given (a string, or token ids), no template
         const json & pr = body.contains("prompt") ? body["prompt"] : json("");
@@ -252,6 +321,16 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     in.messages = common_chat_msgs_parse_oaicompat(common_json::parse(body.at("messages").dump()));
     if (body.contains("tools") && !body["tools"].is_null()) {
         in.tools = common_chat_tools_parse_oaicompat(common_json::parse(body["tools"].dump()));
+        if (const char * dir = std::getenv("E8_LOG_RAW")) {  // debugging: the tool schemas (not the messages)
+            if (FILE * ft = fopen((std::string(dir) + "/tools.json").c_str(), "wb")) {
+                json meta = { { "tools", body["tools"] } };
+                if (body.contains("chat_template_kwargs")) meta["chat_template_kwargs"] = body["chat_template_kwargs"];
+                if (body.contains("reasoning_effort")) meta["reasoning_effort"] = body["reasoning_effort"];
+                const std::string s = meta.dump(1);
+                fwrite(s.data(), 1, s.size(), ft);
+                fclose(ft);
+            }
+        }
     }
     if (body.contains("tool_choice") && body["tool_choice"].is_string()) {
         in.tool_choice = common_chat_tool_choice_parse_oaicompat(body["tool_choice"].get<std::string>());
@@ -272,6 +351,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         else in.chat_template_kwargs["reasoning_effort"] = json(re).dump();
     }
     const common_chat_params cp = common_chat_templates_apply(S.tmpl, in);
+    req_tools                   = in.tools;
 
     pp                  = common_chat_parser_params(cp);
     pp.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -392,6 +472,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         } else if (on_delta) {
             try {
                 common_chat_msg cur = common_chat_parse(text, !done, pp);
+                if (done) lenient_tool_calls(text, req_tools, cur);
                 cur.set_tool_call_ids(ids_cache, gen_id);
                 for (const auto & d : common_chat_msg_diff::compute_diffs(prev, cur)) {
                     json delta = json::object();
@@ -492,8 +573,21 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         return true;
     }
     R.msg = common_chat_parse(text, false, pp);
+    lenient_tool_calls(text, req_tools, R.msg);
     R.msg.set_tool_call_ids(ids_cache, gen_id);
     if (!R.msg.tool_calls.empty() && R.finish == "stop") R.finish = "tool_calls";
+    if (const char * dir = std::getenv("E8_LOG_RAW")) {
+        // debugging: the raw generated text of chat turns that ended without a tool call (last 8 kept)
+        static int seq = 0;
+        if (R.msg.tool_calls.empty()) {
+            const std::string path = std::string(dir) + "/raw-" + std::to_string(seq++ % 8) + ".txt";
+            if (FILE * fr = fopen(path.c_str(), "wb")) {
+                fprintf(fr, "finish=%s n_gen=%d\n----\n", R.finish.c_str(), R.n_gen);
+                fwrite(text.data(), 1, text.size(), fr);
+                fclose(fr);
+            }
+        }
+    }
     return true;
 }
 
@@ -900,4 +994,55 @@ int serve(const std::vector<std::string> & args) {
     return 0;
 }
 
+// `eightfer parsetest <model.gguf> --raw raw.txt --meta tools.json [--template t.jinja]`: runs the server's chat
+// output parser on a logged raw turn (E8_LOG_RAW) with the request's tool schemas, and prints what it extracted.
+int parsetest(const std::vector<std::string> & args) {
+    std::string model, raw_path, meta_path, tmpl_file;
+    for (size_t i = 2; i < args.size(); i++) {
+        auto val = [&]() { return i + 1 < args.size() ? args[++i] : std::string(); };
+        if (args[i] == "--raw") raw_path = val();
+        else if (args[i] == "--meta") meta_path = val();
+        else if (args[i] == "--template") tmpl_file = val();
+        else model = args[i];
+    }
+    llama_backend_init();
+    llama_model_params mp = llama_model_default_params();
+    mp.vocab_only         = true;
+    llama_model * vm      = llama_model_load_from_file(model.c_str(), mp);
+    if (!vm) {
+        fprintf(stderr, "cannot load %s\n", model.c_str());
+        return 1;
+    }
+    auto        tmpls = common_chat_templates_init(vm, tmpl_file.empty() ? "" : read_file(tmpl_file));
+    std::string text  = read_file(raw_path);
+    const size_t sep  = text.find("----\n");
+    if (sep != std::string::npos) text = text.substr(sep + 5);
+    const json meta = json::parse(read_file(meta_path));
+    common_chat_templates_inputs in;
+    in.messages = common_chat_msgs_parse_oaicompat(common_json::parse(R"([{"role":"user","content":"x"}])"));
+    in.tools    = common_chat_tools_parse_oaicompat(common_json::parse(meta.at("tools").dump()));
+    in.add_generation_prompt = true;
+    in.use_jinja             = true;
+    in.reasoning_format      = COMMON_REASONING_FORMAT_DEEPSEEK;
+    if (meta.contains("chat_template_kwargs")) {
+        for (auto & [k, v] : meta["chat_template_kwargs"].items()) in.chat_template_kwargs[k] = v.dump();
+    }
+    const common_chat_params cp = common_chat_templates_apply(tmpls.get(), in);
+    common_chat_parser_params pp(cp);
+    pp.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+    pp.parse_tool_calls = true;
+    if (!cp.parser.empty()) pp.parser.load(cp.parser);
+    printf("format: %s, prompt ends: %s\n", common_chat_format_name(cp.format),
+           json(cp.prompt.substr(cp.prompt.size() > 40 ? cp.prompt.size() - 40 : 0)).dump().c_str());
+    try {
+        common_chat_msg msg = common_chat_parse(text, false, pp);
+        lenient_tool_calls(text, in.tools, msg);
+        printf("reasoning: %zu chars, content: %s\ntool calls: %zu\n", msg.reasoning_content.size(),
+               json(msg.content.substr(0, 300)).dump().c_str(), msg.tool_calls.size());
+        for (auto & tc : msg.tool_calls) printf("  %s %s\n", tc.name.c_str(), tc.arguments.substr(0, 300).c_str());
+    } catch (const std::exception & e) {
+        printf("parse threw: %s\n", e.what());
+    }
+    return 0;
+}
 } // namespace e8::cli
