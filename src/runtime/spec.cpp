@@ -66,7 +66,7 @@ int SpecDecoder::choose_k() const {
     // with a flat verify cost (every size streams the residual) at least 24 drafts: shorter verifies look cheap to
     // the estimate but measured slower (8 seeds x 4 prompts: 41.9 vs 40.8 tok/s mean; 32: 42.9, but prose 27.9)
     static const int kmin_env = std::getenv("E8_KMIN") ? std::atoi(std::getenv("E8_KMIN")) : -1;
-    const int        kmin     = kmin_env >= 0 ? kmin_env : (m_.verify_gpu_min() <= 1 ? 24 : 1);
+    const int        kmin     = kmin_env >= 0 ? kmin_env : (m_.verify_gpu_min() <= 1 ? 32 : 1);
     int       best = std::min(kmin, kmax);
     double    best_rate = 0, surv = 1, accepted = 0;
     for (int k = 1; k <= kmax; k++) {

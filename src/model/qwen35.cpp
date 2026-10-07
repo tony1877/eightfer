@@ -1028,15 +1028,16 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
                 // queries in sub-chunks of kSparseMaxN, each with its own page selection, so a big batch (one pass
                 // over the weights) attends like consecutive small batches; outputs concatenated in token order
                 for (int64_t c0 = 0; c0 < n; c0 += kSparseMaxN) {
+                    // per sub-chunk: all heads' page selections (GPU), then all their gathers (CPU), then attention
+                    // (GPU), so a layer switches between the GPU and the CPU twice per sub-chunk, not twice per head
                     const int64_t m = std::min<int64_t>(kSparseMaxN, n - c0);
-                    ggml_tensor * ac = nullptr;
+                    std::vector<ggml_tensor *> qc((size_t) nkv), sl((size_t) nkv, nullptr), gk((size_t) nkv), gv((size_t) nkv);
                     for (int64_t j = 0; j < nkv; j++) {
-                        const size_t  hi = (size_t) (il * nkv + j);
-                        ggml_tensor * qc = ggml_view_3d(ctx, q, hd, m, g, q->nb[1], q->nb[2],
+                        const size_t hi  = (size_t) (il * nkv + j);
+                        qc[(size_t) j]   = ggml_view_3d(ctx, q, hd, m, g, q->nb[1], q->nb[2],
                                                         q->nb[2] * (size_t) (j * g) + q->nb[1] * (size_t) c0);
-                        ggml_tensor * sl = nullptr;
                         if (sp_kp_ > 0) {  // page selection on the GPU: sum over the sub-chunk's queries
-                            ggml_tensor * q2 = ggml_reshape_2d(ctx, ggml_cont(ctx, qc), hd, m * g);
+                            ggml_tensor * q2 = ggml_reshape_2d(ctx, ggml_cont(ctx, qc[(size_t) j]), hd, m * g);
                             ggml_tensor * md = ggml_view_2d(ctx, pmid_[hi], hd, sp_nfar_, pmid_[hi]->nb[1], 0);
                             ggml_tensor * s  = ggml_mul_mat(ctx, md, q2);  // q . page midpoint: [nfar, m*g]
                             // per query: a distribution over pages (each query counts equally, whatever its scale),
@@ -1045,28 +1046,37 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
                             s  = ggml_soft_max_ext(ctx, s, nullptr, 1.0f / sqrtf((float) hd), 0.0f);
                             s  = ggml_sum_rows(ctx, ggml_cont(ctx, ggml_transpose(ctx, s)));  // [1, nfar]
                             s  = ggml_add(ctx, ggml_reshape_2d(ctx, s, sp_nfar_, 1), inp_sbias_);
-                            sl = ggml_cont(ctx, ggml_argsort_top_k(ctx, s, sp_kp_));  // best first
-                            ggml_set_output(sl);
-                            ggml_build_forward_expand(gf, sl);
+                            ggml_tensor * t = ggml_cont(ctx, ggml_argsort_top_k(ctx, s, sp_kp_));  // best first
+                            ggml_set_output(t);
+                            ggml_build_forward_expand(gf, t);
                             if (sel_nodes_.size() < hk_.size()) sel_nodes_.resize(hk_.size(), nullptr);
-                            sel_nodes_[hi] = sl;  // the last sub-chunk's pages feed the drafts' far area
+                            sel_nodes_[hi]  = t;  // the last sub-chunk's pages feed the drafts' far area
+                            sl[(size_t) j] = t;
                         }
-                        ggml_tensor * gkv[2];
-                        for (int kv = 0; kv < 2; kv++) {  // gather the selected pages and the window from RAM
+                    }
+                    for (int64_t j = 0; j < nkv; j++) {  // gather the selected pages and the window from RAM
+                        const size_t hi = (size_t) (il * nkv + j);
+                        for (int kv = 0; kv < 2; kv++) {
                             gi_.push_back({ kv ? hv_[hi] : hk_[hi], (int) kr, kPage, sp_ws_, sp_nwin_ });
                             ggml_tensor * dep     = kv ? wv[(size_t) j] : wk[(size_t) j];
-                            ggml_tensor * args[2] = { sl ? sl : dep, dep };
-                            gkv[kv] = ggml_custom_4d(ctx, opt_.kv_type, hd, sp_nsel_, 1, 1, args, 2, gather_op,
-                                                     GGML_N_TASKS_MAX, &gi_.back());
-                            ggml_build_forward_expand(gf, gkv[kv]);
+                            ggml_tensor * args[2] = { sl[(size_t) j] ? sl[(size_t) j] : dep, dep };
+                            ggml_tensor * t       = ggml_custom_4d(ctx, opt_.kv_type, hd, sp_nsel_, 1, 1, args, 2, gather_op,
+                                                                   GGML_N_TASKS_MAX, &gi_.back());
+                            ggml_build_forward_expand(gf, t);
+                            (kv ? gv : gk)[(size_t) j] = t;
                         }
-                        ggml_tensor * mk = ggml_view_2d(ctx, inp_smask_, sp_nsel_, m, inp_smask_->nb[1],
-                                                        inp_smask_->nb[1] * (size_t) c0);
-                        ggml_tensor * aj = ggml_flash_attn_ext(ctx, qc, gkv[0], gkv[1], mk, 1.0f / sqrtf((float) hd), 0.0f, 0.0f);
+                    }
+                    ggml_tensor * mk = ggml_view_2d(ctx, inp_smask_, sp_nsel_, m, inp_smask_->nb[1],
+                                                    inp_smask_->nb[1] * (size_t) c0);
+                    ggml_tensor * ac = nullptr;
+                    for (int64_t j = 0; j < nkv; j++) {
+                        ggml_tensor * aj = ggml_flash_attn_ext(ctx, qc[(size_t) j], gk[(size_t) j], gv[(size_t) j], mk,
+                                                               1.0f / sqrtf((float) hd), 0.0f, 0.0f);
                         ggml_prec_set_acc(aj, GGML_PREC_F32);
                         attn_nodes_.push_back(aj);
                         ac = ac ? ggml_concat(ctx, ac, aj, 1) : aj;  // [hd, heads, m]
                     }
+                    ggml_build_forward_expand(gf, ac);
                     a = a ? ggml_concat(ctx, a, ac, 2) : ac;  // [hd, heads, n]
                 }
             } else if (attn_mode_ == 1) {
