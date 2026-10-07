@@ -147,6 +147,7 @@ struct Server {
     // agent turns: earlier assistant turns' reasoning is not resent; no thinking right after a routine tool result
     // (errors, failures and tracebacks in the results still get a reasoning pass)
     bool                             drop_reasoning = true, think_after_tool = false;
+    int                              think_budget = 8192;  // reasoning tokens before eightfer closes the reasoning (0 = off)
     // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;
     std::condition_variable          cv;
@@ -308,6 +309,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     size_t                    n_head = 0;  // the prompt-reuse checkpoint goes after this many tokens
     common_chat_parser_params pp;
     std::vector<common_chat_tool> req_tools;
+    bool                          think_open = false;  // the prompt ends inside an open reasoning block
     if (!chat) {
         // ---- completion: the prompt as given (a string, or token ids), no template
         const json & pr = body.contains("prompt") ? body["prompt"] : json("");
@@ -391,6 +393,11 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     const common_chat_params cp = common_chat_templates_apply(S.tmpl, in);
     req_tools                   = in.tools;
+    {
+        const size_t tp = cp.prompt.rfind("<think>");
+        think_open      = tp != std::string::npos && tp + 12 >= cp.prompt.size() &&
+                     cp.prompt.find("</think>", tp) == std::string::npos;
+    }
 
     pp                  = common_chat_parser_params(cp);
     pp.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -543,17 +550,42 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
 
     const bool spec = S.q35 && S.q35->has_residual();
     if (spec) {
-        runtime::SpecDecoder dec(*S.q35, S.spec_k, sp, S.spec_auto);
-        dec.set_mtp(S.mtp);
-        dec.set_echo(S.echo);
-        dec.set_context(prompt);
-        dec.begin(last.data(), out);
+        auto make_dec = [&]() {
+            auto d = std::make_unique<runtime::SpecDecoder>(*S.q35, S.spec_k, sp, S.spec_auto);
+            d->set_mtp(S.mtp);
+            d->set_echo(S.echo);
+            return d;
+        };
+        auto dec_p = make_dec();
+        dec_p->set_context(prompt);
+        dec_p->begin(last.data(), out);
         consume();
         while (!done && S.q35->n_past() + S.spec_k + 2 < m.n_ctx()) {
-            if (!dec.step(out, err)) return false;
+            if (think_open && S.think_budget > 0 && R.n_gen >= S.think_budget) {
+                think_open = false;
+                if (text.find("</think>") == std::string::npos) {
+                    // reasoning over budget: close it ourselves and let the model act (the last sampled token is not
+                    // evaluated yet: it goes in with the closing tag)
+                    const std::vector<int32_t> f = common_tokenize(S.vocab, "\n</think>\n\n", false, true);
+                    std::vector<int32_t>       ev(1, out.back());
+                    ev.insert(ev.end(), f.begin(), f.end());
+                    if (!S.q35->eval_last(ev.data(), (int) ev.size(), last.data(), err)) return false;
+                    out.insert(out.end(), f.begin(), f.end());
+                    consume();
+                    fprintf(stderr, "reasoning closed by the thinking budget after %d tokens\n", R.n_gen);
+                    std::vector<int32_t> ctx_now = prompt;
+                    ctx_now.insert(ctx_now.end(), out.begin(), out.end());
+                    dec_p = make_dec();
+                    dec_p->set_context(ctx_now);
+                    dec_p->begin(last.data(), out);
+                    consume();
+                    continue;
+                }
+            }
+            if (!dec_p->step(out, err)) return false;
             consume();
         }
-        const auto & st = dec.stats();
+        const auto & st = dec_p->stats();
         R.stats         = { { "cycles", st.cycles }, { "draft_s", st.t_draft }, { "verify_s", st.t_verify },
                             { "echo_proposed", st.echo_proposed }, { "echo_kept", st.echo_accepted },
                             { "mtp_proposed", st.mtp_proposed }, { "mtp_kept", st.mtp_accepted },
@@ -597,6 +629,28 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
                       { "idle_before_s", S.last_end.time_since_epoch().count() == 0 ? -1.0
                                          : std::chrono::duration<double>(t0_sys - S.last_end).count() },
                       { "temp", sp.temp }, { "spec", R.stats } };
+        if (chat) {  // shape of the output (sizes and a repetition score, no text)
+            auto rep = [](const std::string & s) {  // share of repeated lines (a reasoning loop shows as high)
+                std::unordered_map<std::string, int> seen;
+                int lines = 0, dup = 0;
+                size_t a = 0;
+                while (a < s.size()) {
+                    size_t b = s.find('\n', a);
+                    if (b == std::string::npos) b = s.size();
+                    if (b - a > 8) {
+                        lines++;
+                        dup += seen[s.substr(a, b - a)]++ > 0;
+                    }
+                    a = b + 1;
+                }
+                return lines ? (double) dup / lines : 0.0;
+            };
+            line["reasoning_chars"] = R.msg.reasoning_content.size();
+            line["content_chars"]   = R.msg.content.size();
+            line["tool_calls"]      = R.msg.tool_calls.size();
+            line["reasoning_repeat"] = rep(R.msg.reasoning_content);
+            line["content_repeat"]  = rep(R.msg.content);
+        }
         S.last_end = now_sys;
         if (FILE * f = fopen(S.timing_log.c_str(), "ab")) {
             const std::string l = line.dump() + "\n";
@@ -683,6 +737,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--echo") S->echo = std::atoi(val().c_str()) != 0;
         else if (a == "--drop-reasoning") S->drop_reasoning = std::atoi(val().c_str()) != 0;
         else if (a == "--think-after-tool") S->think_after_tool = std::atoi(val().c_str()) != 0;
+        else if (a == "--think-budget") S->think_budget = std::atoi(val().c_str());
         else if (a == "--idle-unload") idle_unload = std::atoi(val().c_str());
         else if (a == "--temperature" || a == "--temp") S->defaults.temp = (float) std::atof(val().c_str());
         else if (a == "--top-p") S->defaults.top_p = (float) std::atof(val().c_str());
