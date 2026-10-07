@@ -44,7 +44,9 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -123,6 +125,32 @@ void lenient_tool_calls(const std::string & text, const std::vector<common_chat_
     (void) first;
 }
 
+// Reasoning stuck in a loop: a chunk of the last 400 characters seen twice before, or most of the last 40 lines
+// repeating earlier lines. Real reasoning (new content) never trips it.
+bool reasoning_loops(const std::string & text) {
+    const size_t start = text.find("<think>") == std::string::npos ? 0 : text.find("<think>") + 7;
+    const size_t end   = text.size();
+    if (end - start < 4000) return false;
+    // literal repeats of a recent 200-character chunk
+    const std::string probe = text.substr(end - 300, 200);
+    size_t            hits  = 0;
+    for (size_t p = text.find(probe, start); p != std::string::npos && p < end - 300; p = text.find(probe, p + 1)) hits++;
+    if (hits >= 2) return true;
+    // recent lines that repeat earlier ones
+    std::vector<std::string> lines;
+    for (size_t a = start; a < end;) {
+        size_t b = text.find('\n', a);
+        if (b == std::string::npos) b = end;
+        if (b - a > 20) lines.push_back(text.substr(a, b - a));
+        a = b + 1;
+    }
+    if (lines.size() < 60) return false;
+    std::unordered_map<std::string, int> seen;
+    for (size_t i = 0; i + 40 < lines.size(); i++) seen[lines[i]]++;
+    int dup = 0;
+    for (size_t i = lines.size() - 40; i < lines.size(); i++) dup += seen.count(lines[i]) ? 1 : 0;
+    return dup >= 24;
+}
 
 // a model this server can load: tokenizer and chat templates stay loaded, the weights only while it is active
 struct Entry {
@@ -147,7 +175,7 @@ struct Server {
     // agent turns: earlier assistant turns' reasoning is not resent; no thinking right after a routine tool result
     // (errors, failures and tracebacks in the results still get a reasoning pass)
     bool                             drop_reasoning = true, think_after_tool = false;
-    int                              think_budget = 8192;  // reasoning tokens before eightfer closes the reasoning (0 = off)
+    int                              think_budget = 32768;  // hard cap on reasoning tokens (0 = off); loops are cut earlier
     // first-come-first-served turn taking: each request takes a ticket and runs when `serving` reaches it
     std::mutex                       mu;
     std::condition_variable          cv;
@@ -156,6 +184,13 @@ struct Server {
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
     std::string                      router_url;  // llama-server router to unload / forward to (empty = none)
     std::string                      timing_log;  // JSON lines of per-request timings (no content), when set
+    // dashboard (/dashboard, /stats): the last requests' timing lines and what is generating now
+    std::mutex                       stats_mu;
+    std::deque<json>                 recent;
+    std::atomic<bool>                live_busy{ false };
+    std::atomic<int>                 live_gen{ 0 }, live_prompt{ 0 };
+    std::atomic<int64_t>             live_start_ms{ 0 };
+    std::string                      live_model;
     std::chrono::system_clock::time_point last_end{};  // end of the previous request (idle time = tools / user)
     // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
     runtime::SamplerParams           defaults = [] {
@@ -310,6 +345,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     common_chat_parser_params pp;
     std::vector<common_chat_tool> req_tools;
     bool                          think_open = false;  // the prompt ends inside an open reasoning block
+    int                           req_think_budget = 0;  // this request's reasoning cap from reasoning_effort (0: server default)
     if (!chat) {
         // ---- completion: the prompt as given (a string, or token ids), no template
         const json & pr = body.contains("prompt") ? body["prompt"] : json("");
@@ -371,7 +407,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     if (body.contains("tool_choice") && body["tool_choice"].is_string()) {
         in.tool_choice = common_chat_tool_choice_parse_oaicompat(body["tool_choice"].get<std::string>());
     }
-    in.parallel_tool_calls   = body.value("parallel_tool_calls", false);
+    in.parallel_tool_calls   = body.value("parallel_tool_calls", true);  // several independent calls in one reply
     in.add_generation_prompt = true;
     in.use_jinja             = true;
     in.reasoning_format      = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -385,11 +421,24 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         in.enable_thinking                        = false;
         in.chat_template_kwargs["enable_thinking"] = "false";
     }
+    if (body.contains("thinking") && body["thinking"].is_object() && body["thinking"].value("type", "") == "disabled") {
+        // DeepSeek-style switch (dsh sends it): no reasoning block
+        in.enable_thinking                        = false;
+        in.chat_template_kwargs["enable_thinking"] = "false";
+    }
     if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string()) {
-        // as llama-server: the effort goes to the chat template ("none" turns thinking off)
+        // "none"/"off" turns thinking off; low / medium / high cap the reasoning at 2K / 8K / 24K tokens (the
+        // Qwen templates ignore an effort kwarg, so the budget is what makes the setting mean something)
         const std::string re = body["reasoning_effort"].get<std::string>();
-        if (re == "none") in.enable_thinking = false;
-        else in.chat_template_kwargs["reasoning_effort"] = json(re).dump();
+        if (re == "none" || re == "off") {
+            in.enable_thinking                        = false;
+            in.chat_template_kwargs["enable_thinking"] = "false";
+        } else {
+            in.chat_template_kwargs["reasoning_effort"] = json(re).dump();
+            if (re == "minimal" || re == "low") req_think_budget = 2048;
+            else if (re == "medium") req_think_budget = 8192;
+            else if (re == "high") req_think_budget = 24576;
+        }
     }
     const common_chat_params cp = common_chat_templates_apply(S.tmpl, in);
     req_tools                   = in.tools;
@@ -463,6 +512,14 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     if (!eval_range(start, prompt.size())) return false;
     const auto t1 = std::chrono::steady_clock::now();
+    S.live_gen   = 0;
+    S.live_busy  = true;
+    S.live_prompt = R.n_prompt;
+    S.live_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    {
+        std::lock_guard<std::mutex> lk(S.stats_mu);
+        S.live_model = S.entries[(size_t) S.active].alias;
+    }
     R.t_prompt    = std::chrono::duration<double>(t1 - t0).count();
 
     // ---- generation
@@ -477,6 +534,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     size_t sent = 0;  // completion streaming: bytes of `text` sent
     size_t hold = 0;  // completion streaming: a stop string may still be forming in the last hold bytes
     for (const std::string & s : stops) hold = std::max(hold, s.empty() ? 0 : s.size() - 1);
+    auto last_sent = std::chrono::steady_clock::now();  // streaming: when the last delta went out
     auto consume = [&]() {
         for (; used < out.size() && !done; used++) {
             const int32_t t = out[used];
@@ -486,6 +544,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             }
             text += common_token_to_piece(S.vocab, t, true);
             R.n_gen++;
+            S.live_gen = R.n_gen;
             for (const std::string & s : stops) {
                 const size_t pos = s.empty() ? std::string::npos : text.find(s);
                 if (pos != std::string::npos) {
@@ -520,7 +579,19 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
                 common_chat_msg cur = common_chat_parse(text, !done, pp);
                 if (done) lenient_tool_calls(text, req_tools, cur);
                 cur.set_tool_call_ids(ids_cache, gen_id);
-                for (const auto & d : common_chat_msg_diff::compute_diffs(prev, cur)) {
+                const auto diffs = common_chat_msg_diff::compute_diffs(prev, cur);
+                const auto now_t = std::chrono::steady_clock::now();
+                if (!diffs.empty()) last_sent = now_t;
+                else if (now_t - last_sent > std::chrono::seconds(5)) {
+                    // nothing new to show (e.g. a tool call that only parses once complete): an empty delta keeps the
+                    // stream alive, so clients with an idle timeout do not drop a long generation
+                    last_sent = now_t;
+                    if (!on_delta(json::object())) {
+                        R.finish = "cancelled";
+                        done     = true;
+                    }
+                }
+                for (const auto & d : diffs) {
                     json delta = json::object();
                     if (!d.reasoning_content_delta.empty()) delta["reasoning_content"] = d.reasoning_content_delta;
                     if (!d.content_delta.empty()) delta["content"] = d.content_delta;
@@ -556,23 +627,36 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             d->set_echo(S.echo);
             return d;
         };
+        int  next_loop_check = 512;
         auto dec_p = make_dec();
         dec_p->set_context(prompt);
         dec_p->begin(last.data(), out);
         consume();
         while (!done && S.q35->n_past() + S.spec_k + 2 < m.n_ctx()) {
-            if (think_open && S.think_budget > 0 && R.n_gen >= S.think_budget) {
+            if (think_open && text.find("</think>") != std::string::npos) think_open = false;
+            bool cut = false;
+            const int budget = req_think_budget > 0 ? req_think_budget : S.think_budget;
+            if (think_open && budget > 0 && R.n_gen >= budget) cut = true;
+            if (think_open && !cut && R.n_gen >= next_loop_check) {
+                next_loop_check = R.n_gen + 128;
+                cut             = reasoning_loops(text);
+            }
+            if (cut) {
                 think_open = false;
-                if (text.find("</think>") == std::string::npos) {
+                {
                     // reasoning over budget: close it ourselves and let the model act (the last sampled token is not
                     // evaluated yet: it goes in with the closing tag)
-                    const std::vector<int32_t> f = common_tokenize(S.vocab, "\n</think>\n\n", false, true);
+                    const bool                 looped = R.n_gen < budget;
+                    const std::vector<int32_t> f      = common_tokenize(
+                        S.vocab, looped ? "\n\nI have gone in circles; I will act on the best plan so far.\n</think>\n\n"
+                                        : "\n\nI have thought about this enough; I will act on the best plan so far.\n</think>\n\n",
+                        false, true);
                     std::vector<int32_t>       ev(1, out.back());
                     ev.insert(ev.end(), f.begin(), f.end());
                     if (!S.q35->eval_last(ev.data(), (int) ev.size(), last.data(), err)) return false;
                     out.insert(out.end(), f.begin(), f.end());
                     consume();
-                    fprintf(stderr, "reasoning closed by the thinking budget after %d tokens\n", R.n_gen);
+                    fprintf(stderr, "reasoning closed (%s) after %d tokens\n", R.n_gen >= budget ? "budget" : "repetition loop", R.n_gen);
                     std::vector<int32_t> ctx_now = prompt;
                     ctx_now.insert(ctx_now.end(), out.begin(), out.end());
                     dec_p = make_dec();
@@ -616,9 +700,14 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     S.state_tokens = prompt;
     S.state_tokens.insert(S.state_tokens.end(), out.begin(), out.end() - 1);
     R.t_gen = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+    if (chat) {  // final parse (also needed by the timing log below)
+        R.msg = common_chat_parse(text, false, pp);
+        lenient_tool_calls(text, req_tools, R.msg);
+    }
 
     S.last_used = std::chrono::steady_clock::now();
-    if (!S.timing_log.empty()) {  // numbers only: never prompt or output text
+    S.live_busy = false;
+    {  // numbers only: never prompt or output text
         const auto now_sys = std::chrono::system_clock::now();
         const auto t0_sys  = now_sys - std::chrono::duration_cast<std::chrono::system_clock::duration>(
                                           std::chrono::duration<double>(R.t_prompt + R.t_gen));
@@ -652,7 +741,12 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             line["content_repeat"]  = rep(R.msg.content);
         }
         S.last_end = now_sys;
-        if (FILE * f = fopen(S.timing_log.c_str(), "ab")) {
+        {
+            std::lock_guard<std::mutex> lk(S.stats_mu);
+            S.recent.push_back(line);
+            while (S.recent.size() > 500) S.recent.pop_front();
+        }
+        if (FILE * f = S.timing_log.empty() ? nullptr : fopen(S.timing_log.c_str(), "ab")) {
             const std::string l = line.dump() + "\n";
             fwrite(l.data(), 1, l.size(), f);
             fclose(f);
@@ -894,6 +988,20 @@ int serve(const std::vector<std::string> & args) {
         idle.detach();
     }
 
+    if (!S->timing_log.empty()) {  // the dashboard starts with the last requests from the timing log
+        std::ifstream tl(S->timing_log);
+        std::deque<std::string> tail;
+        for (std::string l; std::getline(tl, l);) {
+            tail.push_back(l);
+            if (tail.size() > 500) tail.pop_front();
+        }
+        std::lock_guard<std::mutex> lk(S->stats_mu);
+        for (auto & l : tail) {
+            try {
+                S->recent.push_back(json::parse(l));
+            } catch (...) {}
+        }
+    }
     httplib::Server http;
     auto authorized = [&](const httplib::Request & req, httplib::Response & resp) {
         if (S->api_key.empty() || req.get_header_value("Authorization") == "Bearer " + S->api_key) return true;
@@ -904,6 +1012,32 @@ int serve(const std::vector<std::string> & args) {
     };
     http.Get("/health", [](const httplib::Request &, httplib::Response & resp) {
         resp.set_content(R"({"status":"ok"})", "application/json");
+    });
+    // dashboard: numbers only (the timing-log lines of recent requests and the live state), no prompts or outputs
+    http.Get("/dashboard", [](const httplib::Request &, httplib::Response & resp) {
+        static const char * page =
+#include "dashboard.inc"
+            ;
+        resp.set_content(page, "text/html; charset=utf-8");
+    });
+    http.Get("/stats", [&](const httplib::Request &, httplib::Response & resp) {
+        const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        json out;
+        {
+            std::lock_guard<std::mutex> lk(S->stats_mu);
+            out["recent"] = json::array();
+            const size_t from = S->recent.size() > 200 ? S->recent.size() - 200 : 0;
+            for (size_t i = from; i < S->recent.size(); i++) out["recent"].push_back(S->recent[i]);
+            out["live"] = { { "busy", S->live_busy.load() }, { "model", S->live_model }, { "gen", S->live_gen.load() },
+                            { "prompt", S->live_prompt.load() }, { "elapsed_s", (now_ms - S->live_start_ms.load()) / 1e3 } };
+            if (!S->recent.empty()) out["live"]["last_end_s"] = now_ms / 1e3 - S->recent.back().value("t", 0.0);
+        }
+        json models = json::array();
+        for (auto & e : S->entries) models.push_back(e.alias);
+        out["models"] = models;
+        out["loaded"] = S->model ? S->entries[(size_t) S->active].alias : "";
+        resp.set_header("Cache-Control", "no-store");
+        resp.set_content(out.dump(), "application/json");
     });
     http.Get("/v1/models", [&](const httplib::Request & req, httplib::Response & resp) {
         if (!authorized(req, resp)) return;

@@ -79,3 +79,18 @@ target_link_libraries(eightfer PRIVATE e8_io e8_model ggml llama-common llama cp
 if (WIN32)
     target_link_libraries(eightfer PRIVATE shell32)  # CommandLineToArgvW
 endif()
+
+# eightfer serve /dashboard: the page is embedded in the binary (regenerated when the HTML changes)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/server/dashboard.html E8_DASHBOARD_HTML)
+# MSVC caps one string literal at ~16 KB: adjacent raw literals of 8000 characters
+string(LENGTH "${E8_DASHBOARD_HTML}" E8_DASH_LEN)
+set(E8_DASH_INC "")
+set(E8_DASH_POS 0)
+while(E8_DASH_POS LESS E8_DASH_LEN)
+  string(SUBSTRING "${E8_DASHBOARD_HTML}" ${E8_DASH_POS} 8000 E8_DASH_PART)
+  string(APPEND E8_DASH_INC "R\"E8DASH(${E8_DASH_PART})E8DASH\"\n")
+  math(EXPR E8_DASH_POS "${E8_DASH_POS} + 8000")
+endwhile()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/dashboard.inc "${E8_DASH_INC}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/server/dashboard.html)
+target_include_directories(eightfer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)

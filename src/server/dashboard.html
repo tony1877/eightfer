@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eightfer dashboard</title>
+<style>
+:root {
+  --bg: #f4f6fa; --bg2: #e9eef8; --panel: rgba(255,255,255,.86); --ink: #121621; --muted: #697386; --line: #e3e8f0;
+  --a1: #4f7cff; --a2: #19b38a; --a3: #f2a33a; --a4: #e2556b; --a5: #9b6bff; --glow: rgba(79,124,255,.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #090c13; --bg2: #101627; --panel: rgba(20,26,40,.82); --ink: #e9edf5; --muted: #8590a6; --line: #232c40;
+          --a1: #7398ff; --a2: #34d3a4; --a3: #f5b454; --a4: #ff6f86; --a5: #b392ff; --glow: rgba(115,152,255,.22); }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { min-height: 100vh; color: var(--ink); font: 14px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: radial-gradient(1200px 600px at 10% -10%, var(--bg2), transparent 60%),
+              radial-gradient(900px 500px at 110% 10%, color-mix(in srgb, var(--a5) 14%, transparent), transparent 60%), var(--bg); }
+header { display: flex; align-items: center; gap: 14px; padding: 22px 24px 8px; flex-wrap: wrap; }
+.logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 800; color: #fff;
+  background: linear-gradient(135deg, var(--a1), var(--a5)); box-shadow: 0 6px 18px var(--glow); }
+header h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
+header .sub { color: var(--muted); font-size: 13px; }
+.status { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.dot.on { background: var(--a2); animation: pulse 1.4s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--a2) 55%, transparent); } 100% { box-shadow: 0 0 0 12px transparent; } }
+main { padding: 10px 24px 34px; display: grid; gap: 16px; }
+.card { background: var(--panel); backdrop-filter: blur(8px); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px;
+  min-width: 0; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 8px 30px rgba(10,20,40,.06); }
+.card h2 { font-size: 12px; margin: 0 0 12px; color: var(--muted); font-weight: 650; text-transform: uppercase; letter-spacing: .7px; }
+.hero { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+@media (max-width: 860px) { .hero { grid-template-columns: 1fr; } }
+.gauge { display: grid; place-items: center; }
+.gauge svg { width: 100%; max-width: 270px; height: auto; }
+.livegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 10px; }
+.livegrid .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.livegrid .k { color: var(--muted); font-size: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 14px; }
+.kpi { position: relative; overflow: hidden; }
+.kpi::after { content: ""; position: absolute; inset: auto -30% -60% auto; width: 140px; height: 140px; border-radius: 50%;
+  background: radial-gradient(circle, var(--c, var(--a1)) 0%, transparent 70%); opacity: .14; }
+.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+.kpi .value { font-size: 28px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.kpi .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.savings { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
+.savings .big { font-size: 34px; font-weight: 800; background: linear-gradient(90deg, var(--a2), var(--a1)); -webkit-background-clip: text;
+  background-clip: text; color: transparent; font-variant-numeric: tabular-nums; }
+.savings .k { color: var(--muted); font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+svg.chart { width: 100%; height: 190px; display: block; }
+svg.spark { width: 100%; height: 90px; display: block; }
+.grow { transform-box: fill-box; transform-origin: bottom; animation: grow .6s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin-top: 8px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.timeline .task { margin-bottom: 14px; }
+.timeline .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 5px; gap: 10px; flex-wrap: wrap; }
+.timeline .strip { display: flex; height: 22px; border-radius: 7px; overflow: hidden; background: var(--line); }
+.timeline .seg { height: 100%; min-width: 2px; border-right: 1px solid var(--panel); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+th { color: var(--muted); font-weight: 650; font-size: 12px; }
+tbody tr:hover { background: color-mix(in srgb, var(--a1) 6%, transparent); }
+.tablewrap { overflow-x: auto; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; background: var(--line); }
+.pill.tool { background: color-mix(in srgb, var(--a1) 24%, transparent); }
+.pill.warn { background: color-mix(in srgb, var(--a3) 30%, transparent); }
+.pill.bad { background: color-mix(in srgb, var(--a4) 30%, transparent); }
+.empty { color: var(--muted); padding: 26px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">8</div>
+  <div><h1>eightfer</h1><div class="sub" id="sub">connecting…</div></div>
+  <div class="status"><span class="dot" id="dot"></span><span id="stat">—</span></div>
+</header>
+<main>
+  <section class="hero">
+    <div class="card gauge"><h2 style="justify-self:start">Live speed</h2><svg id="gauge" viewBox="0 0 260 170"></svg></div>
+    <div class="card">
+      <h2>Now</h2>
+      <div class="livegrid" id="live"></div>
+      <svg class="spark" id="spark"></svg>
+      <div class="legend"><span><i style="background:var(--a1)"></i>tok/s, last 2 minutes (sampled every second)</span></div>
+    </div>
+  </section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="card">
+    <h2>Speculative decoding: time saved</h2>
+    <div class="savings" id="savings"></div>
+  </section>
+
+  <section class="card timeline">
+    <h2>Agent tasks: turn by turn</h2>
+    <div id="timeline"></div>
+    <div class="legend"><span><i style="background:var(--a3)"></i>reasoning</span><span><i style="background:var(--a2)"></i>answer / content</span>
+      <span><i style="background:var(--a1)"></i>tool call</span><span><i style="background:var(--a5)"></i>prompt processing</span>
+      <span><i style="background:var(--a4)"></i>reasoning loop</span></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>Decode speed per request (tok/s)</h2><svg class="chart" id="c_tps"></svg></div>
+    <div class="card"><h2>Prompt tokens: new vs reused</h2><svg class="chart" id="c_prompt"></svg>
+      <div class="legend"><span><i style="background:var(--a1)"></i>new (prefilled)</span><span><i style="background:color-mix(in srgb,var(--a1) 35%,transparent)"></i>reused</span></div></div>
+    <div class="card"><h2>Tokens per speculative cycle</h2><svg class="chart" id="c_cycle"></svg></div>
+    <div class="card"><h2>Output shape: reasoning vs content (chars)</h2><svg class="chart" id="c_shape"></svg>
+      <div class="legend"><span><i style="background:var(--a3)"></i>reasoning</span><span><i style="background:var(--a2)"></i>content</span></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent requests</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>time</th><th>model</th><th>prompt</th><th>reused</th><th>prefill tok/s</th><th>generated</th>
+        <th>decode tok/s</th><th>tok/cycle</th><th>reasoning</th><th>content</th><th>tools</th><th>loop</th><th>finish</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </section>
+</main>
+<script>
+const PLAIN_TPS = 3.95;  // measured: base + residual decoding without speculation (eightfer gen, RTX 5080)
+const GAUGE_MAX = 120;
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 0) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tps = r => r.decode_s > 0 ? r.gen_tokens / r.decode_s : null;
+const pps = r => r.prefill_s > 0 ? (r.prompt_tokens - r.reused_tokens) / r.prefill_s : null;
+const tpc = r => r.spec && r.spec.cycles > 0 ? r.gen_tokens / r.spec.cycles : null;
+const dur = s => s < 90 ? fmt(s, 0) + " s" : s < 5400 ? fmt(s / 60, 1) + " min" : fmt(s / 3600, 1) + " h";
+let lastCount = -1, spark = [], prevGen = null, prevT = null;
+
+function defs() {
+  return `<defs>
+    <linearGradient id="g1" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a1')}"/><stop offset="1" stop-color="${css('--a5')}" stop-opacity=".75"/></linearGradient>
+    <linearGradient id="g2" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a2')}"/><stop offset="1" stop-color="${css('--a2')}" stop-opacity=".45"/></linearGradient>
+    <linearGradient id="g3" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a3')}"/><stop offset="1" stop-color="${css('--a3')}" stop-opacity=".5"/></linearGradient>
+    <linearGradient id="gl" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a1')}" stop-opacity=".35"/><stop offset="1" stop-color="${css('--a1')}" stop-opacity="0"/></linearGradient>
+    <linearGradient id="gg" x1="0" x2="1"><stop offset="0" stop-color="${css('--a2')}"/><stop offset=".6" stop-color="${css('--a1')}"/><stop offset="1" stop-color="${css('--a5')}"/></linearGradient>
+  </defs>`;
+}
+
+function bars(svg, series, fillA, fillB, animate) {
+  const W = svg.clientWidth || 600, H = 190, pad = { l: 44, r: 8, t: 10, b: 18 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (!series.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" fill="${css('--muted')}" text-anchor="middle" font-size="12">no data yet</text>`; return; }
+  const max = Math.max(1, ...series.map(s => (s.a || 0) + (s.b || 0)));
+  const bw = (W - pad.l - pad.r) / series.length, ph = H - pad.t - pad.b;
+  let g = defs();
+  for (let k = 0; k <= 4; k++) {
+    const y = H - pad.b - ph * k / 4;
+    g += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}" stroke="${css('--line')}"/>
+          <text x="${pad.l - 6}" y="${y + 4}" fill="${css('--muted')}" font-size="10" text-anchor="end">${fmt(max * k / 4, max < 10 ? 1 : 0)}</text>`;
+  }
+  series.forEach((s, i) => {
+    const x = pad.l + i * bw + bw * .14, w = Math.max(1.5, bw * .72), ha = ph * (s.a || 0) / max, hb = ph * (s.b || 0) / max, y0 = H - pad.b;
+    const cls = animate ? ` class="grow" style="animation-delay:${Math.min(i * 12, 400)}ms"` : "";
+    g += `<g${cls}><rect x="${x}" y="${y0 - ha}" width="${w}" height="${ha}" rx="3" fill="${fillA}"><title>${s.tip}</title></rect>`;
+    if (s.b) g += `<rect x="${x}" y="${y0 - ha - hb}" width="${w}" height="${hb}" rx="3" fill="${fillB}"><title>${s.tip}</title></rect>`;
+    g += `</g>`;
+  });
+  svg.innerHTML = g;
+}
+
+function gauge(v, busy) {
+  const cx = 130, cy = 140, r = 105, a0 = Math.PI, frac = Math.max(0, Math.min(1, (v || 0) / GAUGE_MAX));
+  const pt = f => [cx + r * Math.cos(a0 + Math.PI * f), cy + r * Math.sin(a0 + Math.PI * f)];
+  const [x0, y0] = pt(0), [x1, y1] = pt(1), [xv, yv] = pt(frac);
+  let ticks = "";
+  for (let t = 0; t <= GAUGE_MAX; t += 20) {
+    const f = t / GAUGE_MAX, [xa, ya] = [cx + (r - 18) * Math.cos(a0 + Math.PI * f), cy + (r - 18) * Math.sin(a0 + Math.PI * f)];
+    ticks += `<text x="${xa}" y="${ya + 4}" fill="${css('--muted')}" font-size="10" text-anchor="middle">${t}</text>`;
+  }
+  $("gauge").innerHTML = defs() + `
+    <path d="M${x0},${y0} A${r},${r} 0 0 1 ${x1},${y1}" stroke="${css('--line')}" stroke-width="14" fill="none" stroke-linecap="round"/>
+    <path d="M${x0},${y0} A${r},${r} 0 0 1 ${xv},${yv}" stroke="url(#gg)" stroke-width="14" fill="none" stroke-linecap="round"
+      style="transition: all .8s cubic-bezier(.2,.8,.2,1)"/>
+    ${ticks}
+    <text x="${cx}" y="${cy - 18}" text-anchor="middle" font-size="40" font-weight="800" fill="${css('--ink')}">${fmt(v, v < 10 ? 1 : 0)}</text>
+    <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" fill="${css('--muted')}">${busy ? "tok/s now" : "tok/s (last request)"}</text>`;
+}
+
+function sparkline() {
+  const svg = $("spark"), W = svg.clientWidth || 600, H = 90;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (spark.length < 2) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" fill="${css('--muted')}" text-anchor="middle" font-size="12">waiting for the next request…</text>`; return; }
+  const max = Math.max(10, ...spark), n = 120, step = W / (n - 1), off = n - spark.length;
+  const pts = spark.map((v, i) => [(i + off) * step, H - 6 - (H - 14) * v / max]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join("");
+  svg.innerHTML = defs() + `<path d="${line} L${pts[pts.length - 1][0]},${H} L${pts[0][0]},${H}Z" fill="url(#gl)"/>
+    <path d="${line}" fill="none" stroke="${css('--a1')}" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="${pts[pts.length - 1][0]}" cy="${pts[pts.length - 1][1]}" r="3.5" fill="${css('--a1')}"/>
+    <text x="4" y="12" fill="${css('--muted')}" font-size="10">${fmt(max)} tok/s</text>`;
+}
+
+function timeline(R) {
+  // tasks: requests separated by less than 120 s of idle time (title requests included)
+  const tasks = [];
+  for (const r of R) {
+    const start = r.t - (r.prefill_s || 0) - (r.decode_s || 0);
+    const cur = tasks[tasks.length - 1];
+    if (!cur || start - cur.end > 120) tasks.push({ start, end: r.t, turns: [r] });
+    else { cur.turns.push(r); cur.end = r.t; }
+  }
+  const html = tasks.slice(-5).reverse().map(t => {
+    const total = Math.max(1, t.end - t.start);
+    let segs = "";
+    for (const r of t.turns) {
+      const pre = r.prefill_s || 0, dec = r.decode_s || 0, rc = r.reasoning_chars || 0, cc = r.content_chars || 0;
+      const shareR = rc + cc > 0 ? rc / (rc + cc) : 0;
+      const loop = (r.reasoning_repeat || 0) > .3;
+      const tip = `${new Date(r.t * 1000).toLocaleTimeString()} · ${fmt(r.gen_tokens)} tokens · ${dur(pre + dec)}`;
+      if (pre > .05) segs += `<div class="seg" title="prompt ${fmt(r.prompt_tokens)} tokens · ${dur(pre)}" style="flex:${pre};background:var(--a5)"></div>`;
+      const decR = dec * shareR, decC = dec - decR;
+      if (decR > .05) segs += `<div class="seg" title="reasoning · ${tip}" style="flex:${decR};background:var(${loop ? '--a4' : '--a3'})"></div>`;
+      if (decC > .05) segs += `<div class="seg" title="${r.tool_calls ? 'tool call' : 'answer'} · ${tip}" style="flex:${decC};background:var(${r.tool_calls ? '--a1' : '--a2'})"></div>`;
+    }
+    const gen = t.turns.reduce((s, r) => s + (r.gen_tokens || 0), 0), tools = t.turns.reduce((s, r) => s + (r.tool_calls || 0), 0);
+    return `<div class="task"><div class="meta"><span>${new Date(t.start * 1000).toLocaleString()}</span>
+      <span>${t.turns.length} turns · ${fmt(tools)} tool calls · ${fmt(gen)} tokens · ${dur(total)}</span></div>
+      <div class="strip">${segs}</div></div>`;
+  }).join("");
+  $("timeline").innerHTML = html || `<div class="empty">no tasks yet</div>`;
+}
+
+function kpi(label, value, note, color) {
+  return `<div class="card kpi" style="--c:var(${color})"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note || ""}</div></div>`;
+}
+
+async function tick() {
+  let d;
+  try { d = await (await fetch("/stats", { cache: "no-store" })).json(); }
+  catch (e) { $("stat").textContent = "server unreachable"; $("dot").className = "dot"; return; }
+  const R = d.recent || [];
+  const now = Date.now() / 1e3;
+
+  // live
+  let liveTps = null;
+  if (d.live.busy) {
+    if (prevGen != null && d.live.gen >= prevGen && now > prevT) liveTps = (d.live.gen - prevGen) / (now - prevT);
+    prevGen = d.live.gen; prevT = now;
+    if (liveTps != null) { spark.push(liveTps); if (spark.length > 120) spark.shift(); }
+  } else { prevGen = null; }
+  const lastTps = R.length ? tps(R[R.length - 1]) : null;
+  const shown = d.live.busy ? (liveTps ?? (d.live.elapsed_s > 0 ? d.live.gen / d.live.elapsed_s : 0)) : lastTps;
+  gauge(shown, d.live.busy);
+  sparkline();
+  $("dot").className = "dot" + (d.live.busy ? " on" : "");
+  $("stat").textContent = d.live.busy ? "generating" : (d.live.last_end_s != null ? `idle · ${dur(d.live.last_end_s)} since last request` : "idle");
+  $("sub").textContent = `loaded: ${d.loaded || "none"} · ${d.models.length} model(s) · ${R.length} requests in view`;
+  $("live").innerHTML = d.live.busy
+    ? `<div><div class="big">${fmt(d.live.gen)}</div><div class="k">tokens generated</div></div>
+       <div><div class="big">${dur(d.live.elapsed_s)}</div><div class="k">elapsed</div></div>
+       <div><div class="big">${fmt(d.live.elapsed_s > 0 ? d.live.gen / d.live.elapsed_s : 0, 1)}</div><div class="k">avg tok/s</div></div>
+       <div><div class="big">${fmt(d.live.prompt)}</div><div class="k">prompt tokens</div></div>
+       <div><div class="big" style="font-size:15px">${d.live.model}</div><div class="k">model</div></div>`
+    : `<div><div class="big">idle</div><div class="k">${d.live.last_end_s != null ? "last request " + dur(d.live.last_end_s) + " ago" : "no requests yet"}</div></div>`;
+
+  // KPIs
+  const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
+  const gen = sum(R, r => r.gen_tokens), dec = sum(R, r => r.decode_s);
+  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), newp = prompt - reused, pre = sum(R, r => r.prefill_s);
+  const spec = R.filter(r => r.spec && r.spec.cycles), cyc = sum(spec, r => r.spec.cycles), specGen = sum(spec, r => r.gen_tokens);
+  const loops = R.filter(r => (r.reasoning_repeat || 0) > .3).length, tools = sum(R, r => r.tool_calls);
+  $("kpis").innerHTML =
+    kpi("Decode", fmt(dec > 0 ? gen / dec : null, 1) + " tok/s", `${fmt(gen)} tokens generated`, "--a1") +
+    kpi("Prefill", fmt(pre > 0 ? newp / pre : null, 0) + " tok/s", `${fmt(newp)} new prompt tokens`, "--a5") +
+    kpi("Cache reuse", fmt(prompt > 0 ? 100 * reused / prompt : null, 0) + "%", `${fmt(reused)} of ${fmt(prompt)} tokens`, "--a2") +
+    kpi("Tokens / cycle", fmt(cyc > 0 ? specGen / cyc : null, 1), `${fmt(cyc)} speculative cycles`, "--a3") +
+    kpi("Requests", fmt(R.length), `${fmt(tools)} tool calls`, "--a1") +
+    kpi("Reasoning loops", fmt(loops), loops ? "repeating reasoning detected" : "none in view", loops ? "--a4" : "--a2");
+
+  // time saved vs plain decoding
+  const specDec = sum(spec, r => r.decode_s), plain = specGen / PLAIN_TPS, saved = Math.max(0, plain - specDec);
+  $("savings").innerHTML =
+    `<div><div class="big">${dur(saved)}</div><div class="k">saved on ${fmt(specGen)} speculative tokens</div></div>
+     <div><div class="big">${fmt(specDec > 0 ? plain / specDec : null, 1)}×</div><div class="k">faster than plain near-Q8 decoding</div></div>
+     <div><div class="big">${dur(specDec)}</div><div class="k">actual decode time (plain would take ${dur(plain)})</div></div>
+     <div><div class="k">baseline: ${PLAIN_TPS} tok/s measured for base + residual without speculation on this PC</div></div>`;
+
+  timeline(R);
+
+  // charts (animate when new requests arrive)
+  const animate = R.length !== lastCount; lastCount = R.length;
+  const last = R.slice(-60);
+  bars($("c_tps"), last.map(r => ({ a: tps(r) || 0, tip: `${fmt(tps(r), 1)} tok/s · ${fmt(r.gen_tokens)} tokens` })), "url(#g1)", "", animate);
+  bars($("c_prompt"), last.map(r => ({ a: r.prompt_tokens - r.reused_tokens, b: r.reused_tokens, tip: `${fmt(r.prompt_tokens)} prompt, ${fmt(r.reused_tokens)} reused` })),
+       "url(#g1)", `color-mix(in srgb, ${css('--a1')} 35%, transparent)`, animate);
+  bars($("c_cycle"), last.map(r => ({ a: tpc(r) || 0, tip: `${fmt(tpc(r), 1)} tokens/cycle` })), "url(#g2)", "", animate);
+  bars($("c_shape"), last.map(r => ({ a: r.reasoning_chars || 0, b: r.content_chars || 0, tip: `reasoning ${fmt(r.reasoning_chars)} · content ${fmt(r.content_chars)} chars` })),
+       "url(#g3)", "url(#g2)", animate);
+
+  // table
+  $("rows").innerHTML = R.slice(-40).reverse().map(r => {
+    const loop = (r.reasoning_repeat || 0) > .3 ? `<span class="pill bad">${fmt(100 * r.reasoning_repeat)}%</span>` : fmt(100 * (r.reasoning_repeat || 0)) + "%";
+    const fin = r.tool_calls ? `<span class="pill tool">tool call</span>` : r.finish === "stop" ? `<span class="pill">stop</span>`
+              : r.finish === "length" ? `<span class="pill warn">length</span>` : `<span class="pill bad">${r.finish}</span>`;
+    return `<tr><td>${new Date(r.t * 1000).toLocaleTimeString()}</td><td>${r.model}</td><td>${fmt(r.prompt_tokens)}</td><td>${fmt(r.reused_tokens)}</td>
+      <td>${fmt(pps(r))}</td><td>${fmt(r.gen_tokens)}</td><td>${fmt(tps(r), 1)}</td><td>${fmt(tpc(r), 1)}</td>
+      <td>${fmt(r.reasoning_chars)}</td><td>${fmt(r.content_chars)}</td><td>${fmt(r.tool_calls)}</td><td>${loop}</td><td>${fin}</td></tr>`;
+  }).join("") || `<tr><td colspan="13" class="empty">no requests yet</td></tr>`;
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
