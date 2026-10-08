@@ -6,305 +6,584 @@
 <title>eightfer dashboard</title>
 <style>
 :root {
-  --bg: #f4f6fa; --bg2: #e9eef8; --panel: rgba(255,255,255,.86); --ink: #121621; --muted: #697386; --line: #e3e8f0;
-  --a1: #4f7cff; --a2: #19b38a; --a3: #f2a33a; --a4: #e2556b; --a5: #9b6bff; --glow: rgba(79,124,255,.18);
+  color-scheme: light;
+  --bg: #f3f3f1; --surface: #fcfcfb; --raised: #ffffff; --ink: #0b0b0b; --ink2: #52514e; --muted: #8a8984; --line: #e6e5e0; --grid: #efeee9;
+  --s1: #2a78d6; --s1t: #d3d2cc; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s7: #4a3aa7;
+  --good: #008300; --warn: #c98500; --bad: #d03b3b; --accent: #2a78d6;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #090c13; --bg2: #101627; --panel: rgba(20,26,40,.82); --ink: #e9edf5; --muted: #8590a6; --line: #232c40;
-          --a1: #7398ff; --a2: #34d3a4; --a3: #f5b454; --a4: #ff6f86; --a5: #b392ff; --glow: rgba(115,152,255,.22); }
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111110; --surface: #1a1a19; --raised: #222220; --ink: #ffffff; --ink2: #c3c2b7; --muted: #8b8a82; --line: #2e2e2b; --grid: #262624;
+    --s1: #3987e5; --s1t: #3d3d39; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s7: #9085e9;
+    --good: #3fb950; --warn: #d9a400; --bad: #e66767; --accent: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111110; --surface: #1a1a19; --raised: #222220; --ink: #ffffff; --ink2: #c3c2b7; --muted: #8b8a82; --line: #2e2e2b; --grid: #262624;
+  --s1: #3987e5; --s1t: #3d3d39; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s7: #9085e9;
+  --good: #3fb950; --warn: #d9a400; --bad: #e66767; --accent: #3987e5;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-body { min-height: 100vh; color: var(--ink); font: 14px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: radial-gradient(1200px 600px at 10% -10%, var(--bg2), transparent 60%),
-              radial-gradient(900px 500px at 110% 10%, color-mix(in srgb, var(--a5) 14%, transparent), transparent 60%), var(--bg); }
-header { display: flex; align-items: center; gap: 14px; padding: 22px 24px 8px; flex-wrap: wrap; }
-.logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 800; color: #fff;
-  background: linear-gradient(135deg, var(--a1), var(--a5)); box-shadow: 0 6px 18px var(--glow); }
-header h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
-header .sub { color: var(--muted); font-size: 13px; }
-.status { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
-.dot.on { background: var(--a2); animation: pulse 1.4s ease-out infinite; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--a2) 55%, transparent); } 100% { box-shadow: 0 0 0 12px transparent; } }
-main { padding: 10px 24px 34px; display: grid; gap: 16px; }
-.card { background: var(--panel); backdrop-filter: blur(8px); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px;
-  min-width: 0; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 8px 30px rgba(10,20,40,.06); }
-.card h2 { font-size: 12px; margin: 0 0 12px; color: var(--muted); font-weight: 650; text-transform: uppercase; letter-spacing: .7px; }
-.hero { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
-@media (max-width: 860px) { .hero { grid-template-columns: 1fr; } }
-.gauge { display: grid; place-items: center; }
-.gauge svg { width: 100%; max-width: 270px; height: auto; }
-.livegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 10px; }
-.livegrid .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.livegrid .k { color: var(--muted); font-size: 12px; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 14px; }
-.kpi { position: relative; overflow: hidden; }
-.kpi::after { content: ""; position: absolute; inset: auto -30% -60% auto; width: 140px; height: 140px; border-radius: 50%;
-  background: radial-gradient(circle, var(--c, var(--a1)) 0%, transparent 70%); opacity: .14; }
-.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
-.kpi .value { font-size: 28px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.kpi .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.savings { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
-.savings .big { font-size: 34px; font-weight: 800; background: linear-gradient(90deg, var(--a2), var(--a1)); -webkit-background-clip: text;
-  background-clip: text; color: transparent; font-variant-numeric: tabular-nums; }
-.savings .k { color: var(--muted); font-size: 12px; }
-.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
-svg.chart { width: 100%; height: 190px; display: block; }
-svg.spark { width: 100%; height: 90px; display: block; }
-.grow { transform-box: fill-box; transform-origin: bottom; animation: grow .6s cubic-bezier(.2,.8,.2,1) both; }
-@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-.legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin-top: 8px; flex-wrap: wrap; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh; }
+.num { font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; }
+
+/* header */
+header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 24px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+.mark { width: 26px; height: 26px; border-radius: 7px; background: var(--ink); color: var(--bg); display: grid; place-items: center; font-size: 14px; font-weight: 800; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--ink2); white-space: nowrap; }
+.chip b { color: var(--ink); font-weight: 600; }
+.status { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.on { background: var(--good); animation: pulse 1.4s ease-out infinite; }
+.dot.off { background: var(--bad); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 50%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+.iconbtn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 3px 9px; cursor: pointer; font-size: 12px; }
+
+main { max-width: 1440px; margin: 0 auto; padding: 18px 24px 40px; display: grid; gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; min-width: 0; }
+.card h2 { font-size: 13px; margin: 0 0 2px; font-weight: 650; }
+.card .hint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.row { display: grid; gap: 16px; }
+.r-live { grid-template-columns: minmax(250px, 320px) 1fr; }
+.r-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 960px) { .r-live, .r-2 { grid-template-columns: 1fr; } }
+
+/* live */
+.hero-n { font-size: 64px; font-weight: 750; line-height: 1; letter-spacing: -1.5px; }
+.hero-u { font-size: 14px; color: var(--ink2); margin-left: 6px; font-weight: 500; letter-spacing: 0; }
+.hero-sub { color: var(--ink2); font-size: 13px; margin-top: 6px; min-height: 20px; }
+.livefacts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 16px; }
+.livefacts .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.livefacts .v { font-size: 16px; font-weight: 600; }
+.progress { height: 6px; border-radius: 4px; background: var(--grid); overflow: hidden; margin-top: 14px; }
+.progress i { display: block; height: 100%; background: var(--s1); border-radius: 4px; transition: width .6s; }
+
+/* sessions */
+.sesshead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.sesshead h2 { margin: 0; }
+.sesshead .ctl { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink2); }
+.sesshead select { font: inherit; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+.rail { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; }
+.sess { flex: 0 0 200px; scroll-snap-align: start; text-align: left; border: 1px solid var(--line); background: var(--raised); border-radius: 12px;
+  padding: 10px 12px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.sess:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.sess.sel { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+.sess .t { font-size: 12px; color: var(--ink2); display: flex; justify-content: space-between; gap: 6px; }
+.sess .m { font-size: 20px; font-weight: 700; margin: 2px 0; }
+.sess .m small { font-size: 12px; color: var(--ink2); font-weight: 500; }
+.sess .f { font-size: 12px; color: var(--muted); }
+.sess svg { display: block; width: 100%; height: 26px; margin-top: 6px; }
+.livebadge { font-size: 10px; font-weight: 700; color: var(--good); text-transform: uppercase; letter-spacing: .5px; }
+
+/* kpis */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.kpi .l { font-size: 12px; color: var(--ink2); }
+.kpi .v { font-size: 26px; font-weight: 700; margin-top: 2px; letter-spacing: -.5px; }
+.kpi .v small { font-size: 13px; color: var(--ink2); font-weight: 500; letter-spacing: 0; }
+.kpi .n { font-size: 12px; color: var(--muted); margin-top: 1px; }
+
+/* insights */
+.insights { display: grid; gap: 8px; }
+.ins { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); font-size: 13px; }
+.ins .ic { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; color: #fff; }
+.ins.good .ic { background: var(--good); } .ins.warn .ic { background: var(--warn); } .ins.bad .ic { background: var(--bad); } .ins.info .ic { background: var(--muted); }
+.ins b { font-weight: 650; }
+
+/* charts */
+svg.chart { width: 100%; height: 200px; display: block; overflow: visible; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink2); flex-wrap: wrap; margin-bottom: 8px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
-.timeline .task { margin-bottom: 14px; }
-.timeline .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 5px; gap: 10px; flex-wrap: wrap; }
-.timeline .strip { display: flex; height: 22px; border-radius: 7px; overflow: hidden; background: var(--line); }
-.timeline .seg { height: 100%; min-width: 2px; border-right: 1px solid var(--panel); }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
-th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.legend i.ln { height: 3px; border-radius: 2px; vertical-align: 2px; width: 14px; }
+.ax { fill: var(--muted); font-size: 10px; }
+.gl { stroke: var(--grid); }
+.hit { fill: transparent; cursor: crosshair; }
+.empty { color: var(--muted); padding: 28px 0; text-align: center; font-size: 13px; }
+
+/* timeline */
+.tl { position: relative; }
+.tl .lane { display: flex; height: 28px; border-radius: 6px; overflow: hidden; background: var(--grid); }
+.tl .seg { height: 100%; min-width: 1px; border-right: 2px solid var(--surface); }
+.tl .seg:last-child { border-right: 0; }
+.tl .axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+/* table */
+.tablewrap { overflow-x: auto; max-height: 520px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: right; padding: 6px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
-th { color: var(--muted); font-weight: 650; font-size: 12px; }
-tbody tr:hover { background: color-mix(in srgb, var(--a1) 6%, transparent); }
-.tablewrap { overflow-x: auto; }
-.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; background: var(--line); }
-.pill.tool { background: color-mix(in srgb, var(--a1) 24%, transparent); }
-.pill.warn { background: color-mix(in srgb, var(--a3) 30%, transparent); }
-.pill.bad { background: color-mix(in srgb, var(--a4) 30%, transparent); }
-.empty { color: var(--muted); padding: 26px 0; text-align: center; }
+th { position: sticky; top: 0; background: var(--surface); color: var(--ink2); font-weight: 600; font-size: 12px; }
+tbody tr:hover { background: var(--raised); }
+.pill { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); color: var(--ink2); }
+.pill.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+
+#tip { position: fixed; pointer-events: none; z-index: 20; background: var(--raised); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 10px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.15); opacity: 0; transition: opacity .1s; max-width: 280px; }
+#tip .h { font-weight: 650; margin-bottom: 3px; }
+#tip .r { display: flex; justify-content: space-between; gap: 14px; color: var(--ink2); }
+#tip .r b { color: var(--ink); font-weight: 600; }
+#tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+@media (max-width: 600px) { header, main { padding-left: 16px; padding-right: 16px; } .hero-n { font-size: 52px; } }
 </style>
 </head>
 <body>
 <header>
-  <div class="logo">8</div>
-  <div><h1>eightfer</h1><div class="sub" id="sub">connecting…</div></div>
-  <div class="status"><span class="dot" id="dot"></span><span id="stat">—</span></div>
+  <div class="brand"><div class="mark">8</div><span>eightfer</span></div>
+  <div class="chips" id="chips"></div>
+  <div class="status"><span class="dot" id="dot"></span><span id="stat">connecting…</span>
+    <button class="iconbtn" id="theme" title="toggle theme">◐</button></div>
 </header>
 <main>
-  <section class="hero">
-    <div class="card gauge"><h2 style="justify-self:start">Live speed</h2><svg id="gauge" viewBox="0 0 260 170"></svg></div>
+  <section class="row r-live">
     <div class="card">
-      <h2>Now</h2>
-      <div class="livegrid" id="live"></div>
-      <svg class="spark" id="spark"></svg>
-      <div class="legend"><span><i style="background:var(--a1)"></i>tok/s, last 2 minutes (sampled every second)</span></div>
+      <h2 id="liveTitle">Live</h2>
+      <div style="margin-top:10px"><span class="hero-n num" id="heroN">–</span><span class="hero-u">tok/s</span></div>
+      <div class="hero-sub" id="heroSub"></div>
+      <div class="progress" id="prog" hidden><i id="progI"></i></div>
+      <div class="livefacts" id="liveFacts"></div>
     </div>
+    <div class="card">
+      <h2>Speed, last 2 minutes</h2>
+      <p class="hint">decode tok/s sampled every second while generating</p>
+      <svg class="chart" id="c_live" style="height:180px"></svg>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="sesshead">
+      <h2>Sessions</h2><span class="hint" style="margin:0">requests grouped by idle gaps · pick one to scope everything below</span>
+      <div class="ctl">gap <select id="gap"><option value="120">2 min</option><option value="300" selected>5 min</option><option value="900">15 min</option><option value="3600">1 h</option></select></div>
+    </div>
+    <div class="rail" id="rail"></div>
   </section>
 
   <section class="kpis" id="kpis"></section>
 
+  <section class="row r-2">
+    <div class="card"><h2>What stands out</h2><p class="hint" id="insHint">observations for the selected scope</p><div class="insights" id="ins"></div></div>
+    <div class="card"><h2>Where the time went</h2><p class="hint" id="tlHint">wall clock of the selected session, request by request</p>
+      <div class="legend"><span><i style="background:var(--s1)"></i>prefill</span><span><i style="background:var(--s2)"></i>draft</span>
+        <span><i style="background:var(--s3)"></i>verify</span><span><i style="background:var(--s4)"></i>other decode</span><span><i style="background:var(--grid);outline:1px solid var(--line)"></i>idle (client / tools)</span></div>
+      <div class="tl" id="tl"></div>
+      <div id="split" style="margin-top:16px"></div>
+    </div>
+  </section>
+
+  <section class="row r-2">
+    <div class="card"><h2>Decode speed per request</h2><p class="hint">tok/s · dashed line is the scope median</p><svg class="chart" id="c_tps"></svg></div>
+    <div class="card"><h2>Context per request</h2><p class="hint">prompt tokens · a tall dark bar on a long prompt is a cache miss</p>
+      <div class="legend"><span><i style="background:var(--s1)"></i>new (prefilled)</span><span><i style="background:var(--s1t)"></i>reused from cache</span></div>
+      <svg class="chart" id="c_ctx"></svg></div>
+    <div class="card"><h2>Speculation per request</h2><p class="hint">tokens accepted per verify cycle</p><svg class="chart" id="c_cyc"></svg></div>
+    <div class="card"><h2>Draft acceptance</h2><p class="hint">share of proposed draft tokens kept, by drafter</p>
+      <div class="legend"><span><i class="ln" style="background:var(--s1)"></i>MTP head</span><span><i class="ln" style="background:var(--s2)"></i>echo (copy from context)</span></div>
+      <svg class="chart" id="c_acc"></svg></div>
+  </section>
+
   <section class="card">
-    <h2>Speculative decoding: time saved</h2>
-    <div class="savings" id="savings"></div>
-  </section>
-
-  <section class="card timeline">
-    <h2>Agent tasks: turn by turn</h2>
-    <div id="timeline"></div>
-    <div class="legend"><span><i style="background:var(--a3)"></i>reasoning</span><span><i style="background:var(--a2)"></i>answer / content</span>
-      <span><i style="background:var(--a1)"></i>tool call</span><span><i style="background:var(--a5)"></i>prompt processing</span>
-      <span><i style="background:var(--a4)"></i>reasoning loop</span></div>
-  </section>
-
-  <section class="grid2">
-    <div class="card"><h2>Decode speed per request (tok/s)</h2><svg class="chart" id="c_tps"></svg></div>
-    <div class="card"><h2>Prompt tokens: new vs reused</h2><svg class="chart" id="c_prompt"></svg>
-      <div class="legend"><span><i style="background:var(--a1)"></i>new (prefilled)</span><span><i style="background:color-mix(in srgb,var(--a1) 35%,transparent)"></i>reused</span></div></div>
-    <div class="card"><h2>Tokens per speculative cycle</h2><svg class="chart" id="c_cycle"></svg></div>
-    <div class="card"><h2>Output shape: reasoning vs content (chars)</h2><svg class="chart" id="c_shape"></svg>
-      <div class="legend"><span><i style="background:var(--a3)"></i>reasoning</span><span><i style="background:var(--a2)"></i>content</span></div></div>
-  </section>
-
-  <section class="card">
-    <h2>Recent requests</h2>
+    <h2>Requests</h2><p class="hint" id="tblHint"></p>
     <div class="tablewrap"><table>
-      <thead><tr><th>time</th><th>model</th><th>prompt</th><th>reused</th><th>prefill tok/s</th><th>generated</th>
-        <th>decode tok/s</th><th>tok/cycle</th><th>reasoning</th><th>content</th><th>tools</th><th>loop</th><th>finish</th></tr></thead>
+      <thead><tr><th>time</th><th>kind</th><th>prompt</th><th>reused</th><th>prefill</th><th>gen</th><th>decode tok/s</th><th>tok/cycle</th>
+        <th>MTP kept</th><th>echo kept</th><th>reasoning</th><th>content</th><th>idle before</th><th>flags</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
   </section>
 </main>
+<div id="tip"></div>
 <script>
-const PLAIN_TPS = 3.95;  // measured: base + residual decoding without speculation (eightfer gen, RTX 5080)
-const GAUGE_MAX = 120;
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const kfmt = v => v == null ? "–" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3, 0) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const tps = r => r.decode_s > 0 ? r.gen_tokens / r.decode_s : null;
+const dur = s => s == null || !isFinite(s) ? "–" : s < 1 ? fmt(s * 1000) + " ms" : s < 90 ? fmt(s, s < 10 ? 1 : 0) + " s" : s < 5400 ? fmt(s / 60, 1) + " min" : fmt(s / 3600, 1) + " h";
+const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const day = t => { const d = new Date(t * 1000), n = new Date(); return d.toDateString() === n.toDateString() ? "today" : d.toLocaleDateString([], { month: "short", day: "numeric" }); };
+const median = a => { const b = a.filter(x => x != null && isFinite(x)).sort((x, y) => x - y); return b.length ? b[b.length >> 1] : null; };
+const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
+const tps = r => r.decode_s > 0 && r.gen_tokens >= 16 ? r.gen_tokens / r.decode_s : null;
 const pps = r => r.prefill_s > 0 ? (r.prompt_tokens - r.reused_tokens) / r.prefill_s : null;
-const tpc = r => r.spec && r.spec.cycles > 0 ? r.gen_tokens / r.spec.cycles : null;
-const dur = s => s < 90 ? fmt(s, 0) + " s" : s < 5400 ? fmt(s / 60, 1) + " min" : fmt(s / 3600, 1) + " h";
-let lastCount = -1, spark = [], prevGen = null, prevT = null;
+const tpc = r => r.spec && r.spec.cycles > 0 && r.gen_tokens >= 16 ? r.gen_tokens / r.spec.cycles : null;
+const pct = (a, b) => b > 0 ? 100 * a / b : null;
+const rate = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
 
-function defs() {
-  return `<defs>
-    <linearGradient id="g1" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a1')}"/><stop offset="1" stop-color="${css('--a5')}" stop-opacity=".75"/></linearGradient>
-    <linearGradient id="g2" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a2')}"/><stop offset="1" stop-color="${css('--a2')}" stop-opacity=".45"/></linearGradient>
-    <linearGradient id="g3" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a3')}"/><stop offset="1" stop-color="${css('--a3')}" stop-opacity=".5"/></linearGradient>
-    <linearGradient id="gl" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${css('--a1')}" stop-opacity=".35"/><stop offset="1" stop-color="${css('--a1')}" stop-opacity="0"/></linearGradient>
-    <linearGradient id="gg" x1="0" x2="1"><stop offset="0" stop-color="${css('--a2')}"/><stop offset=".6" stop-color="${css('--a1')}"/><stop offset="1" stop-color="${css('--a5')}"/></linearGradient>
-  </defs>`;
+// ---- state
+let ALL = [], newest = -1, selected = "auto", spark = [], prevGen = null, prevT = null, lastSig = "", cfg = {};
+try { selected = localStorage.getItem("e8.sel") || "auto"; const g = localStorage.getItem("e8.gap"); if (g) $("gap").value = g; } catch (e) {}
+try { const th = localStorage.getItem("e8.theme"); if (th) document.documentElement.dataset.theme = th; } catch (e) {}
+$("theme").onclick = () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("e8.theme", document.documentElement.dataset.theme); } catch (e) {}
+  lastSig = ""; render();
+};
+$("gap").onchange = () => { try { localStorage.setItem("e8.gap", $("gap").value); } catch (e) {} lastSig = ""; render(); };
+
+// ---- request annotations: a request's start, side requests and cache misses
+function annotate(R) {
+  let main = null;  // the last request that extended the conversation
+  for (const r of R) {
+    r.start = r.t - (r.prefill_s || 0) - (r.decode_s || 0);
+    const newTok = r.prompt_tokens - r.reused_tokens;
+    // side request: short, unrelated prompt (session titles, summaries) next to a long conversation
+    r.side = main != null && main.prompt_tokens > 4000 && r.prompt_tokens < main.prompt_tokens * 0.4 && r.reused_tokens < 256;
+    // cache miss: the conversation continued but most of it was prefilled again
+    r.miss = !r.side && main != null && r.prompt_tokens >= main.prompt_tokens * 0.8 && main.prompt_tokens > 2000 && newTok > Math.max(2000, r.prompt_tokens * 0.5);
+    r.loop = (r.reasoning_repeat || 0) > .3 || (r.content_repeat || 0) > .3;
+    if (!r.side) main = r;
+  }
+}
+function sessions(R, gap) {
+  const S = [];
+  for (const r of R) {
+    const cur = S[S.length - 1];
+    if (!cur || r.start - cur.end > gap) S.push({ start: r.start, end: r.t, R: [r] });
+    else { cur.R.push(r); cur.end = r.t; }
+  }
+  S.forEach((s, i) => s.id = "s" + Math.round(s.start));
+  return S.filter(s => s.R.some(r => r.gen_tokens > 2));  // not warm-ups alone
 }
 
-function bars(svg, series, fillA, fillB, animate) {
-  const W = svg.clientWidth || 600, H = 190, pad = { l: 44, r: 8, t: 10, b: 18 };
+// ---- tooltip
+const tip = $("tip");
+function showTip(e, html) { tip.innerHTML = html; tip.style.opacity = 1; moveTip(e); }
+function moveTip(e) {
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + 14, y = e.clientY + 14;
+  if (x + w > innerWidth - 8) x = e.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = e.clientY - h - 14;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.opacity = 0; }
+const trow = (k, v, c) => `<div class="r"><span>${c ? `<i style="background:${c}"></i>` : ""}${k}</span><b class="num">${v}</b></div>`;
+function reqTip(r) {
+  const s = r.spec || {};
+  return `<div class="h">${clock(r.t)} · ${r.side ? "side request" : r.kind || "chat"}</div>` +
+    trow("prompt", `${fmt(r.prompt_tokens)} (${fmt(r.reused_tokens)} reused)`) + trow("prefill", dur(r.prefill_s)) +
+    trow("generated", `${fmt(r.gen_tokens)} tok`) + trow("decode", `${dur(r.decode_s)} · ${fmt(tps(r), 1)} tok/s`) +
+    (s.cycles ? trow("tok/cycle", fmt(tpc(r), 2)) : "") + (r.tool_calls ? trow("tool calls", r.tool_calls) : "") + trow("finish", r.finish);
+}
+function bindTips(svg, items) {  // items: [{x0,x1,html}]
+  svg.onmousemove = e => {
+    const b = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal, x = (e.clientX - b.left) * vb.width / b.width;
+    const it = items.find(i => x >= i.x0 && x < i.x1);
+    const cur = svg.querySelector(".cursor");
+    if (!it) { hideTip(); if (cur) cur.setAttribute("opacity", 0); return; }
+    if (cur) { cur.setAttribute("x", it.x0); cur.setAttribute("width", it.x1 - it.x0); cur.setAttribute("opacity", 1); }
+    showTip(e, it.html);
+  };
+  svg.onmouseleave = () => { hideTip(); const cur = svg.querySelector(".cursor"); if (cur) cur.setAttribute("opacity", 0); };
+}
+
+// ---- charts
+function frame(svg, H) {
+  const W = Math.max(280, svg.clientWidth || 600);
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  if (!series.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" fill="${css('--muted')}" text-anchor="middle" font-size="12">no data yet</text>`; return; }
-  const max = Math.max(1, ...series.map(s => (s.a || 0) + (s.b || 0)));
-  const bw = (W - pad.l - pad.r) / series.length, ph = H - pad.t - pad.b;
-  let g = defs();
+  return { W, H, l: 40, r: 8, t: 8, b: 20 };
+}
+function yaxis(f, max, d) {
+  let g = "";
   for (let k = 0; k <= 4; k++) {
-    const y = H - pad.b - ph * k / 4;
-    g += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}" stroke="${css('--line')}"/>
-          <text x="${pad.l - 6}" y="${y + 4}" fill="${css('--muted')}" font-size="10" text-anchor="end">${fmt(max * k / 4, max < 10 ? 1 : 0)}</text>`;
+    const y = f.H - f.b - (f.H - f.t - f.b) * k / 4;
+    g += `<line class="gl" x1="${f.l}" x2="${f.W - f.r}" y1="${y}" y2="${y}"/><text class="ax num" x="${f.l - 6}" y="${y + 3}" text-anchor="end">${d === "%" ? fmt(max * k / 4) + "%" : kfmt(max * k / 4)}</text>`;
   }
-  series.forEach((s, i) => {
-    const x = pad.l + i * bw + bw * .14, w = Math.max(1.5, bw * .72), ha = ph * (s.a || 0) / max, hb = ph * (s.b || 0) / max, y0 = H - pad.b;
-    const cls = animate ? ` class="grow" style="animation-delay:${Math.min(i * 12, 400)}ms"` : "";
-    g += `<g${cls}><rect x="${x}" y="${y0 - ha}" width="${w}" height="${ha}" rx="3" fill="${fillA}"><title>${s.tip}</title></rect>`;
-    if (s.b) g += `<rect x="${x}" y="${y0 - ha - hb}" width="${w}" height="${hb}" rx="3" fill="${fillB}"><title>${s.tip}</title></rect>`;
-    g += `</g>`;
+  return g;
+}
+function xlabels(f, R, xOf) {
+  if (!R.length) return "";
+  const idx = R.length < 3 ? [0] : [0, R.length >> 1, R.length - 1];
+  return idx.map((i, k) => `<text class="ax" x="${xOf(i)}" y="${f.H - 4}" text-anchor="${k === 0 ? "start" : k === idx.length - 1 ? "end" : "middle"}">${clock(R[i].t)}</text>`).join("");
+}
+function nodata(svg, msg) { const f = frame(svg, 200); svg.innerHTML = `<text class="ax" x="${f.W / 2}" y="100" text-anchor="middle" font-size="12">${msg || "no requests in this scope"}</text>`; svg.onmousemove = null; }
+
+// stacked bars, one per request (2px gaps, rounded top)
+function barChart(svg, R, parts, opts = {}) {
+  if (!R.length) return nodata(svg);
+  const f = frame(svg, 200), n = R.length, pw = f.W - f.l - f.r, ph = f.H - f.t - f.b, bw = pw / n;
+  const tot = R.map(r => parts.reduce((s, p) => s + (p.v(r) || 0), 0));
+  const max = opts.max || Math.max(1, ...tot) * 1.08;
+  let g = yaxis(f, max, opts.unit) + `<rect class="cursor" y="${f.t}" height="${ph}" fill="${css('--grid')}" opacity="0"/>`;
+  const items = [];
+  R.forEach((r, i) => {
+    const x = f.l + i * bw, w = Math.max(1, bw - (bw > 4 ? 2 : 0.5));
+    let y = f.H - f.b;
+    parts.forEach((p, k) => {
+      const v = p.v(r) || 0, h = ph * v / max;
+      if (h <= 0) return;
+      const top = k === parts.length - 1 || parts.slice(k + 1).every(q => !(q.v(r) > 0));
+      const rr = top && w > 4 ? Math.min(3, w / 2, h) : 0;
+      const hh = k > 0 ? Math.max(0, h - 1) : h;  // 1px+ gap between stacked segments
+      g += rr ? `<path d="M${x},${y} v${-(hh - rr)} q0,${-rr} ${rr},${-rr} h${w - 2 * rr} q${rr},0 ${rr},${rr} v${hh - rr}z" fill="${p.c(r)}"/>`
+              : `<rect x="${x}" y="${y - hh}" width="${w}" height="${hh}" fill="${p.c(r)}"/>`;
+      y -= h;
+    });
+    items.push({ x0: x, x1: x + bw, html: (opts.tip || reqTip)(r) });
   });
+  if (opts.ref != null) { const y = f.H - f.b - ph * opts.ref / max; g += `<line x1="${f.l}" x2="${f.W - f.r}" y1="${y}" y2="${y}" stroke="${css('--ink2')}" stroke-dasharray="4 4" stroke-width="1"/><text class="ax num" x="${f.W - f.r}" y="${y - 4}" text-anchor="end">median ${fmt(opts.ref, 1)}</text>`; }
+  g += xlabels(f, R, i => f.l + i * bw + bw / 2);
+  svg.innerHTML = g;
+  bindTips(svg, items);
+}
+
+// lines over requests (2px, dots when few points)
+function lineChart(svg, R, series, opts = {}) {
+  const has = R.some(r => series.some(s => s.v(r) != null));
+  if (!has) return nodata(svg, opts.empty);
+  const f = frame(svg, opts.H || 200), n = R.length, pw = f.W - f.l - f.r, ph = f.H - f.t - f.b;
+  const max = opts.max || Math.max(1, ...R.flatMap(r => series.map(s => s.v(r) || 0))) * 1.1;
+  const X = i => f.l + (n === 1 ? pw / 2 : pw * i / (n - 1)), Y = v => f.H - f.b - ph * v / max;
+  let g = yaxis(f, max, opts.unit) + `<rect class="cursor" y="${f.t}" height="${ph}" fill="${css('--grid')}" opacity="0"/>`;
+  for (const s of series) {
+    let d = "", pen = false;
+    R.forEach((r, i) => { const v = s.v(r); if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1); pen = true; });
+    g += `<path d="${d}" fill="none" stroke="${s.c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    if (n <= 60) R.forEach((r, i) => { const v = s.v(r); if (v != null) g += `<circle cx="${X(i)}" cy="${Y(v)}" r="3.5" fill="${s.c}" stroke="${css('--surface')}" stroke-width="2"/>`; });
+  }
+  const half = n === 1 ? pw / 2 : pw / (n - 1) / 2;
+  const items = R.map((r, i) => ({ x0: X(i) - half, x1: X(i) + half, html: opts.tip ? opts.tip(r) : reqTip(r) }));
+  g += xlabels(f, R, X);
+  svg.innerHTML = g;
+  bindTips(svg, items);
+}
+
+function liveChart() {
+  const svg = $("c_live");
+  const f = frame(svg, 180), n = 120, pw = f.W - f.l - f.r, ph = f.H - f.t - f.b;
+  if (spark.filter(v => v != null).length < 2) { svg.innerHTML = `<text class="ax" x="${f.W / 2}" y="90" text-anchor="middle" font-size="12">waiting for the next request…</text>`; return; }
+  const max = Math.max(20, ...spark.filter(v => v != null)) * 1.1;
+  const X = i => f.l + pw * (i + n - spark.length) / (n - 1), Y = v => f.H - f.b - ph * v / max;
+  let g = yaxis(f, max), d = "", area = "", pen = false, first = null, lastp = null;
+  spark.forEach((v, i) => {
+    if (v == null) { if (pen) area += `L${lastp[0]},${f.H - f.b}L${first},${f.H - f.b}Z`; pen = false; return; }
+    const p = [X(i).toFixed(1), Y(v).toFixed(1)];
+    if (!pen) { first = p[0]; area += `M${p[0]},${f.H - f.b}L${p[0]},${p[1]}`; d += `M${p[0]},${p[1]}`; }
+    else { d += `L${p[0]},${p[1]}`; area += `L${p[0]},${p[1]}`; }
+    pen = true; lastp = p;
+  });
+  if (pen) area += `L${lastp[0]},${f.H - f.b}L${first},${f.H - f.b}Z`;
+  g += `<path d="${area}" fill="${css('--s1')}" opacity=".12"/><path d="${d}" fill="none" stroke="${css('--s1')}" stroke-width="2" stroke-linejoin="round"/>`;
+  if (lastp && spark[spark.length - 1] != null) g += `<circle cx="${lastp[0]}" cy="${lastp[1]}" r="4" fill="${css('--s1')}" stroke="${css('--surface')}" stroke-width="2"/>`;
+  g += `<text class="ax" x="${f.l}" y="${f.H - 4}">−2 min</text><text class="ax" x="${f.W - f.r}" y="${f.H - 4}" text-anchor="end">now</text>`;
   svg.innerHTML = g;
 }
 
-function gauge(v, busy) {
-  const cx = 130, cy = 140, r = 105, a0 = Math.PI, frac = Math.max(0, Math.min(1, (v || 0) / GAUGE_MAX));
-  const pt = f => [cx + r * Math.cos(a0 + Math.PI * f), cy + r * Math.sin(a0 + Math.PI * f)];
-  const [x0, y0] = pt(0), [x1, y1] = pt(1), [xv, yv] = pt(frac);
-  let ticks = "";
-  for (let t = 0; t <= GAUGE_MAX; t += 20) {
-    const f = t / GAUGE_MAX, [xa, ya] = [cx + (r - 18) * Math.cos(a0 + Math.PI * f), cy + (r - 18) * Math.sin(a0 + Math.PI * f)];
-    ticks += `<text x="${xa}" y="${ya + 4}" fill="${css('--muted')}" font-size="10" text-anchor="middle">${t}</text>`;
-  }
-  $("gauge").innerHTML = defs() + `
-    <path d="M${x0},${y0} A${r},${r} 0 0 1 ${x1},${y1}" stroke="${css('--line')}" stroke-width="14" fill="none" stroke-linecap="round"/>
-    <path d="M${x0},${y0} A${r},${r} 0 0 1 ${xv},${yv}" stroke="url(#gg)" stroke-width="14" fill="none" stroke-linecap="round"
-      style="transition: all .8s cubic-bezier(.2,.8,.2,1)"/>
-    ${ticks}
-    <text x="${cx}" y="${cy - 18}" text-anchor="middle" font-size="40" font-weight="800" fill="${css('--ink')}">${fmt(v, v < 10 ? 1 : 0)}</text>
-    <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" fill="${css('--muted')}">${busy ? "tok/s now" : "tok/s (last request)"}</text>`;
+// ---- session rail
+function miniSpark(R) {
+  const v = R.map(tps).filter(x => x != null);
+  if (v.length < 2) return "";
+  const max = Math.max(...v) * 1.1, W = 176, H = 26;
+  const d = v.map((x, i) => (i ? "L" : "M") + (W * i / (v.length - 1)).toFixed(1) + "," + (H - 2 - (H - 4) * x / max).toFixed(1)).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path d="${d}" fill="none" stroke="${css('--s1')}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+}
+function rail(S, sel, busy) {
+  const gen = sum(ALL, r => r.gen_tokens);
+  let h = `<button class="sess${sel === "all" ? " sel" : ""}" data-id="all"><div class="t"><span>everything</span><span>${S.length} sessions</span></div>
+    <div class="m num">${fmt(rate(ALL), 1)} <small>tok/s</small></div><div class="f">${fmt(ALL.length)} requests · ${kfmt(gen)} tokens</div>${miniSpark(ALL.slice(-80))}</button>`;
+  S.slice().reverse().forEach((s, k) => {
+    const g = sum(s.R, r => r.gen_tokens), isLive = k === 0 && (busy || Date.now() / 1e3 - s.end < +$("gap").value);
+    h += `<button class="sess${sel === s.id ? " sel" : ""}" data-id="${s.id}"><div class="t"><span>${day(s.start)} ${clock(s.start)}</span>${isLive ? `<span class="livebadge">● live</span>` : `<span>${dur(s.end - s.start)}</span>`}</div>
+      <div class="m num">${fmt(rate(s.R), 1)} <small>tok/s</small></div>
+      <div class="f">${s.R.length} requests · ${kfmt(g)} tokens · ${fmt(sum(s.R, r => r.tool_calls))} tools</div>${miniSpark(s.R)}</button>`;
+  });
+  $("rail").innerHTML = h;
+  $("rail").querySelectorAll(".sess").forEach(b => b.onclick = () => {
+    selected = b.dataset.id; try { localStorage.setItem("e8.sel", selected); } catch (e) {}
+    lastSig = ""; render();
+  });
 }
 
-function sparkline() {
-  const svg = $("spark"), W = svg.clientWidth || 600, H = 90;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  if (spark.length < 2) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" fill="${css('--muted')}" text-anchor="middle" font-size="12">waiting for the next request…</text>`; return; }
-  const max = Math.max(10, ...spark), n = 120, step = W / (n - 1), off = n - spark.length;
-  const pts = spark.map((v, i) => [(i + off) * step, H - 6 - (H - 14) * v / max]);
-  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join("");
-  svg.innerHTML = defs() + `<path d="${line} L${pts[pts.length - 1][0]},${H} L${pts[0][0]},${H}Z" fill="url(#gl)"/>
-    <path d="${line}" fill="none" stroke="${css('--a1')}" stroke-width="2" stroke-linejoin="round"/>
-    <circle cx="${pts[pts.length - 1][0]}" cy="${pts[pts.length - 1][1]}" r="3.5" fill="${css('--a1')}"/>
-    <text x="4" y="12" fill="${css('--muted')}" font-size="10">${fmt(max)} tok/s</text>`;
+// ---- kpis
+function kpi(l, v, u, n) { return `<div class="kpi"><div class="l">${l}</div><div class="v num">${v}${u ? ` <small>${u}</small>` : ""}</div><div class="n">${n || ""}</div></div>`; }
+function kpis(R, wall) {
+  const gen = sum(R, r => r.gen_tokens), dec = sum(R, r => r.decode_s);
+  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), pre = sum(R, r => r.prefill_s);
+  const sp = R.filter(r => r.spec && r.spec.cycles), cyc = sum(sp, r => r.spec.cycles), spGen = sum(sp, r => r.gen_tokens);
+  const mp = sum(sp, r => r.spec.mtp_proposed), mk = sum(sp, r => r.spec.mtp_kept), ep = sum(sp, r => r.spec.echo_proposed), ek = sum(sp, r => r.spec.echo_kept);
+  const vs = sum(sp, r => r.spec.verify_s);
+  const busy = pre + dec, ctx = R.length ? Math.max(...R.map(r => r.prompt_tokens + r.gen_tokens)) : null;
+  $("kpis").innerHTML =
+    kpi("Decode", fmt(rate(R), 1), "tok/s", `median ${fmt(median(R.map(tps)), 1)} · ${kfmt(gen)} tokens`) +
+    kpi("Prefill", fmt(pre > 0 ? (prompt - reused) / pre : null, 0), "tok/s", `${kfmt(prompt - reused)} new tokens in ${dur(pre)}`) +
+    kpi("Cache hit", fmt(pct(reused, prompt), 0), "%", `${kfmt(reused)} of ${kfmt(prompt)} prompt tokens`) +
+    kpi("Per cycle", fmt(cyc > 0 ? spGen / cyc : null, 2), "tok", `${fmt(cyc > 0 ? 1000 * vs / cyc : null, 0)} ms per verify`) +
+    kpi("Drafts kept", fmt(pct(mk + ek, mp + ep), 0), "%", `MTP ${fmt(pct(mk, mp), 0)}% · echo ${fmt(pct(ek, ep), 0)}%`) +
+    kpi("Model busy", fmt(wall > 0 ? pct(busy, wall) : null, 0), "%", `${dur(busy)} of ${dur(wall)} wall`) +
+    kpi("Peak context", kfmt(ctx), "tok", cfg.ctx ? `of ${kfmt(cfg.ctx)} (${fmt(pct(ctx, cfg.ctx), 0)}%)` : "") +
+    kpi("Requests", fmt(R.length), "", `${fmt(sum(R, r => r.tool_calls))} tool calls · ${R.filter(r => r.side).length} side`);
 }
 
-function timeline(R) {
-  // tasks: requests separated by less than 120 s of idle time (title requests included)
-  const tasks = [];
-  for (const r of R) {
-    const start = r.t - (r.prefill_s || 0) - (r.decode_s || 0);
-    const cur = tasks[tasks.length - 1];
-    if (!cur || start - cur.end > 120) tasks.push({ start, end: r.t, turns: [r] });
-    else { cur.turns.push(r); cur.end = r.t; }
-  }
-  const html = tasks.slice(-5).reverse().map(t => {
-    const total = Math.max(1, t.end - t.start);
-    let segs = "";
-    for (const r of t.turns) {
-      const pre = r.prefill_s || 0, dec = r.decode_s || 0, rc = r.reasoning_chars || 0, cc = r.content_chars || 0;
-      const shareR = rc + cc > 0 ? rc / (rc + cc) : 0;
-      const loop = (r.reasoning_repeat || 0) > .3;
-      const tip = `${new Date(r.t * 1000).toLocaleTimeString()} · ${fmt(r.gen_tokens)} tokens · ${dur(pre + dec)}`;
-      if (pre > .05) segs += `<div class="seg" title="prompt ${fmt(r.prompt_tokens)} tokens · ${dur(pre)}" style="flex:${pre};background:var(--a5)"></div>`;
-      const decR = dec * shareR, decC = dec - decR;
-      if (decR > .05) segs += `<div class="seg" title="reasoning · ${tip}" style="flex:${decR};background:var(${loop ? '--a4' : '--a3'})"></div>`;
-      if (decC > .05) segs += `<div class="seg" title="${r.tool_calls ? 'tool call' : 'answer'} · ${tip}" style="flex:${decC};background:var(${r.tool_calls ? '--a1' : '--a2'})"></div>`;
+// ---- insights
+function insights(R, wall) {
+  const out = [];
+  const add = (lvl, html) => out.push(`<div class="ins ${lvl}"><span class="ic">${{ good: "✓", warn: "!", bad: "!", info: "i" }[lvl]}</span><div>${html}</div></div>`);
+  if (!R.length) { $("ins").innerHTML = `<div class="empty">nothing yet</div>`; return; }
+  const misses = R.filter(r => r.miss), side = R.filter(r => r.side);
+  if (misses.length) {
+    const lost = sum(misses, r => r.prefill_s), afterSide = misses.filter(r => { const i = R.indexOf(r); return i > 0 && R[i - 1].side; }).length;
+    add("bad", `<b>${misses.length} cache miss${misses.length > 1 ? "es" : ""}</b> re-prefilled ${kfmt(sum(misses, r => r.prompt_tokens - r.reused_tokens))} tokens, costing <b>${dur(lost)}</b>` +
+      (afterSide ? ` · ${afterSide} right after a side request (session title / summary) evicted the conversation` : ""));
+  } else if (R.length > 2) add("good", `<b>No cache misses</b> · ${fmt(pct(sum(R, r => r.reused_tokens), sum(R, r => r.prompt_tokens)), 0)}% of prompt tokens came from cache`);
+  if (side.length) add("info", `<b>${side.length} side request${side.length > 1 ? "s" : ""}</b> (short prompts beside the conversation) took ${dur(sum(side, r => r.prefill_s + r.decode_s))}`);
+  const loops = R.filter(r => r.loop);
+  if (loops.length) add("warn", `<b>${loops.length} repetition loop${loops.length > 1 ? "s" : ""}</b> in reasoning or content · last at ${clock(loops[loops.length - 1].t)}`);
+  const len = R.filter(r => r.finish === "length");
+  if (len.length) add("warn", `<b>${len.length} request${len.length > 1 ? "s" : ""} hit max_tokens</b> (finish = length)`);
+  const errs = R.filter(r => r.finish && !["stop", "length", "tool_calls"].includes(r.finish));
+  if (errs.length) add("bad", `<b>${errs.length} request${errs.length > 1 ? "s" : ""} ended abnormally</b> (${[...new Set(errs.map(r => r.finish))].join(", ")})`);
+  const m = median(R.map(tps)), slow = R.filter(r => tps(r) != null && r.gen_tokens > 100 && tps(r) < m * 0.6);
+  if (slow.length) add("warn", `<b>${slow.length} slow request${slow.length > 1 ? "s" : ""}</b> under 60% of the median ${fmt(m, 1)} tok/s (low draft acceptance or long cycles)`);
+  const pre = sum(R, r => r.prefill_s), dec = sum(R, r => r.decode_s), idle = Math.max(0, wall - pre - dec);
+  if (wall > 30) add("info", `Wall time: <b>${fmt(pct(dec, wall), 0)}%</b> decoding, <b>${fmt(pct(pre, wall), 0)}%</b> prefill, <b>${fmt(pct(idle, wall), 0)}%</b> waiting on the client / tools`);
+  const rc = sum(R, r => r.reasoning_chars), cc = sum(R, r => r.content_chars);
+  if (rc + cc > 0) add("info", `Output: <b>${fmt(pct(rc, rc + cc), 0)}%</b> reasoning by characters · ${fmt(sum(R, r => r.tool_calls))} tool calls`);
+  const sp = R.filter(r => r.spec && r.spec.cycles), ep = sum(sp, r => r.spec.echo_proposed), ek = sum(sp, r => r.spec.echo_kept);
+  if (ep > 200) add(ek / ep > .4 ? "good" : "info", `Echo drafting kept <b>${fmt(pct(ek, ep), 0)}%</b> of ${kfmt(ep)} copied tokens${ek / ep > .4 ? " · output is repeating context (code edits, quotes)" : ""}`);
+  $("ins").innerHTML = out.join("");
+}
+
+// ---- time split (timeline + totals)
+function timeSplit(R, sess) {
+  const parts = r => {
+    const s = r.spec || {}, d = r.decode_s || 0, dr = Math.min(d, s.draft_s || 0), vf = Math.min(d - dr, s.verify_s || 0);
+    return { pre: r.prefill_s || 0, draft: dr, verify: vf, other: Math.max(0, d - dr - vf) };
+  };
+  if (!sess) {
+    $("tlHint").textContent = "pick a single session to see its wall clock · totals for the scope below";
+    $("tl").innerHTML = "";
+  } else {
+    $("tlHint").textContent = `${day(sess.start)} ${clock(sess.start)} → ${clock(sess.end)} · ${dur(sess.end - sess.start)} wall clock, hover a segment`;
+    let h = "", t = sess.start;
+    const segs = [];
+    for (const r of sess.R) {
+      if (r.start - t > 0.05) segs.push({ f: r.start - t, c: "var(--grid)", tip: `<div class="h">idle</div>${trow("waiting", dur(r.start - t))}` });
+      const p = parts(r), tp = reqTip(r);
+      [["pre", "var(--s1)"], ["draft", "var(--s2)"], ["verify", "var(--s3)"], ["other", "var(--s4)"]].forEach(([k, c]) => { if (p[k] > 0.02) segs.push({ f: p[k], c, tip: tp, edge: r.side ? "side" : r.miss ? "miss" : "" }); });
+      t = Math.max(t, r.t);
     }
-    const gen = t.turns.reduce((s, r) => s + (r.gen_tokens || 0), 0), tools = t.turns.reduce((s, r) => s + (r.tool_calls || 0), 0);
-    return `<div class="task"><div class="meta"><span>${new Date(t.start * 1000).toLocaleString()}</span>
-      <span>${t.turns.length} turns · ${fmt(tools)} tool calls · ${fmt(gen)} tokens · ${dur(total)}</span></div>
-      <div class="strip">${segs}</div></div>`;
-  }).join("");
-  $("timeline").innerHTML = html || `<div class="empty">no tasks yet</div>`;
+    h = `<div class="lane">` + segs.map((s, i) => `<div class="seg" data-i="${i}" style="flex:${s.f};background:${s.c}${s.edge === "miss" && s.c === "var(--s1)" ? ";box-shadow:inset 0 3px 0 var(--bad)" : ""}"></div>`).join("") + `</div>
+      <div class="axis"><span>${clock(sess.start)}</span><span>${clock((sess.start + sess.end) / 2)}</span><span>${clock(sess.end)}</span></div>`;
+    $("tl").innerHTML = h;
+    $("tl").querySelectorAll(".seg").forEach(el => { const s = segs[+el.dataset.i]; el.onmousemove = e => showTip(e, s.tip); el.onmouseleave = hideTip; });
+  }
+  const tot = { pre: 0, draft: 0, verify: 0, other: 0 };
+  R.forEach(r => { const p = parts(r); for (const k in tot) tot[k] += p[k]; });
+  const all = tot.pre + tot.draft + tot.verify + tot.other;
+  const rows = [["prefill", tot.pre, "var(--s1)"], ["draft", tot.draft, "var(--s2)"], ["verify", tot.verify, "var(--s3)"], ["other decode", tot.other, "var(--s4)"]];
+  $("split").innerHTML = all > 0 ? `<div style="font-size:12px;color:var(--ink2);margin-bottom:6px">model time in scope: <b style="color:var(--ink)">${dur(all)}</b></div>` +
+    `<div class="lane" style="display:flex;height:14px;border-radius:5px;overflow:hidden">${rows.map(([k, v, c]) => v > 0 ? `<div style="flex:${v};background:${c};border-right:2px solid var(--surface)" title="${k}"></div>` : "").join("")}</div>` +
+    `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;font-size:12px">${rows.map(([k, v, c]) =>
+      `<div><div style="color:var(--ink2)"><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c};margin-right:5px"></i>${k}</div><div class="num" style="font-weight:600">${fmt(pct(v, all), 0)}% <span style="color:var(--muted);font-weight:400">${dur(v)}</span></div></div>`).join("")}</div>` : "";
 }
 
-function kpi(label, value, note, color) {
-  return `<div class="card kpi" style="--c:var(${color})"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note || ""}</div></div>`;
+// ---- table
+function table(R) {
+  const rows = R.slice(-300).reverse().map(r => {
+    const s = r.spec || {}, flags = [];
+    if (r.miss) flags.push(`<span class="pill bad">cache miss</span>`);
+    if (r.side) flags.push(`<span class="pill">side</span>`);
+    if (r.loop) flags.push(`<span class="pill warn">loop</span>`);
+    if (r.finish === "length") flags.push(`<span class="pill warn">length</span>`);
+    if (r.tool_calls) flags.push(`<span class="pill good">${r.tool_calls} tool${r.tool_calls > 1 ? "s" : ""}</span>`);
+    return `<tr class="num"><td>${clock(r.t)}</td><td>${r.kind || "chat"}${r.temp != null ? ` <span style="color:var(--muted)">t${r.temp}</span>` : ""}</td><td>${fmt(r.prompt_tokens)}</td><td>${fmt(r.reused_tokens)}</td>
+      <td>${dur(r.prefill_s)}</td><td>${fmt(r.gen_tokens)}</td><td>${fmt(tps(r), 1)}</td><td>${fmt(tpc(r), 2)}</td>
+      <td>${s.mtp_proposed ? fmt(pct(s.mtp_kept, s.mtp_proposed), 0) + "%" : "–"}</td><td>${s.echo_proposed ? fmt(pct(s.echo_kept, s.echo_proposed), 0) + "%" : "–"}</td>
+      <td>${kfmt(r.reasoning_chars)}</td><td>${kfmt(r.content_chars)}</td><td>${dur(r.idle_before_s)}</td><td style="text-align:left">${flags.join(" ")}</td></tr>`;
+  });
+  $("rows").innerHTML = rows.join("") || `<tr><td colspan="14" class="empty">no requests</td></tr>`;
+  $("tblHint").textContent = `${R.length} requests in scope${R.length > 300 ? " · newest 300 shown" : ""}`;
+}
+
+// ---- render (scoped)
+function render() {
+  annotate(ALL);
+  const S = sessions(ALL, +$("gap").value);
+  let sel = selected, sess = null;
+  if (sel === "auto") sel = S.length ? S[S.length - 1].id : "all";
+  if (sel !== "all") { sess = S.find(s => s.id === sel) || null; if (!sess) { sel = S.length ? S[S.length - 1].id : "all"; sess = S[S.length - 1] || null; } }
+  const busy = !!(window.__live && window.__live.busy);
+  rail(S, selected === "auto" ? sel : selected === "all" ? "all" : sel, busy);
+  const R = sess ? sess.R : ALL;
+  const wall = sess ? sess.end - sess.start : sum(S, s => s.end - s.start);
+  const sig = [sel, R.length, R.length ? R[R.length - 1].t : 0, $("gap").value, (document.documentElement.dataset.theme || "")].join("|");
+  if (sig === lastSig) return;
+  lastSig = sig;
+  kpis(R, wall);
+  insights(R, wall);
+  timeSplit(R, sess);
+  const V = R.slice(-150);
+  barChart($("c_tps"), V, [{ v: tps, c: () => css("--s1") }], { ref: median(V.map(tps)) });
+  barChart($("c_ctx"), V, [{ v: r => r.prompt_tokens - r.reused_tokens, c: r => r.miss ? css("--bad") : css("--s1") }, { v: r => r.reused_tokens, c: () => css("--s1t") }]);
+  barChart($("c_cyc"), V, [{ v: tpc, c: () => css("--s3") }], { ref: median(V.map(tpc)) });
+  lineChart($("c_acc"), V, [
+    { v: r => r.spec && r.spec.mtp_proposed > 4 ? pct(r.spec.mtp_kept, r.spec.mtp_proposed) : null, c: css("--s1") },
+    { v: r => r.spec && r.spec.echo_proposed > 4 ? pct(r.spec.echo_kept, r.spec.echo_proposed) : null, c: css("--s2") }],
+    { max: 100, unit: "%", empty: "no speculative requests", tip: r => { const s = r.spec || {}; return `<div class="h">${clock(r.t)}</div>` +
+      trow("MTP kept", s.mtp_proposed ? `${fmt(s.mtp_kept)} / ${fmt(s.mtp_proposed)} (${fmt(pct(s.mtp_kept, s.mtp_proposed), 0)}%)` : "–", css("--s1")) +
+      trow("echo kept", s.echo_proposed ? `${fmt(s.echo_kept)} / ${fmt(s.echo_proposed)} (${fmt(pct(s.echo_kept, s.echo_proposed), 0)}%)` : "–", css("--s2")) +
+      trow("tok/cycle", fmt(tpc(r), 2)); } });
+  table(R);
+}
+
+function live(d) {
+  const L = d.live, now = Date.now() / 1e3;
+  window.__live = L;
+  let inst = null;
+  if (L.busy) {
+    if (prevGen != null && L.gen >= prevGen && now > prevT) inst = (L.gen - prevGen) / (now - prevT);
+    prevGen = L.gen; prevT = now;
+  } else prevGen = null;
+  spark.push(L.busy ? inst : null); if (spark.length > 120) spark.shift();
+  const last = [...ALL].reverse().find(r => r.gen_tokens >= 16);
+  $("dot").className = "dot" + (L.busy ? " on" : "");
+  $("stat").textContent = L.busy ? "generating" : L.last_end_s != null ? `idle · ${dur(L.last_end_s)}` : "idle";
+  $("liveTitle").textContent = L.busy ? "Generating now" : "Last request";
+  if (L.busy) {
+    const avg = L.elapsed_s > 0 ? L.gen / L.elapsed_s : 0;
+    $("heroN").textContent = fmt(inst ?? avg, 1);
+    $("heroSub").textContent = `${fmt(L.gen)} tokens in ${dur(L.elapsed_s)}`;
+    $("liveFacts").innerHTML = `<div><div class="k">prompt</div><div class="v num">${kfmt(L.prompt)}</div></div><div><div class="k">average</div><div class="v num">${fmt(avg, 1)} tok/s</div></div>` +
+      `<div><div class="k">model</div><div class="v" style="font-size:13px">${L.model}</div></div>`;
+    if (cfg.ctx) { $("prog").hidden = false; $("progI").style.width = Math.min(100, pct(L.prompt + L.gen, cfg.ctx)) + "%"; $("prog").title = "context used"; }
+  } else {
+    $("prog").hidden = true;
+    $("heroN").textContent = last ? fmt(tps(last), 1) : "–";
+    $("heroSub").textContent = last ? `${fmt(last.gen_tokens)} tokens · ${clock(last.t)} · ${dur(L.last_end_s)} ago` : "no requests yet";
+    $("liveFacts").innerHTML = last ? `<div><div class="k">prompt</div><div class="v num">${kfmt(last.prompt_tokens)}</div></div><div><div class="k">from cache</div><div class="v num">${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}%</div></div>` +
+      `<div><div class="k">prefill</div><div class="v num">${dur(last.prefill_s)}</div></div><div><div class="k">tok/cycle</div><div class="v num">${fmt(tpc(last), 2)}</div></div>` : "";
+  }
+  liveChart();
+}
+
+function chips(d) {
+  cfg = d.config || {};
+  const c = [];
+  if (d.loaded) c.push(`<span class="chip"><b>${d.loaded}</b></span>`);
+  if (cfg.ctx) c.push(`<span class="chip">context <b>${kfmt(cfg.ctx)}</b></span>`);
+  if (cfg.kv) c.push(`<span class="chip">KV <b>${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? " / " + cfg.kv_v : ""}</b></span>`);
+  if (cfg.window) c.push(`<span class="chip">VRAM window <b>${kfmt(cfg.window)}</b></span>`);
+  if (cfg.slots > 1) c.push(`<span class="chip">slots <b>${cfg.slots}</b></span>`);
+  if (d.models && d.models.length > 1) c.push(`<span class="chip">${d.models.length} models</span>`);
+  $("chips").innerHTML = c.join("");
 }
 
 async function tick() {
   let d;
-  try { d = await (await fetch("/stats", { cache: "no-store" })).json(); }
-  catch (e) { $("stat").textContent = "server unreachable"; $("dot").className = "dot"; return; }
-  const R = d.recent || [];
-  const now = Date.now() / 1e3;
-
-  // live
-  let liveTps = null;
-  if (d.live.busy) {
-    if (prevGen != null && d.live.gen >= prevGen && now > prevT) liveTps = (d.live.gen - prevGen) / (now - prevT);
-    prevGen = d.live.gen; prevT = now;
-    if (liveTps != null) { spark.push(liveTps); if (spark.length > 120) spark.shift(); }
-  } else { prevGen = null; }
-  const lastTps = R.length ? tps(R[R.length - 1]) : null;
-  const shown = d.live.busy ? (liveTps ?? (d.live.elapsed_s > 0 ? d.live.gen / d.live.elapsed_s : 0)) : lastTps;
-  gauge(shown, d.live.busy);
-  sparkline();
-  $("dot").className = "dot" + (d.live.busy ? " on" : "");
-  $("stat").textContent = d.live.busy ? "generating" : (d.live.last_end_s != null ? `idle · ${dur(d.live.last_end_s)} since last request` : "idle");
-  $("sub").textContent = `loaded: ${d.loaded || "none"} · ${d.models.length} model(s) · ${R.length} requests in view`;
-  $("live").innerHTML = d.live.busy
-    ? `<div><div class="big">${fmt(d.live.gen)}</div><div class="k">tokens generated</div></div>
-       <div><div class="big">${dur(d.live.elapsed_s)}</div><div class="k">elapsed</div></div>
-       <div><div class="big">${fmt(d.live.elapsed_s > 0 ? d.live.gen / d.live.elapsed_s : 0, 1)}</div><div class="k">avg tok/s</div></div>
-       <div><div class="big">${fmt(d.live.prompt)}</div><div class="k">prompt tokens</div></div>
-       <div><div class="big" style="font-size:15px">${d.live.model}</div><div class="k">model</div></div>`
-    : `<div><div class="big">idle</div><div class="k">${d.live.last_end_s != null ? "last request " + dur(d.live.last_end_s) + " ago" : "no requests yet"}</div></div>`;
-
-  // KPIs
-  const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
-  const gen = sum(R, r => r.gen_tokens), dec = sum(R, r => r.decode_s);
-  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), newp = prompt - reused, pre = sum(R, r => r.prefill_s);
-  const spec = R.filter(r => r.spec && r.spec.cycles), cyc = sum(spec, r => r.spec.cycles), specGen = sum(spec, r => r.gen_tokens);
-  const loops = R.filter(r => (r.reasoning_repeat || 0) > .3).length, tools = sum(R, r => r.tool_calls);
-  $("kpis").innerHTML =
-    kpi("Decode", fmt(dec > 0 ? gen / dec : null, 1) + " tok/s", `${fmt(gen)} tokens generated`, "--a1") +
-    kpi("Prefill", fmt(pre > 0 ? newp / pre : null, 0) + " tok/s", `${fmt(newp)} new prompt tokens`, "--a5") +
-    kpi("Cache reuse", fmt(prompt > 0 ? 100 * reused / prompt : null, 0) + "%", `${fmt(reused)} of ${fmt(prompt)} tokens`, "--a2") +
-    kpi("Tokens / cycle", fmt(cyc > 0 ? specGen / cyc : null, 1), `${fmt(cyc)} speculative cycles`, "--a3") +
-    kpi("Requests", fmt(R.length), `${fmt(tools)} tool calls`, "--a1") +
-    kpi("Reasoning loops", fmt(loops), loops ? "repeating reasoning detected" : "none in view", loops ? "--a4" : "--a2");
-
-  // time saved vs plain decoding
-  const specDec = sum(spec, r => r.decode_s), plain = specGen / PLAIN_TPS, saved = Math.max(0, plain - specDec);
-  $("savings").innerHTML =
-    `<div><div class="big">${dur(saved)}</div><div class="k">saved on ${fmt(specGen)} speculative tokens</div></div>
-     <div><div class="big">${fmt(specDec > 0 ? plain / specDec : null, 1)}×</div><div class="k">faster than plain near-Q8 decoding</div></div>
-     <div><div class="big">${dur(specDec)}</div><div class="k">actual decode time (plain would take ${dur(plain)})</div></div>
-     <div><div class="k">baseline: ${PLAIN_TPS} tok/s measured for base + residual without speculation on this PC</div></div>`;
-
-  timeline(R);
-
-  // charts (animate when new requests arrive)
-  const animate = R.length !== lastCount; lastCount = R.length;
-  const last = R.slice(-60);
-  bars($("c_tps"), last.map(r => ({ a: tps(r) || 0, tip: `${fmt(tps(r), 1)} tok/s · ${fmt(r.gen_tokens)} tokens` })), "url(#g1)", "", animate);
-  bars($("c_prompt"), last.map(r => ({ a: r.prompt_tokens - r.reused_tokens, b: r.reused_tokens, tip: `${fmt(r.prompt_tokens)} prompt, ${fmt(r.reused_tokens)} reused` })),
-       "url(#g1)", `color-mix(in srgb, ${css('--a1')} 35%, transparent)`, animate);
-  bars($("c_cycle"), last.map(r => ({ a: tpc(r) || 0, tip: `${fmt(tpc(r), 1)} tokens/cycle` })), "url(#g2)", "", animate);
-  bars($("c_shape"), last.map(r => ({ a: r.reasoning_chars || 0, b: r.content_chars || 0, tip: `reasoning ${fmt(r.reasoning_chars)} · content ${fmt(r.content_chars)} chars` })),
-       "url(#g3)", "url(#g2)", animate);
-
-  // table
-  $("rows").innerHTML = R.slice(-40).reverse().map(r => {
-    const loop = (r.reasoning_repeat || 0) > .3 ? `<span class="pill bad">${fmt(100 * r.reasoning_repeat)}%</span>` : fmt(100 * (r.reasoning_repeat || 0)) + "%";
-    const fin = r.tool_calls ? `<span class="pill tool">tool call</span>` : r.finish === "stop" ? `<span class="pill">stop</span>`
-              : r.finish === "length" ? `<span class="pill warn">length</span>` : `<span class="pill bad">${r.finish}</span>`;
-    return `<tr><td>${new Date(r.t * 1000).toLocaleTimeString()}</td><td>${r.model}</td><td>${fmt(r.prompt_tokens)}</td><td>${fmt(r.reused_tokens)}</td>
-      <td>${fmt(pps(r))}</td><td>${fmt(r.gen_tokens)}</td><td>${fmt(tps(r), 1)}</td><td>${fmt(tpc(r), 1)}</td>
-      <td>${fmt(r.reasoning_chars)}</td><td>${fmt(r.content_chars)}</td><td>${fmt(r.tool_calls)}</td><td>${loop}</td><td>${fin}</td></tr>`;
-  }).join("") || `<tr><td colspan="13" class="empty">no requests yet</td></tr>`;
+  try { d = await (await fetch("/stats?since=" + newest, { cache: "no-store" })).json(); }
+  catch (e) { $("stat").textContent = "server unreachable"; $("dot").className = "dot off"; return; }
+  for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; }
+  chips(d);
+  live(d);
+  render();
 }
+let resizeT; addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { lastSig = ""; render(); liveChart(); }, 150); });
 tick();
 setInterval(tick, 1000);
 </script>

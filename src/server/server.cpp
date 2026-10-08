@@ -228,6 +228,7 @@ struct Server {
     std::vector<DraftReq *>          draft_queue;
     bool                             draft_busy  = false;
     int                              draft_batch = 1;
+    json                             config;                 // the dashboard's: --ctx, --kv, --kv-v, --spec
     std::unique_ptr<model::Qwen35>   drafter;                // sequence slots: drafts beside the verifies
     std::vector<Slot>                slots;
     uint64_t                         slot_clock = 0;
@@ -1203,7 +1204,7 @@ loaded:
         {
             std::lock_guard<std::mutex> lk(S.stats_mu);
             S.recent.push_back(line);
-            while (S.recent.size() > 500) S.recent.pop_front();
+            while (S.recent.size() > 3000) S.recent.pop_front();
         }
         if (FILE * f = S.timing_log.empty() ? nullptr : fopen(S.timing_log.c_str(), "ab")) {
             const std::string l = line.dump() + "\n";
@@ -1379,6 +1380,7 @@ int serve(const std::vector<std::string> & args) {
         fprintf(stderr, "error: KV cache types are f16, q8_0 or q4_0\n");
         return 1;
     }
+    S->config = { { "ctx", n_ctx }, { "kv", kv }, { "kv_v", kv_v.empty() ? kv : kv_v }, { "slots", n_slots } };
     o.kv_lock         = kv_lock;
     o.n_slots         = n_slots;
     o.kv_pool_gb      = kv_pool_gb;
@@ -1487,7 +1489,7 @@ int serve(const std::vector<std::string> & args) {
         std::deque<std::string> tail;
         for (std::string l; std::getline(tl, l);) {
             tail.push_back(l);
-            if (tail.size() > 500) tail.pop_front();
+            if (tail.size() > 3000) tail.pop_front();
         }
         std::lock_guard<std::mutex> lk(S->stats_mu);
         for (auto & l : tail) {
@@ -1514,14 +1516,16 @@ int serve(const std::vector<std::string> & args) {
             ;
         resp.set_content(page, "text/html; charset=utf-8");
     });
-    http.Get("/stats", [&](const httplib::Request &, httplib::Response & resp) {
+    // /stats?since=T: only the timing lines after T (the dashboard polls with its newest line's t)
+    http.Get("/stats", [&](const httplib::Request & req, httplib::Response & resp) {
+        const double since = req.has_param("since") ? std::atof(req.get_param_value("since").c_str()) : -1;
         const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         json out;
         {
             std::lock_guard<std::mutex> lk(S->stats_mu);
             out["recent"] = json::array();
-            const size_t from = S->recent.size() > 200 ? S->recent.size() - 200 : 0;
-            for (size_t i = from; i < S->recent.size(); i++) out["recent"].push_back(S->recent[i]);
+            for (auto & r : S->recent)
+                if (r.value("t", 0.0) > since) out["recent"].push_back(r);
             out["live"] = { { "busy", S->live_busy.load() }, { "model", S->live_model }, { "gen", S->live_gen.load() },
                             { "prompt", S->live_prompt.load() }, { "elapsed_s", (now_ms - S->live_start_ms.load()) / 1e3 } };
             if (!S->recent.empty()) out["live"]["last_end_s"] = now_ms / 1e3 - S->recent.back().value("t", 0.0);
@@ -1530,6 +1534,8 @@ int serve(const std::vector<std::string> & args) {
         for (auto & e : S->entries) models.push_back(e.alias);
         out["models"] = models;
         out["loaded"] = S->model ? S->entries[(size_t) S->active].alias : "";
+        out["config"] = S->config;
+        if (S->q35) out["config"]["window"] = S->q35->gpu_kv();
         resp.set_header("Cache-Control", "no-store");
         resp.set_content(out.dump(), "application/json");
     });
