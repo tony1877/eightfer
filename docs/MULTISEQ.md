@@ -47,6 +47,29 @@ about 1.2x the requests one after another, now bounded by drafting (~170 ms per 
 time): batched drafting is next. Row top-k runs in chunks of 32 rows (a full-vocabulary argsort of 126 rows ran out
 of VRAM).
 
+Two lanes, lockstep drafting, two groups (2026-10-08). The joint verify alone gave ~1.2x: drafting (one request at a
+time) became the bound. Now:
+- Draft lane: a slot drafter (`Qwen35::make_slot_drafter`: second model over the same weights, KV and VRAM recurrent
+  state, own CUDA stream and scheduler) runs while the model verifies, so drafts and verifies overlap (a verify is
+  mostly the residual crossing PCIe). The model stays detached (every slot parked) between prompts.
+- Lockstep drafting (`SpecDecoder::draft_lockstep`): the drafter drafts up to `--draft-batch` requests together, each
+  on a working recurrent state of its own: per round, one batched MTP pass per proposal step (`draft_mtp_multi`), one
+  base check of every request's proposals (`draft_eval`, rows padded to 8 per request so the graph keeps its shape and
+  its CUDA graph is reused: 2 requests 40 -> 28 ms) and one commit replay (`draft_commit`). `eightfer drafttest`: greedy
+  drafts identical to drafting alone; 3 requests drafted in 442 ms in lockstep vs 692 ms one after another.
+- Two groups: decoding requests are split into two groups that take turns (one group verified together while the other
+  drafts together). Each lane waits (<= 250 ms) only for its group's requests that can arrive soon: the verify lane
+  for those being drafted, the draft lane for those being verified (waiting for all of them made the lanes wait on
+  each other). A request drafts at most one verify's capacity (64 rows) / its group's size.
+- VRAM (2.0 GB free after the weights at 262K): slots keep page summaries in RAM, no state snapshot, 64-row verify
+  records, a 32-row drafter, draft_batch - 1 extra states, 0.3 GB for the drafter's graphs (262K, 4 slots peaked at
+  15.61 of 16.3 GB; at 15.96 VRAM spilled to system memory and decoding fell to 2.5 tok/s).
+Decode throughput (`tests/concurrent_bench.ps1`, ~13K-token prompts cached, 600 tokens each, q8_0 K / q4_0 V,
+`--draft-batch 2`), all at once vs one after another: 128K context greedy 2 / 3 / 4 requests 1.30-1.48x / 1.42x /
+1.77x; 4 requests sampled (temp 1) 1.66x; 262K context, 4 slots, sampled 1.63x (56 vs 35 tok/s). One request alone with
+slots: each slot has a share of the VRAM window (17K-token prompt: 31 vs 42 tok/s without slots). Not done: CUDA stream
+priority for the drafter (measured neutral, dropped); drafting across both groups at once (VRAM).
+
 ## Phase 2: speculative full-model pass (single stream, exact)
 
 Cycle c: launch the verify of drafts d[1..k] async on stream A (slot 0). Meanwhile on stream B, copy the

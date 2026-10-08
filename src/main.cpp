@@ -122,6 +122,9 @@ int main(int argc, char ** argv) {
     if (args[1] == "parsetest") {
         return e8::cli::parsetest(args);
     }
+    if (args[1] == "drafttest") {
+        return e8::cli::drafttest(args);
+    }
     if (args[1] == "multitest") {
         return e8::cli::multitest(args);
     }

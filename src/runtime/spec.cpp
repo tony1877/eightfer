@@ -300,7 +300,7 @@ bool SpecDecoder::draft_rounds(int k, std::vector<int32_t> & toks, std::vector<D
     //  - else none: the base pass adds one token.
     // The kept tokens are exact samples from the base, so they and the base's distributions are the drafts for the
     // base + residual verify.
-    model::Qwen35 &    dm      = d_ ? *d_ : m_;  // the shadow drafts when there is one
+    model::Qwen35 &    dm      = d_ ? *d_ : dr_ ? *dr_ : m_;  // the shadow / slot drafter drafts when there is one
     const int64_t      nv      = dm.hp().n_vocab;
     const bool         sampled = sp_.temp > 0;
     const int          tk      = sampled ? gpu_topk() : 0;  // > 0: rows come back as their top-k only
@@ -449,12 +449,13 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
 }
 
 bool SpecDecoder::draft_part(int & k_, std::vector<int32_t> & toks, std::vector<Dist> & qd, std::string & err) {
-    const int64_t nv        = m_.hp().n_vocab;
-    const int     base_past = m_.n_past();
+    model::Qwen35 & dm        = dr_ ? *dr_ : m_;
+    const int64_t   nv        = dm.hp().n_vocab;
+    const int       base_past = dm.n_past();
     // draft k tokens with the base alone, from the committed state. Greedy: argmax on the GPU. Sampling: draw from the
     // base's own sampling distribution q and keep q for the acceptance test.
     double t0 = now();
-    m_.save_state();
+    dm.save_state();
     toks.assign(1, last_);
     model::EvalOpts      dopt;
     dopt.residual          = false;
@@ -464,7 +465,7 @@ bool SpecDecoder::draft_part(int & k_, std::vector<int32_t> & toks, std::vector<
     qd.assign(sampled ? (size_t) k_ : 0, Dist{});
     std::vector<float> dl(sampled ? (size_t) nv : 0);
     TokenCounts        cur = counts_;  // penalties at each position include the drafts before it
-    const bool use_mtp = echo_ || (mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0);
+    const bool use_mtp = echo_ || (mtp_n_ > 0 && dm.has_mtp() && dm.hidden_row() >= 0);
     mtp_dis_.clear();
     if (use_mtp) {
         qd.clear();
@@ -472,7 +473,7 @@ bool SpecDecoder::draft_part(int & k_, std::vector<int32_t> & toks, std::vector<
         if (!draft_rounds(k_, toks, qd, cur, err)) return false;
         // long copies: while the drafts end in a copy the base kept entirely, keep copying (one bigger verify
         // instead of several cycles)
-        const int big = std::min({ kBigK, max_k_ < kMaxK ? max_k_ : kBigK, m_.max_long_verify() - 1, m_.n_ctx() - base_past - 1 });
+        const int big = std::min({ kBigK, max_k_ < kMaxK ? max_k_ : kBigK, dm.max_long_verify() - 1, dm.n_ctx() - base_past - 1 });
         if (echo_ && last_echo_full_ && big > k_) {
             if (!draft_rounds(big, toks, qd, cur, err, true)) return false;
             st_.long_cycles += (int) toks.size() - 1 > k_;
@@ -481,7 +482,7 @@ bool SpecDecoder::draft_part(int & k_, std::vector<int32_t> & toks, std::vector<
     }
     for (int i = use_mtp ? k_ : 0; i < k_; i++) {
         int32_t id = -1;
-        if (!m_.eval(&toks.back(), 1, dopt, sampled ? dl.data() : nullptr, &id, err)) return false;
+        if (!dm.eval(&toks.back(), 1, dopt, sampled ? dl.data() : nullptr, &id, err)) return false;
         if (sampled) {
             apply_penalties(dl.data(), sp_, cur);
             dist(dl.data(), qd[(size_t) i]);
@@ -499,7 +500,7 @@ bool SpecDecoder::draft_part(int & k_, std::vector<int32_t> & toks, std::vector<
         toks.push_back(id);
         cur[id]++;
     }
-    m_.restore_state();
+    dm.restore_state();
     const double td = now() - t0;
     st_.t_draft += td;
     draft_ms_ = 0.8 * draft_ms_ + 0.2 * (1e3 * td / k_);
@@ -626,9 +627,268 @@ void SpecDecoder::accept(const std::vector<int32_t> & toks, const std::vector<Di
 
 }
 
+bool SpecDecoder::draft_lockstep(const std::vector<SpecDecoder *> & ds, const std::vector<int> & slots, model::Qwen35 & dr,
+                                 std::string & err) {
+    // draft_rounds for several decoders at once on a slot drafter: each round, every decoder still drafting makes its
+    // proposals (echo copy, or its MTP chain), one base pass checks all of them, each accepts as draft_rounds does, and
+    // one commit keeps every decoder's tokens. The base reads its weights once per round for all of them.
+    const size_t  B  = ds.size();
+    const int64_t nv = dr.hp().n_vocab;
+    const double  t0 = now();
+    if (B == 0 || slots.size() != B) {
+        err = "draft_lockstep: one slot per decoder";
+        return false;
+    }
+    if (!dr.draft_begin(slots, err)) return false;
+    struct M {
+        SpecDecoder *        d = nullptr;
+        int                  k = 0, mt = 0, tk = 0, want_mt = 0;
+        bool                 active = true, echo = false, sampled = false;
+        std::vector<int32_t> toks, in, mid;
+        std::vector<Dist>    qd, pq;
+        TokenCounts          cur, cm;
+        std::vector<float>   ml;
+    };
+    std::vector<M> ms(B);
+    const int      cap = std::max(2, dr.max_record() / (int) B);  // rows per decoder per round
+    auto           fail = [&](const std::string & e) {
+        dr.draft_end();
+        err = e;
+        return false;
+    };
+    for (size_t b = 0; b < B; b++) {
+        M &           m = ms[b];
+        SpecDecoder & d = *ds[b];
+        m.d             = &d;
+        m.k             = std::max(1, std::min(d.adaptive_ ? d.choose_k() : d.k_, d.max_k_));
+        if (dr.member_n_past((int) b) + m.k + 1 > dr.n_ctx()) return fail("context full");
+        d.st_.cycles++;
+        d.st_.k_hist[m.k]++;
+        m.toks.assign(1, d.last_);
+        m.cur     = d.counts_;
+        m.sampled = d.sp_.temp > 0;
+        m.tk      = m.sampled ? d.gpu_topk() : 0;
+        m.ml.resize(m.sampled ? (size_t) (m.tk > 0 ? m.tk : nv) : 0);
+        m.mid.resize(m.tk > 0 ? (size_t) m.tk : 1);
+        d.mtp_dis_.clear();
+    }
+    std::vector<float>   lg;
+    std::vector<int32_t> ids;
+    for (;;) {
+        std::vector<std::vector<int32_t>> ins(B);
+        bool                              any = false;
+        for (size_t b = 0; b < B; b++) {
+            M & m = ms[b];
+            if (!m.active) continue;
+            any             = true;
+            SpecDecoder & d = *m.d;
+            const int need  = m.k - ((int) m.toks.size() - 1);
+            m.in.assign(1, m.toks.back());
+            m.pq.clear();
+            m.echo = false;
+            if (d.echo_ && !d.no_echo_ && need > 1) {  // echo: as draft_rounds
+                std::vector<int32_t> tail;
+                const int            nd = (int) m.toks.size() - 1;
+                for (int i = kEchoN - 1; i >= 0; i--) {
+                    const int back = i - nd;
+                    if (back >= 0) {
+                        if ((int) d.hist_.size() - 1 - back < 0) break;
+                        tail.push_back(d.hist_[d.hist_.size() - 1 - (size_t) back]);
+                    } else {
+                        tail.push_back(m.toks[(size_t) (-back)]);
+                    }
+                }
+                const int j = (int) tail.size() == kEchoN ? d.find_copy(tail.data()) : -1;
+                if (j >= 0) {
+                    const int len = std::min({ need - 1, 63, cap - 1, (int) d.hist_.size() - j });
+                    for (int t = 0; t < len; t++) {
+                        m.in.push_back(d.hist_[(size_t) (j + t)]);
+                        if (m.sampled) m.pq.push_back(Dist{ { 1.0f, d.hist_[(size_t) (j + t)] } });
+                    }
+                    m.echo = len > 0;
+                }
+            }
+            m.want_mt = 0;
+            if (!m.echo && d.mtp_n_ > 0 && dr.has_mtp() && dr.member_has_hidden((int) b)) {
+                m.want_mt = std::min({ d.choose_mtp(), need - 1, cap - 1 });
+                m.cm      = m.sampled ? m.cur : TokenCounts{};
+            }
+        }
+        if (!any) break;
+        // MTP chains: step j of every chain still going, in one MTP pass
+        const double tm0 = now();
+        for (int j = 0;; j++) {
+            std::vector<model::Qwen35::MtpItem> items;
+            std::vector<size_t>                 who;
+            bool                                greedy = true, same_tk = true;
+            int                                 T      = -1;
+            for (size_t b = 0; b < B; b++) {
+                M & m = ms[b];
+                if (!m.active || j >= m.want_mt) continue;
+                items.push_back({ (int) b, m.in.back(), j });
+                who.push_back(b);
+                if (m.sampled) greedy = false;
+                if (!m.sampled || m.tk == 0 || (T >= 0 && m.tk != T)) same_tk = false;
+                else T = m.tk;
+            }
+            if (items.empty()) break;
+            const int     mtk = !greedy && same_tk ? T : 0;
+            const int64_t rw  = greedy ? 1 : mtk > 0 ? mtk : nv;
+            std::vector<float>   ml(greedy ? 0 : items.size() * (size_t) rw);
+            std::vector<int32_t> mi(greedy ? items.size() : mtk > 0 ? items.size() * (size_t) mtk : 0);
+            if (!dr.draft_mtp_multi(items, mtk, greedy, greedy ? nullptr : ml.data(), mi.empty() ? nullptr : mi.data(), err)) {
+                return fail(err);
+            }
+            for (size_t i = 0; i < who.size(); i++) {
+                M &           m  = ms[who[i]];
+                SpecDecoder & d  = *m.d;
+                int32_t       id = -1;
+                if (!m.sampled) {
+                    if (greedy) id = mi[i];
+                    else if (mtk > 0) id = mi[i * (size_t) mtk];
+                    else {
+                        const float * L = ml.data() + i * (size_t) nv;
+                        id              = (int32_t) (std::max_element(L, L + nv) - L);
+                    }
+                } else {
+                    m.pq.emplace_back();
+                    if (mtk > 0) {
+                        d.dist_topk(ml.data() + i * (size_t) mtk, mi.data() + i * (size_t) mtk, mtk, m.pq.back());
+                    } else {
+                        float * L = ml.data() + i * (size_t) nv;
+                        apply_penalties(L, d.sp_, m.cm);
+                        d.dist(L, m.pq.back());
+                    }
+                    id = draw(m.pq.back(), d.rng_);
+                    m.cm[id]++;
+                }
+                m.in.push_back(id);
+            }
+        }
+        const double tmtp = now() - tm0;
+        for (size_t b = 0; b < B; b++) {
+            M & m = ms[b];
+            if (!m.active) continue;
+            SpecDecoder & d = *m.d;
+            m.mt            = (int) m.in.size() - 1;
+            d.st_.t_mtp += tmtp;
+            (m.echo ? d.st_.rounds_echo : m.mt > 0 ? d.st_.rounds_mtp : d.st_.rounds_plain)++;
+            ins[b] = m.in;
+        }
+        // rows: argmax when every active decoder is greedy, top-k when all sample with the same top-k, else full logits
+        bool all_greedy = true, same_tk = true;
+        int  T          = -1;
+        for (const M & m : ms) {
+            if (!m.active) continue;
+            if (m.sampled) all_greedy = false;
+            if (!m.sampled || m.tk == 0 || (T >= 0 && m.tk != T)) same_tk = false;
+            else T = m.tk;
+        }
+        const bool    argmax = all_greedy;
+        const int     topk   = !all_greedy && same_tk ? T : 0;
+        const int64_t rw     = argmax ? 1 : topk > 0 ? topk : nv;
+        int           N      = 0;
+        for (const auto & v : ins) N += (int) v.size();
+        lg.resize(argmax ? 0 : (size_t) N * (size_t) rw);
+        ids.resize(argmax ? (size_t) N : topk > 0 ? (size_t) N * (size_t) topk : 0);
+        const double tb0 = now();
+        if (!dr.draft_eval(ins, topk, argmax, argmax ? nullptr : lg.data(), ids.empty() ? nullptr : ids.data(), err)) return fail(err);
+        const double     tb = now() - tb0;
+        std::vector<int> keep(B, 0);
+        int              base = 0;
+        for (size_t b = 0; b < B; b++) {
+            M & m = ms[b];
+            if (!m.active) continue;
+            SpecDecoder & d    = *m.d;
+            int           a    = 0;
+            int32_t       next = -1;
+            if (!m.sampled) {
+                auto top = [&](int r) -> int32_t {
+                    if (argmax) return ids[(size_t) (base + r)];
+                    if (topk > 0) return ids[(size_t) (base + r) * (size_t) topk];
+                    const float * L = lg.data() + (size_t) (base + r) * (size_t) nv;
+                    return (int32_t) (std::max_element(L, L + nv) - L);
+                };
+                while (a < m.mt && m.in[(size_t) a + 1] == top(a)) m.toks.push_back(m.in[(size_t) ++a]);
+                next = top(a);
+            } else {
+                for (;; a++) {
+                    Dist pb;
+                    if (topk > 0) {
+                        d.dist_topk(lg.data() + (size_t) (base + a) * (size_t) topk, ids.data() + (size_t) (base + a) * (size_t) topk,
+                                    topk, pb);
+                    } else {
+                        float * L = lg.data() + (size_t) (base + a) * (size_t) nv;
+                        apply_penalties(L, d.sp_, m.cur);
+                        d.dist(L, pb);
+                    }
+                    if (a == m.mt) {
+                        next = draw(pb, d.rng_);
+                        m.qd.push_back(std::move(pb));
+                        break;
+                    }
+                    const int32_t dd = m.in[(size_t) a + 1];
+                    const double  qv = at(m.pq[(size_t) a], dd);
+                    if (qv > 0 && std::uniform_real_distribution<double>(0.0, 1.0)(d.rng_) * qv < at(pb, dd)) {
+                        m.toks.push_back(dd);
+                        m.cur[dd]++;
+                        m.qd.push_back(std::move(pb));
+                        continue;
+                    }
+                    next = draw_residual(pb, m.pq[(size_t) a], d.rng_);
+                    m.qd.push_back(std::move(pb));
+                    d.mtp_dis_.push_back((int) m.toks.size());
+                    break;
+                }
+            }
+            m.toks.push_back(next);
+            m.cur[next]++;
+            if (m.echo) {
+                d.st_.echo_proposed += m.mt;
+                d.st_.echo_accepted += a;
+            } else if (m.mt > 0) {
+                d.st_.mtp_proposed += m.mt;
+                d.st_.mtp_accepted += a;
+                for (int j = 1; j <= kMaxMtp; j++) {
+                    d.mseen_[j] *= 0.97;
+                    d.mfail_[j] *= 0.97;
+                }
+                for (int j = 1; j <= std::min(a + 1, m.mt); j++) d.mseen_[j] += 1;
+                if (a < m.mt) d.mfail_[a + 1] += 1;
+                d.check_ms_ = 0.9 * d.check_ms_ + 0.1 * 1e3 * tb;
+            }
+            keep[b] = a + 1;
+            base += (int) ins[b].size();
+        }
+        const double tc0 = now();
+        if (!dr.draft_commit(keep, err)) return fail(err);
+        if (std::getenv("E8_LOCK_PROF")) {
+            int nact = 0;
+            for (const M & m : ms) nact += m.active;
+            fprintf(stderr, "lockstep round: %d drafting, %d rows, mtp %.1f ms, check %.1f ms, commit %.1f ms\n", nact, N,
+                    1e3 * tmtp, 1e3 * tb, 1e3 * (now() - tc0));
+        }
+        for (M & m : ms) {
+            if (m.active && (int) m.toks.size() - 1 >= m.k) m.active = false;
+        }
+    }
+    dr.draft_end();
+    const double td = now() - t0;
+    for (M & m : ms) {
+        SpecDecoder & d = *m.d;
+        d.ctoks_        = std::move(m.toks);
+        d.cqd_          = std::move(m.qd);
+        d.ck_           = (int) d.ctoks_.size() - 1;
+        d.st_.t_draft += td;
+        d.draft_ms_ = 0.8 * d.draft_ms_ + 0.2 * (1e3 * td / std::max(1, d.ck_));
+        d.st_.drafted += d.ck_;
+    }
+    return true;
+}
+
 bool SpecDecoder::draft_cycle(std::string & err) {
     int k = std::max(1, std::min(adaptive_ ? choose_k() : k_, max_k_));
-    if (m_.n_past() + k + 1 > m_.n_ctx()) {
+    if ((dr_ ? *dr_ : m_).n_past() + k + 1 > m_.n_ctx()) {
         err = "context full";
         return false;
     }
@@ -656,46 +916,6 @@ bool SpecDecoder::finish_cycle(int slot, float * lg, const int32_t * vid, double
     accept(ctoks_, cqd_, ck_, lg, vk > 0 ? vid : nullptr, vk, out, acc, next);
     const double t0 = now();
     if (!m_.commit_seq(slot, acc + 1, err)) return false;  // last_ and the accepted drafts
-    st_.t_rollback += now() - t0;
-    last_ = next;
-    return true;
-}
-
-bool SpecDecoder::verify_alone(std::vector<int32_t> & out, std::string & err) {
-    const int64_t        nv = m_.hp().n_vocab;
-    const int            k  = ck_;
-    double               t0 = now();
-    const int            vk = verify_topk();
-    const int64_t        vr = vk > 0 ? vk : nv;
-    std::vector<float>   lg((size_t) ((k + 1) * vr));
-    std::vector<int32_t> vid(vk > 0 ? (size_t) ((k + 1) * vk) : 0);
-    model::EvalOpts      vopt;
-    vopt.record = true;
-    vopt.topk   = vk;
-    if (!m_.eval(ctoks_.data(), k + 1, vopt, lg.data(), vk > 0 ? vid.data() : nullptr, err)) return false;
-    const double tv = 1e3 * (now() - t0);
-    st_.t_verify += tv / 1e3;
-    for (int n = 1; n <= kMaxK + 1; n++) {
-        vt_[n] *= 0.9;
-        vn_[n] *= 0.9;
-    }
-    if (k + 1 <= kMaxK + 1) {
-        vt_[k + 1] += tv;
-        vn_[k + 1] += 1;
-    }
-    int     acc  = 0;
-    int32_t next = -1;
-    accept(ctoks_, cqd_, k, lg.data(), vk > 0 ? vid.data() : nullptr, vk, out, acc, next);
-    t0 = now();
-    if (m_.can_rollback(acc + 1)) {
-        if (!m_.rollback(acc + 1, err)) return false;
-    } else {
-        std::string e2;
-        m_.rollback(k + 1, e2);
-        m_.restore_state();
-        if (!m_.eval(ctoks_.data(), acc + 1, model::EvalOpts{}, nullptr, nullptr, err)) return false;
-        st_.reruns++;
-    }
     st_.t_rollback += now() - t0;
     last_ = next;
     return true;

@@ -95,8 +95,12 @@ public:
     int                          verify_topk() const { return sp_.temp > 0 ? gpu_topk() : (no_penalties() ? 1 : 0); }
     bool finish_cycle(int slot, float * lg, const int32_t * vid, double verify_ms, std::vector<int32_t> & out,
                       std::string & err);
-    // after draft_cycle(), when nothing else used the model since: verify the drafts alone (plain eval and rollback)
-    bool verify_alone(std::vector<int32_t> & out, std::string & err);
+    // batched cycles, drafting several decoders' cycles at once on a slot drafter (Qwen35::draft_begin), decoder i for
+    // slot slots[i]; afterwards each decoder's cycle_tokens() are ready for the verify as after draft_cycle()
+    static bool draft_lockstep(const std::vector<SpecDecoder *> & ds, const std::vector<int> & slots, model::Qwen35 & dr,
+                               std::string & err);
+    // batched cycles: draft on this model (a slot drafter attached to the request's slot) instead of the verifier
+    void set_drafter(model::Qwen35 * d) { dr_ = d; }
     // most drafts per cycle (batched cycles: the sequences share the verify's capacity)
     void set_max_k(int k) { max_k_ = std::max(1, std::min(k, kMaxK)); }
 
@@ -131,6 +135,7 @@ private:
     std::vector<int32_t> ctoks_;  // batched cycle: last_ + the drafts
     std::vector<Dist>    cqd_;
     int                  ck_    = 0;
+    model::Qwen35 *      dr_    = nullptr;  // draft_cycle's model (else m_)
     int                  max_k_ = kMaxK;
     // drafts toks[1..k] (toks[0] = last_) with echo / MTP rounds checked by the base; qd gets the base's
     // distribution at each draft when sampling

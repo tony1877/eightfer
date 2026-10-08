@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -112,6 +113,7 @@ struct LoadOptions {
     bool      kv_lock      = false; // lock the RAM KV's pages in physical memory as they are taken (never paged out)
     int       n_slots      = 1;     // sequence slots (see Qwen35::select_slot); > 1 needs the KV in RAM
     double    kv_pool_gb   = 0;     // most RAM KV memory taken by all slots together; 0 = n_ctx tokens' worth
+    int       draft_batch  = 1;     // slots: requests drafted at once (VRAM for draft_batch - 1 more recurrent states)
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
     int       n_ubatch     = 1024;  // most tokens per eval() call (prefill batches; one pass over the weights each)
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
@@ -196,6 +198,38 @@ public:
     bool     eval_multi(const std::vector<MultiSeq> & seqs, int topk, float * logits, int32_t * ids, std::string & err);
     bool     commit_seq(int slot, int keep, std::string & err);
     int      max_multi() const { return opt_.max_record; }
+
+    // Detached (sequence slots): every slot parked, none in the VRAM state; eval() needs select_slot() first. While
+    // detached, a slot drafter (make_slot_drafter, sharing that VRAM state) drafts for one slot at a time on its own
+    // CUDA stream and thread (attach_draft / detach_draft), alongside this model's joint verifies of other slots.
+    void     detach();
+    bool     attached() const { return slots_.empty() || cur_slot_ >= 0; }
+    bool     make_slot_drafter(Qwen35 & d, int n_work, std::string & err);
+    bool     attach_draft(int slot, std::string & err);
+    void     detach_draft();
+
+    // Drafter, several slots at once (lockstep drafting): draft_begin loads each slot's committed state into a
+    // working state of its own (at most the n_work given to make_slot_drafter); draft_eval runs one base pass over every
+    // member's tokens (an empty list sits out), dry, rows in member order (argmax ids, or top-k values + ids, or logits);
+    // draft_commit keeps a prefix of each member's tokens (its working state and position advance); draft_mtp is one MTP
+    // step of a member's chain. The slots' committed states never change.
+    bool     draft_begin(const std::vector<int> & slots, std::string & err);
+    bool     draft_eval(const std::vector<std::vector<int32_t>> & ins, int topk, bool argmax, float * logits, int32_t * ids,
+                        std::string & err);
+    bool     draft_commit(const std::vector<int> & keep, std::string & err);
+    bool     draft_mtp(int member, int32_t tok, int j, float * logits, int32_t * id, int topk, std::string & err);
+    // one MTP step for several members' chains at once (item: member, the token at its chain's end, step j)
+    struct MtpItem {
+        int     member = 0;
+        int32_t tok    = 0;
+        int     j      = 0;
+    };
+    bool     draft_mtp_multi(const std::vector<MtpItem> & items, int topk, bool argmax, float * logits, int32_t * ids,
+                             std::string & err);
+    void     draft_end();
+    int      member_n_past(int b) const { return members_[(size_t) b].n_past; }
+    bool     member_has_hidden(int b) const { return members_[(size_t) b].hid_row >= 0; }
+    int      n_work() const { return (int) work_conv_.size(); }
 
     // Empties the active slot's KV cache (its RAM pages go back to the OS) and zeroes the recurrent state.
     void reset() override;
@@ -380,6 +414,14 @@ private:
     void *                     slmem_ = nullptr;
     size_t                     slmem_bytes_ = 0;
     ggml_context *             rvctx_ = nullptr;       // the slots' ring views
+    Qwen35 *                   owner_ = nullptr;       // a slot drafter: the model whose slots it drafts for
+    struct Member {                                     // lockstep drafting: one slot's draft
+        int slot = 0, n_past = 0, hid_row = -1, off = 0, n = 0, np = 0;  // np: its rows with padding
+    };
+    std::map<std::pair<int, int>, std::vector<uint8_t>> draft_metas_;   // draft_eval graph scratch per shape
+    std::vector<Member>                     members_;
+    std::vector<std::vector<ggml_tensor *>> work_conv_, work_ssm_;  // per member: working recurrent state
+    ggml_tensor *                           mtp_chains_ = nullptr;   // per member: its MTP chain's last output
     void *                     summem_ = nullptr;      // the slots' page summary copies
     ggml_backend_buffer_t      slbuf2_ = nullptr;      // ... as a CPU buffer (their tensors: KvSlot::sumt)
     size_t                     summem_bytes_ = 0;

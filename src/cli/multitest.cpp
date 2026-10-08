@@ -6,6 +6,9 @@
 
 #include "cli/commands.h"
 #include "model/qwen35.h"
+#include "runtime/spec.h"
+
+#include <memory>
 
 #include <algorithm>
 #include <chrono>
@@ -214,6 +217,130 @@ int multitest(const std::vector<std::string> & args) {
         printf("after commit_seq(%d), slot %zu: next-token KLD vs fresh prefill %.6f, same top-1 %d %s\n", s.keep, b, k, st,
                ok ? "ok" : "FAIL");
     }
+    printf(fails ? "FAILED\n" : "PASSED\n");
+    return fails ? 1 : 0;
+}
+
+}  // namespace e8::cli
+
+namespace e8::cli {
+
+// `eightfer drafttest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--k 24] [--temp 0]`: lockstep
+// drafting (SpecDecoder::draft_lockstep on a slot drafter) against drafting each slot alone. Greedy: the drafts must be
+// the same tokens (the base's own continuation, whatever the proposals). Prints both times.
+int drafttest(const std::vector<std::string> & args) {
+    std::string base, res, tokens;
+    int         n_ctx = 65536, k = 24, nb = 3, mtp = 6;
+    float       temp  = 0.0f;
+    for (size_t i = 2; i < args.size(); i++) {
+        const std::string & a   = args[i];
+        auto                val = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : std::string(); };
+        if (a == "--res") res = val();
+        else if (a == "--tokens") tokens = val();
+        else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
+        else if (a == "--k") k = std::atoi(val().c_str());
+        else if (a == "--temp") temp = (float) std::atof(val().c_str());
+        else if (a == "--batch") nb = std::max(1, std::min(3, std::atoi(val().c_str())));
+        else if (a == "--mtp") mtp = std::atoi(val().c_str());
+        else if (base.empty()) base = a;
+    }
+    if (base.empty() || tokens.empty()) {
+        fprintf(stderr, "usage: eightfer drafttest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--k 24] [--temp 0]\n");
+        return 1;
+    }
+    const std::vector<int32_t> toks = read_token_ids(tokens);
+    model::LoadOptions         o;
+    o.n_gpu_layers  = 999;
+    o.n_ctx         = n_ctx;
+    o.kv_type       = GGML_TYPE_Q8_0;
+    o.residual_path = res;
+    o.max_record    = 128;
+    o.n_slots       = 3;
+    o.draft_batch   = nb;
+    o.mtp           = mtp > 0;
+    model::Qwen35 m;
+    std::string   err;
+    if (!m.load(base, o, err)) {
+        fprintf(stderr, "load failed: %s\n", err.c_str());
+        return 1;
+    }
+    const int64_t      nv     = m.n_vocab();
+    const int          starts[3] = { 0, 20000, 40000 }, lens[3] = { 9000, 12500, 6400 };
+    std::vector<std::vector<float>> last(3, std::vector<float>((size_t) nv));
+    for (int b = 0; b < 3; b++) {
+        if (!m.select_slot(b, err) || (m.reset(), false) || !m.prefill(toks.data() + starts[b], lens[b], last[b].data(), err)) {
+            fprintf(stderr, "prefill %d: %s\n", b, err.c_str());
+            return 1;
+        }
+    }
+    m.detach();
+    model::Qwen35 d;
+    if (!m.make_slot_drafter(d, nb, err)) {
+        fprintf(stderr, "drafter: %s\n", err.c_str());
+        return 1;
+    }
+    runtime::SamplerParams sp;
+    sp.temp  = temp;
+    sp.top_k = 20;
+    sp.top_p = 0.95f;
+    sp.seed  = 7;
+    auto make = [&](int b, std::vector<int32_t> & out) {
+        auto dec = std::make_unique<runtime::SpecDecoder>(m, k, sp, false);
+        dec->set_mtp(mtp);
+        dec->set_echo(true);
+        dec->set_context(std::vector<int32_t>(toks.begin() + starts[b], toks.begin() + starts[b] + lens[b]));
+        dec->begin(last[b].data(), out);
+        dec->set_drafter(&d);
+        return dec;
+    };
+    std::vector<std::vector<int32_t>> outs(3);
+    std::vector<std::unique_ptr<runtime::SpecDecoder>> one, all;
+    for (int b = 0; b < 3; b++) one.push_back(make(b, outs[b]));
+    for (int b = 0; b < 3; b++) all.push_back(make(b, outs[b]));
+    // alone, twice (the first warms up graphs), then all three in lockstep, twice
+    double t_one = 0, t_all = 0;
+    std::vector<std::vector<int32_t>> d1(3), d3(3);
+    for (int rep = 0; rep < 2; rep++) {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int b = 0; b < 3; b++) {
+            if (!d.attach_draft(b, err) || !one[(size_t) b]->draft_cycle(err)) {
+                fprintf(stderr, "alone %d: %s\n", b, err.c_str());
+                return 1;
+            }
+            d.detach_draft();
+            d1[(size_t) b] = one[(size_t) b]->cycle_tokens();
+        }
+        t_one = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    for (int rep = 0; rep < 2; rep++) {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int g = 0; g < 3; g += nb) {  // groups of nb
+            std::vector<runtime::SpecDecoder *> ds;
+            std::vector<int>                    sl;
+            for (int b = g; b < std::min(3, g + nb); b++) {
+                ds.push_back(all[(size_t) b].get());
+                sl.push_back(b);
+            }
+            if (!runtime::SpecDecoder::draft_lockstep(ds, sl, d, err)) {
+                fprintf(stderr, "lockstep: %s\n", err.c_str());
+                return 1;
+            }
+        }
+        t_all = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        for (int b = 0; b < 3; b++) d3[(size_t) b] = all[(size_t) b]->cycle_tokens();
+    }
+    int fails = 0;
+    for (int b = 0; b < 3; b++) {
+        size_t same = 0;
+        while (same < d1[(size_t) b].size() && same < d3[(size_t) b].size() && d1[(size_t) b][same] == d3[(size_t) b][same]) same++;
+        // (alone may extend a fully kept copy past k: compare the common part)
+        const bool ok = temp > 0 || same == std::min(d1[(size_t) b].size(), d3[(size_t) b].size());
+        fails += !ok;
+        printf("slot %d: %zu drafts alone, %zu in lockstep, first %zu the same %s\n", b, d1[(size_t) b].size() - 1,
+               d3[(size_t) b].size() - 1, same, ok ? "ok" : "DIFFERENT");
+    }
+    printf("draft time: the three alone %.0f ms, in lockstep (groups of %d) %.0f ms; MTP %s\n", t_one, nb, t_all,
+           m.has_mtp() ? "on" : "off");
     printf(fails ? "FAILED\n" : "PASSED\n");
     return fails ? 1 : 0;
 }

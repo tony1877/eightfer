@@ -18,9 +18,13 @@
 //
 // Sequence slots (--slots N, 27B with the KV in RAM): the model keeps N sequences, each with its own prompt-reuse state,
 // so N conversations (an agent and its subagents) run side by side without evicting each other's prompts. A slot
-// serves one request at a time; with more requests than slots the others wait for one. Decoding requests run in
-// rounds: each drafts on its slot, then one joint verify (Qwen35::eval_multi) checks every request's drafts in one
-// pass over the weights, and each request's acceptance and commit follow (run_round). A request goes to the slot whose
+// serves one request at a time; with more requests than slots the others wait for one. Decoding requests go through
+// two lanes that run at the same time: the draft lane (a slot drafter, Qwen35::make_slot_drafter, on its own CUDA
+// stream: the requests waiting to draft, up to --draft-batch, drafted together in lockstep) and the verify lane (the model: one joint verify, Qwen35::eval_multi, of
+// every request whose drafts are ready, then their acceptance and commits, run_round). A verify is mostly the
+// residual crossing PCIe, so the GPU drafts for some requests while others' drafts are verified. Decoding requests
+// form two groups that take turns: while one group's drafts are verified together, the other group drafts together
+// (each lane waits, briefly, for its group to be complete). A request goes to the slot whose
 // state or checkpoint its prompt extends the furthest, else to an empty slot, else to the least recently used one.
 // Slots share one RAM KV budget (--kv-pool-gb, default the --ctx tokens' worth); a slot that needs more memory empties
 // the least recently used idle slots.
@@ -59,6 +63,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -201,13 +206,29 @@ struct Server {
     // decode rounds (sequence slots): requests in their decode loop, and the drafted cycles waiting for the verify
     struct Job {
         runtime::SpecDecoder * dec = nullptr;
-        int                    slot = 0;
+        int                    slot = 0, group = 0;
+        std::chrono::steady_clock::time_point since;
         std::vector<int32_t> * out = nullptr;
         bool                   done = false, ok = true;
         std::string            err;
     };
     int                              n_dec = 0;
+    int                              group_n[2] = { 0, 0 };  // decoding requests per group
+    int                              in_draft[2] = { 0, 0 };  // per group: requests being drafted
     std::vector<Job *>               pending;
+    bool                             verifying = false;      // a request runs the verify lane
+    // the draft lane: held by one request at a time (it drafts the queued requests together, or runs a prompt)
+    struct DraftReq {
+        runtime::SpecDecoder * dec = nullptr;
+        int                    slot = 0, group = 0;
+        std::chrono::steady_clock::time_point since;
+        bool                   done = false, ok = true;
+        std::string            err;
+    };
+    std::vector<DraftReq *>          draft_queue;
+    bool                             draft_busy  = false;
+    int                              draft_batch = 1;
+    std::unique_ptr<model::Qwen35>   drafter;                // sequence slots: drafts beside the verifies
     std::vector<Slot>                slots;
     uint64_t                         slot_clock = 0;
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
@@ -330,9 +351,30 @@ private:
     bool     excl_ = false, held_ = false;
 };
 
+// holds the draft lane (the slot drafter and the VRAM recurrent state it shares with the model) for a prompt or a
+// reasoning close. Holding the model and then the draft lane is fine; the other way round is not.
+class DraftLane {
+public:
+    explicit DraftLane(Server & S) : S_(S) {
+        std::unique_lock<std::mutex> lk(S_.mu);
+        S_.cv.wait(lk, [&] { return !S_.draft_busy; });
+        S_.draft_busy = true;
+    }
+    ~DraftLane() {
+        {
+            std::lock_guard<std::mutex> lk(S_.mu);
+            S_.draft_busy = false;
+        }
+        S_.cv.notify_all();
+    }
+private:
+    Server & S_;
+};
+
 // frees the model (the next request of ours loads it again); the caller holds a Turn
 void unload_model(Server & S) {
     if (!S.model) return;
+    S.drafter.reset();  // it shares the model's tensors
     S.q35 = nullptr;
     S.model.reset();
     S.active = -1;
@@ -357,19 +399,38 @@ struct Result {
 // Runs one request: chat (body has "messages") or completion ("prompt"). `on_delta` (streaming) receives OpenAI delta
 // objects as the output grows (chat: {content, reasoning_content, tool_calls}; completion: {text}) and returns false
 // when the client is gone, which stops generation (as does `cancelled`).
-// One decode round, run by the request that completes it (holding the model): the pending requests' drafts verified
-// together, then each request's acceptance and commit. `fresh`: the caller's own job, drafted just now; when it is the
-// only one, it is verified alone (plain path, no joint overhead).
-void run_round(Server & S, Server::Job * fresh) {
+// E8_LANE_LOG=1: a line per draft and per verify (ms since start, slot(s), duration), to see how the lanes overlap
+double lane_ms() {
+    static const auto t0 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+const bool kLaneLog = std::getenv("E8_LANE_LOG") != nullptr;
+// how long a lane waits for the rest of a group (E8_GROUP_WAIT_MS)
+const int kGroupWaitMs = std::getenv("E8_GROUP_WAIT_MS") ? std::atoi(std::getenv("E8_GROUP_WAIT_MS")) : 250;
+
+// One verify (the verify lane, holding the model): the pending drafts of `group` (all groups when -1) verified together,
+// then each request's acceptance and commit.
+void run_round(Server & S, int group = -1) {
     std::vector<Server::Job *> jobs;
-    {
+    {  // the pending jobs (of `group`, unless -1), in order, as many as one verify holds (the rest wait for the next)
         std::lock_guard<std::mutex> lk(S.mu);
-        jobs.swap(S.pending);
+        const int cap = S.q35 ? S.q35->max_multi() : 1 << 30;
+        int       n   = 0;
+        for (size_t i = 0; i < S.pending.size();) {
+            Server::Job * j = S.pending[i];
+            const int     t = (int) j->dec->cycle_tokens().size();
+            if (group >= 0 && j->group != group) {
+                i++;
+                continue;
+            }
+            if (!jobs.empty() && n + t > cap) break;
+            n += t;
+            jobs.push_back(j);
+            S.pending.erase(S.pending.begin() + (long) i);
+        }
     }
     if (jobs.empty()) return;
-    if (jobs.size() == 1 && jobs[0] == fresh) {
-        fresh->ok = fresh->dec->verify_alone(*fresh->out, fresh->err);
-    } else {
+    {
         int vk = jobs[0]->dec->verify_topk();  // one row width for all (full logits when they differ)
         for (auto * j : jobs) {
             if (j->dec->verify_topk() != vk) vk = 0;
@@ -386,8 +447,14 @@ void run_round(Server & S, Server::Job * fresh) {
         std::vector<int32_t> ids(vk > 0 ? (size_t) N * (size_t) vk : 0);
         std::string          e;
         const auto           t0 = std::chrono::steady_clock::now();
+        const double t_start = lane_ms();
         const bool ok = S.q35->eval_multi(seqs, vk, lg.data(), vk > 0 ? ids.data() : nullptr, e);
         const double tv = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (kLaneLog) {
+            std::string sl;
+            for (auto * j : jobs) sl += std::to_string(j->slot) + ":" + std::to_string(j->dec->cycle_tokens().size()) + " ";
+            fprintf(stderr, "lane %9.0f verify [%s] %.0f ms\n", t_start, sl.c_str(), tv);
+        }
         int off = 0;
         for (auto * j : jobs) {
             const int n = (int) j->dec->cycle_tokens().size();
@@ -644,6 +711,8 @@ loaded:
             if (!S.slots[(size_t) s].busy && (slot < 0 || S.slots[(size_t) s].used < S.slots[(size_t) slot].used)) slot = s;
         }
     }
+    std::optional<DraftLane> dlane;
+    if (S.drafter) dlane.emplace(S);
     if (S.q35 && !S.q35->select_slot(slot, err)) return false;
     sync_slot(slot);
     // hold the slot (and keep the model loaded) until this request ends
@@ -839,31 +908,46 @@ loaded:
         };
         int  next_loop_check = 512;
         auto dec_p = make_dec();
-        // decode rounds with the other requests (sequence slots); leaving runs a round that only waited for this one
-        const bool rounds = S.q35->n_slots() > 1;
+        // the two lanes (sequence slots with a drafter): the model is detached, this request holds neither the model
+        // nor the draft lane except while it drafts, verifies, or (rarely) closes the reasoning
+        const bool rounds = S.drafter != nullptr;
         struct Member {
             Server & S;
             bool     on;
+            int      group = 0;
             Member(Server & s, bool r) : S(s), on(r) {
                 if (!on) return;
                 std::lock_guard<std::mutex> lk(S.mu);
                 S.n_dec++;
+                group = S.group_n[0] <= S.group_n[1] ? 0 : 1;
+                S.group_n[group]++;
             }
             ~Member() {
                 if (!on) return;
-                bool lead;
                 {
                     std::lock_guard<std::mutex> lk(S.mu);
                     S.n_dec--;
-                    lead = !S.pending.empty() && (int) S.pending.size() >= S.n_dec;
+                    S.group_n[group]--;
                 }
-                if (lead) run_round(S, nullptr);  // (the caller still holds the model)
+                S.cv.notify_all();  // a lane may be waiting for this request's group
             }
         } member(S, rounds);
+        struct Reacquire {  // run_request returns holding the model
+            Turn & t;
+            bool   on;
+            ~Reacquire() {
+                if (on) t.acquire();
+            }
+        } reacquire{ turn, rounds };
         dec_p->set_context(prompt);
         dec_p->begin(last.data(), out);
         consume();
-        while (!done && S.q35->n_past() + S.spec_k + 2 < m.n_ctx()) {
+        if (rounds) {
+            S.q35->detach();
+            dlane.reset();
+            turn.release();
+        }
+        while (!done && S.q35->slot_n_past(slot) + S.spec_k + 2 < m.n_ctx()) {
             if (think_open && text.find("</think>") != std::string::npos) think_open = false;
             bool cut = false;
             const int budget = req_think_budget > 0 ? req_think_budget : S.think_budget;
@@ -884,7 +968,17 @@ loaded:
                         false, true);
                     std::vector<int32_t>       ev(1, out.back());
                     ev.insert(ev.end(), f.begin(), f.end());
-                    if (!S.q35->eval_last(ev.data(), (int) ev.size(), last.data(), err)) return false;
+                    if (rounds) {  // the model for one eval: both lanes
+                        turn.acquire();
+                        DraftLane dl(S);
+                        const bool ok = S.q35->select_slot(slot, err) &&
+                                        S.q35->eval_last(ev.data(), (int) ev.size(), last.data(), err);
+                        S.q35->detach();
+                        turn.release();
+                        if (!ok) return false;
+                    } else if (!S.q35->eval_last(ev.data(), (int) ev.size(), last.data(), err)) {
+                        return false;
+                    }
                     out.insert(out.end(), f.begin(), f.end());
                     consume();
                     fprintf(stderr, "reasoning closed (%s) after %d tokens\n", R.n_gen >= budget ? "budget" : "repetition loop", R.n_gen);
@@ -898,32 +992,121 @@ loaded:
                 }
             }
             if (rounds) {
-                if (!yield()) return false;  // requests waiting for the model (prompts, new ones) get their turn
-                int nd;
+                int ng;  // a verify holds one group's drafts
                 {
                     std::lock_guard<std::mutex> lk(S.mu);
-                    nd = std::max(1, S.n_dec);
+                    ng = std::max(1, S.group_n[member.group]);
                 }
-                dec_p->set_max_k(S.q35->max_multi() / nd - 1);
-                if (!dec_p->draft_cycle(err)) return false;
+                dec_p->set_max_k(S.q35->max_multi() / ng - 1);
+                {  // draft lane: queue up; whoever takes the lane drafts every queued request together
+                    const double     tw = lane_ms();
+                    Server::DraftReq rq;
+                    rq.dec   = dec_p.get();
+                    rq.slot  = slot;
+                    rq.group = member.group;
+                    rq.since = std::chrono::steady_clock::now();
+                    std::unique_lock<std::mutex> lk(S.mu);
+                    S.draft_queue.push_back(&rq);
+                    S.cv.notify_all();
+                    while (!rq.done) {
+                        if (S.draft_busy) {
+                            S.cv.wait(lk);
+                            continue;
+                        }
+                        // the queue head's group, drafted together: wait (a while) for its requests that are being
+                        // verified or about to queue, not for those waiting for a verify (they need this lane first)
+                        const int  g   = S.draft_queue.front()->group;
+                        const auto due = S.draft_queue.front()->since + std::chrono::milliseconds(kGroupWaitMs);
+                        int        nq = 0, np = 0;
+                        for (auto * r : S.draft_queue) nq += r->group == g;
+                        for (auto * j : S.pending) np += j->group == g;
+                        const int coming = S.group_n[g] - nq - np - S.in_draft[g];  // being verified, or between lanes
+                        if (coming > 0 && nq < S.draft_batch && std::chrono::steady_clock::now() < due) {
+                            S.cv.wait_until(lk, due);
+                            continue;
+                        }
+                        S.draft_busy = true;
+                        std::vector<Server::DraftReq *> grp;
+                        for (size_t i = 0; i < S.draft_queue.size() && (int) grp.size() < std::max(1, S.draft_batch);) {
+                            if (S.draft_queue[i]->group != g) {
+                                i++;
+                                continue;
+                            }
+                            grp.push_back(S.draft_queue[i]);
+                            S.draft_queue.erase(S.draft_queue.begin() + (long) i);
+                        }
+                        S.in_draft[g] += (int) grp.size();
+                        lk.unlock();
+                        std::vector<runtime::SpecDecoder *> decs;
+                        std::vector<int>                    sls;
+                        for (auto * r : grp) {
+                            decs.push_back(r->dec);
+                            sls.push_back(r->slot);
+                        }
+                        const double td = lane_ms();
+                        std::string  e;
+                        const bool   ok = runtime::SpecDecoder::draft_lockstep(decs, sls, *S.drafter, e);
+                        if (kLaneLog) {
+                            std::string sl;
+                            for (auto * r : grp) sl += std::to_string(r->slot) + ":" + std::to_string(r->dec->cycle_tokens().size()) + " ";
+                            fprintf(stderr, "lane %9.0f draft  [%s] %.0f ms (waited %.0f)\n", td, sl.c_str(), lane_ms() - td, td - tw);
+                        }
+                        lk.lock();
+                        for (auto * r : grp) {
+                            r->ok   = ok;
+                            r->err  = e;
+                            r->done = true;
+                        }
+                        S.in_draft[g] -= (int) grp.size();
+                        S.draft_busy = false;
+                        S.cv.notify_all();
+                    }
+                    if (!rq.ok) {
+                        err = rq.err;
+                        return false;
+                    }
+                }
+                // verify lane: verify everything pending (these drafts and others') unless a verify is running
                 Server::Job job;
                 job.dec  = dec_p.get();
                 job.slot = slot;
                 job.out  = &out;
-                bool lead;
+                job.group = member.group;
+                job.since = std::chrono::steady_clock::now();
                 {
-                    std::lock_guard<std::mutex> lk(S.mu);
+                    // the pending head's group, verified together once all its drafts are here (a verify of one
+                    // request's drafts costs nearly as much as of three: the residual crosses PCIe once)
+                    std::unique_lock<std::mutex> lk(S.mu);
                     S.pending.push_back(&job);
-                    lead = (int) S.pending.size() >= S.n_dec;
+                    S.cv.notify_all();
+                    while (!job.done) {
+                        if (S.verifying || S.pending.empty()) {
+                            S.cv.wait(lk);
+                            continue;
+                        }
+                        // the head's group: wait (a while) for its requests being drafted right now, not for those
+                        // queued for the draft lane (they may be waiting for this verify's requests)
+                        const int  g   = S.pending.front()->group;
+                        const auto due = S.pending.front()->since + std::chrono::milliseconds(kGroupWaitMs);
+                        if (S.in_draft[g] > 0 && std::chrono::steady_clock::now() < due) {
+                            S.cv.wait_until(lk, due);
+                            continue;
+                        }
+                        S.verifying = true;
+                        lk.unlock();
+                        turn.acquire();
+                        run_round(S, g);
+                        turn.release();
+                        lk.lock();
+                        S.verifying = false;
+                        S.cv.notify_all();
+                    }
                 }
-                if (lead) run_round(S, &job);
-                else turn.wait_for([&] { return job.done; });
                 if (!job.ok) {
                     err = job.err;
                     return false;
                 }
                 S.last_used = std::chrono::steady_clock::now();
-                if (!S.q35->select_slot(slot, err)) return false;
             } else if (!yield() || !dec_p->step(out, err)) {
                 return false;
             }
@@ -1057,7 +1240,7 @@ int serve(const std::vector<std::string> & args) {
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
     bool kv_lock = false;
-    int n_slots = 1;
+    int n_slots = 1, draft_batch = 0;
     double kv_pool_gb = 0;
     std::string router_url;
     std::vector<Entry> extra;
@@ -1092,6 +1275,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--kv-lock") kv_lock = true;
         else if (a == "--slots") n_slots = std::max(1, std::atoi(val().c_str()));
         else if (a == "--kv-pool-gb") kv_pool_gb = std::atof(val().c_str());
+        else if (a == "--draft-batch") draft_batch = std::max(1, std::atoi(val().c_str()));
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
@@ -1123,6 +1307,7 @@ int serve(const std::vector<std::string> & args) {
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0|q4_0] [--spec auto|K]\n"
                         "         [--kv-v TYPE (V cache type, default: --kv)] [--kv-lock (keep the RAM KV in physical memory)]\n"
                         "         [--slots N (sequences kept, one per conversation)] [--kv-pool-gb G (RAM KV of all slots)]\n"
+                        "         [--draft-batch N (slots: requests drafted together, default min(slots, 2))]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
@@ -1181,9 +1366,11 @@ int serve(const std::vector<std::string> & args) {
     o.kv_lock         = kv_lock;
     o.n_slots         = n_slots;
     o.kv_pool_gb      = kv_pool_gb;
+    o.draft_batch     = n_slots > 1 ? (draft_batch > 0 ? std::min(draft_batch, n_slots) : std::min(n_slots, 2)) : 1;
+    S->draft_batch    = o.draft_batch;
     o.residual_path   = res;
     o.expert_cache_gb = cache_gb;
-    o.max_record      = n_slots > 1 ? std::max(128, S->spec_k + 1) : S->spec_k + 1;  // slots: a round's sequences
+    o.max_record      = n_slots > 1 ? 64 : S->spec_k + 1;  // slots: a joint verify's sequences (VRAM: see qwen35.cpp)
     o.mtp             = S->mtp > 0;
     S->router_url = router_url;
     Server * sp = S.get();
@@ -1241,6 +1428,15 @@ int serve(const std::vector<std::string> & args) {
         }
         sp->q35 = dynamic_cast<model::Qwen35 *>(sp->model.get());
         sp->slots.clear();
+        sp->drafter.reset();
+        if (sp->q35 && sp->q35->n_slots() > 1 && sp->q35->has_residual()) {
+            auto d = std::make_unique<model::Qwen35>();
+            if (!sp->q35->make_slot_drafter(*d, std::max(1, o.draft_batch), e)) {
+                e = "slot drafter: " + e;
+                return false;
+            }
+            sp->drafter = std::move(d);
+        }
         sp->active = idx;
         fprintf(stderr, "%s loaded in %.1f s\n", sp->entries[(size_t) idx].alias.c_str(),
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -1259,6 +1455,7 @@ int serve(const std::vector<std::string> & args) {
                 if (!sp->model || std::chrono::steady_clock::now() - sp->last_used < std::chrono::seconds(idle_unload)) continue;
                 Turn turn(*sp, true);
                 if (sp->model && std::chrono::steady_clock::now() - sp->last_used >= std::chrono::seconds(idle_unload)) {
+                    sp->drafter.reset();
                     sp->q35 = nullptr;
                     sp->model.reset();
                     sp->slots.clear();
