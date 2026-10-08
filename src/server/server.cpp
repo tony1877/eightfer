@@ -414,6 +414,11 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     if (body.contains("chat_template_kwargs") && body["chat_template_kwargs"].is_object()) {
         for (auto & [k, v] : body["chat_template_kwargs"].items()) in.chat_template_kwargs[k] = v.dump();
     }
+    // The Qwen 3.x template adds a reasoning-effort sentence to the system prompt while thinking is on, except
+    // for "medium" (its default is "xhigh"). Thinking toggles between agent steps, so any sentence there would
+    // change the prompt 3 tokens in and void the prefix cache: always "medium" (no sentence); the reasoning budget
+    // enforces the requested effort instead.
+    in.chat_template_kwargs["reasoning_effort"] = "\"medium\"";
     auto et = in.chat_template_kwargs.find("enable_thinking");
     if (et != in.chat_template_kwargs.end()) in.enable_thinking = et->second == "true";
     if (after_tool && !tool_trouble && !S.think_after_tool) {
