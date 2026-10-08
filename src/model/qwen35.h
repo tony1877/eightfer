@@ -24,6 +24,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -101,8 +102,9 @@ struct LoadOptions {
     int       n_ctx        = 4096;  // KV capacity, rounded up to a multiple of 256
     ggml_type kv_type      = GGML_TYPE_F16;
     ggml_type kv_type_v    = GGML_TYPE_COUNT;  // V cache type; GGML_TYPE_COUNT = kv_type
-    bool      kv_lock      = false; // lock the RAM KV in physical memory up front (never paged out); else its pages
-                                    // are taken from the OS as positions are written
+    bool      kv_lock      = false; // lock the RAM KV's pages in physical memory as they are taken (never paged out)
+    int       n_slots      = 1;     // sequence slots (see Qwen35::select_slot); > 1 needs the KV in RAM
+    double    kv_pool_gb   = 0;     // most RAM KV memory taken by all slots together; 0 = n_ctx tokens' worth
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
     int       n_ubatch     = 1024;  // most tokens per eval() call (prefill batches; one pass over the weights each)
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
@@ -164,7 +166,20 @@ public:
     bool has_residual() const { return !res_.empty(); }
     uint64_t residual_bytes() const { return res_bytes_; }
 
-    // Empties the KV cache and zeroes the recurrent state.
+    // Sequence slots: each slot is a sequence of its own (RAM KV region, recurrent state, prompt-reuse checkpoint, KV
+    // bookkeeping), so several conversations keep their state. One is active at a time; select_slot() parks the
+    // active one (its VRAM ring flushed to RAM, its recurrent state copied to RAM) and resumes slot s (state back,
+    // the ring refilled from RAM, page summaries rebuilt). A slot's RAM KV takes memory only as positions are written;
+    // when all slots together would pass the pool budget, the least recently used idle slots are emptied first
+    // (slot_epoch() changes when that happens).
+    int      n_slots() const { return std::max(1, (int) slots_.size()); }
+    int      active_slot() const { return cur_slot_; }
+    bool     select_slot(int s, std::string & err);
+    int      slot_n_past(int s) const { return s == cur_slot_ ? n_past_ : slots_[(size_t) s].n_past; }
+    uint64_t slot_epoch(int s) const { return slots_.empty() ? 0 : slots_[(size_t) s].epoch; }
+    uint64_t kv_committed_bytes() const { return committed_bytes_; }
+
+    // Empties the active slot's KV cache (its RAM pages go back to the OS) and zeroes the recurrent state.
     void reset() override;
     bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) override {
         EvalOpts o;
@@ -300,7 +315,30 @@ private:
     ggml_backend_buffer_t      hbuf_ = nullptr;
     void *                     hmem_ = nullptr;  // hbuf_'s memory when it comes straight from the OS (not pinned)
     size_t                     hmem_bytes_ = 0;
-    bool                       hmem_locked_ = false;
+    // sequence slots (see select_slot); hk_/hv_/conv_ck_/ssm_ck_ are the active slot's
+    struct KvSlot {
+        std::vector<ggml_tensor *> hk, hv;              // RAM KV per (attention layer, KV head)
+        std::vector<ggml_tensor *> conv, ssm;           // parked recurrent state (RAM)
+        std::vector<ggml_tensor *> conv_ck, ssm_ck;     // prompt-reuse checkpoint (RAM)
+        uint8_t *                  base = nullptr;      // this slot's part of hmem_
+        size_t                     bytes = 0;
+        int                        committed = 0;       // positions [0, committed) have memory in every head
+        int                        n_past = 0, host_valid = 0, exact_upto = 0, ck_n_past = 0;
+        uint64_t                   epoch = 0, used = 0;
+    };
+    std::vector<KvSlot>        slots_;
+    int                        cur_slot_ = 0;
+    uint64_t                   use_clock_ = 0;
+    size_t                     kv_row_bytes_ = 0;      // RAM KV bytes per position (all heads, K and V)
+    size_t                     pool_bytes_ = 0, committed_bytes_ = 0, locked_bytes_ = 0;
+    ggml_context *             slctx_ = nullptr;       // parked states and checkpoints of slots 1..
+    ggml_backend_buffer_t      slbuf_ = nullptr;
+    void *                     slmem_ = nullptr;
+    size_t                     slmem_bytes_ = 0;
+    bool ensure_committed(int upto, std::string & err);  // the active slot's RAM KV has memory for [0, upto)
+    // gives its RAM KV back to the OS and empties it; `forget` (an eviction, not the owner's reset) bumps its epoch
+    void drop_slot(KvSlot & s, bool forget = true);
+    bool fill_ring(int from, int to, std::string & err); // copies positions [from, to) from the RAM KV into the ring
     int                        host_valid_ = 0, exact_upto_ = 0;
     int                        attn_mode_  = 0;  // while building: 0 = ring/plain KV, 1 = RAM KV
     int                        host_gpu_min_ = 1;  // RAM-KV attention on the GPU from this batch size (CPU below)

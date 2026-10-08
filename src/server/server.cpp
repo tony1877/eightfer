@@ -1,7 +1,7 @@
 // `eightfer serve`: OpenAI-compatible HTTP server (DESIGN.md M6).
 //
 //   eightfer serve <model.gguf> [--res r.gguf] [--host 127.0.0.1] [--port 8090] [--alias NAME]
-//                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v TYPE] [--kv-lock] [--spec auto|K]
+//                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v TYPE] [--kv-lock] [--slots N] [--kv-pool-gb G] [--spec auto|K]
 //                  [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N]
 //
 // Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions (stream or not),
@@ -11,8 +11,14 @@
 // tool_calls) come from llama.cpp's common library, so requests and responses look like llama-server's. Sampling:
 // temperature, top_p, top_k, min_p, seed, presence_penalty, frequency_penalty, stop, max_tokens.
 //
-// Concurrency: requests are accepted in parallel and run one at a time, first come first served (the model holds one
-// sequence). A request whose client disconnects stops at the next decode step, so it does not hold up the queue.
+// Concurrency: requests are accepted in parallel and run one at a time, first come first served. A request whose client
+// disconnects stops at the next decode step, so it does not hold up the queue.
+//
+// Sequence slots (--slots N, 27B with the KV in RAM): the model keeps N sequences, each with its own prompt-reuse state,
+// so N conversations (an agent and its subagents) do not evict each other's prompts. A request goes to the slot whose
+// state or checkpoint its prompt extends the furthest, else to an empty slot, else to the least recently used one.
+// Slots share one RAM KV budget (--kv-pool-gb, default the --ctx tokens' worth); a slot that needs more memory empties
+// the least recently used idle slots.
 //
 // Sharing the GPU (--idle-unload SEC, --unload-router URL): the model loads on the first request and is freed after SEC
 // idle seconds; before loading, every model loaded by a llama-server router at URL is unloaded (same API key), so the
@@ -20,7 +26,7 @@
 // request naming one of them frees this model and is forwarded to the router (which loads it), so a client that only
 // talks to this server can switch between all models. Requests of both kinds take turns.
 //
-// Prompt reuse: the model state after a request covers prompt + output; a checkpoint is kept at the end of each
+// Prompt reuse (per slot): the model state after a request covers prompt + output; a checkpoint is kept at the end of each
 // prompt. A new prompt that extends either one only evaluates the new tokens (recurrent state cannot be cut back to an
 // arbitrary prefix, so anything else starts over).
 
@@ -180,7 +186,13 @@ struct Server {
     std::mutex                       mu;
     std::condition_variable          cv;
     uint64_t                         next_ticket = 0, serving = 0;
-    std::vector<int32_t>             state_tokens, ck_tokens;  // tokens in the model state / at the checkpoint
+    // per sequence slot: tokens in its model state / at its checkpoint; epoch = the model's slot_epoch() they belong to
+    struct Slot {
+        std::vector<int32_t> state_tokens, ck_tokens;
+        uint64_t             epoch = 0, used = 0;
+    };
+    std::vector<Slot>                slots;
+    uint64_t                         slot_clock = 0;
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
     std::string                      router_url;  // llama-server router to unload / forward to (empty = none)
     std::string                      timing_log;  // JSON lines of per-request timings (no content), when set
@@ -283,8 +295,7 @@ void unload_model(Server & S) {
     S.q35 = nullptr;
     S.model.reset();
     S.active = -1;
-    S.state_tokens.clear();
-    S.ck_tokens.clear();
+    S.slots.clear();
     fprintf(stderr, "model unloaded\n");
 }
 
@@ -298,7 +309,7 @@ struct Result {
     common_chat_msg msg;   // chat requests
     std::string     text;  // completion requests
     std::string     finish = "stop";
-    int             n_prompt = 0, n_gen = 0, n_reused = 0;
+    int             n_prompt = 0, n_gen = 0, n_reused = 0, slot = 0;
     double          t_prompt = 0, t_gen = 0;
 };
 
@@ -488,17 +499,60 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     auto extends = [&](const std::vector<int32_t> & base) {
         return !base.empty() && base.size() < prompt.size() && std::equal(base.begin(), base.end(), prompt.begin());
     };
+    // ---- sequence slot: the one whose state or checkpoint this prompt extends furthest, else an empty one, else the
+    // least recently used
+    const int n_slots = S.q35 ? S.q35->n_slots() : 1;
+    if ((int) S.slots.size() != n_slots) S.slots.assign((size_t) n_slots, Server::Slot{});
+    auto sync_slot = [&](int s) {  // forget tokens of a sequence the model has dropped
+        auto & sl = S.slots[(size_t) s];
+        if (S.q35 && S.q35->slot_epoch(s) != sl.epoch) {
+            sl.state_tokens.clear();
+            sl.ck_tokens.clear();
+            sl.epoch = S.q35->slot_epoch(s);
+        }
+    };
+    int    slot = -1;
+    size_t best = 0;
+    for (int s = 0; s < n_slots; s++) {
+        sync_slot(s);
+        const auto & sl  = S.slots[(size_t) s];
+        const int    np  = S.q35 ? S.q35->slot_n_past(s) : m.n_past();
+        size_t       len = 0;
+        if (extends(sl.state_tokens) && (int) sl.state_tokens.size() == np) len = sl.state_tokens.size();
+        else if (extends(sl.ck_tokens)) len = sl.ck_tokens.size();
+        if (len > best) {
+            best = len;
+            slot = s;
+        }
+    }
+    if (slot < 0) {
+        for (int s = 0; s < n_slots && slot < 0; s++) {
+            if (S.slots[(size_t) s].state_tokens.empty() && S.slots[(size_t) s].ck_tokens.empty()) slot = s;
+        }
+    }
+    if (slot < 0) {
+        slot = 0;
+        for (int s = 1; s < n_slots; s++) {
+            if (S.slots[(size_t) s].used < S.slots[(size_t) slot].used) slot = s;
+        }
+    }
+    if (S.q35 && !S.q35->select_slot(slot, err)) return false;
+    sync_slot(slot);  // parking the previous slot can drop it, never this one, but stay exact
+    auto & SL = S.slots[(size_t) slot];
+    SL.used   = ++S.slot_clock;
+    R.slot    = slot;
+
     size_t start = 0;
-    if (extends(S.state_tokens) && (int) S.state_tokens.size() == m.n_past()) {
-        start = S.state_tokens.size();
-    } else if (extends(S.ck_tokens)) {
+    if (extends(SL.state_tokens) && (int) SL.state_tokens.size() == m.n_past()) {
+        start = SL.state_tokens.size();
+    } else if (extends(SL.ck_tokens)) {
         m.checkpoint_restore();
-        start = S.ck_tokens.size();
+        start = SL.ck_tokens.size();
     } else {
-        if (!S.ck_tokens.empty()) {
+        if (!SL.ck_tokens.empty()) {
             // reuse miss: where the new prompt leaves the checkpointed one (debugging cache hit rates)
             size_t d = 0;
-            while (d < S.ck_tokens.size() && d < prompt.size() && S.ck_tokens[d] == prompt[d]) d++;
+            while (d < SL.ck_tokens.size() && d < prompt.size() && SL.ck_tokens[d] == prompt[d]) d++;
             auto piece = [&](const std::vector<int32_t> & v, size_t a, size_t b) {
                 std::string s;
                 for (size_t i = a; i < std::min(b, v.size()); i++) s += common_token_to_piece(S.vocab, v[i], true);
@@ -506,8 +560,8 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
                 return s.substr(0, 160);
             };
             fprintf(stderr, "prompt reuse miss: diverges at token %zu of %zu (checkpoint %zu)\n  before: %s\n  old:    %s\n  new:    %s\n",
-                    d, prompt.size(), S.ck_tokens.size(), piece(prompt, d > 25 ? d - 25 : 0, d).c_str(),
-                    piece(S.ck_tokens, d, d + 30).c_str(), piece(prompt, d, d + 30).c_str());
+                    d, prompt.size(), SL.ck_tokens.size(), piece(prompt, d > 25 ? d - 25 : 0, d).c_str(),
+                    piece(SL.ck_tokens, d, d + 30).c_str(), piece(prompt, d, d + 30).c_str());
         }
         m.reset();
     }
@@ -517,8 +571,8 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     std::vector<float> last((size_t) m.n_vocab());
     auto eval_range = [&](size_t a, size_t b) {
         if (b > a && !m.prefill(prompt.data() + a, (int) (b - a), last.data(), err)) {
-            S.state_tokens.clear();
-            S.ck_tokens.clear();
+            SL.state_tokens.clear();
+            SL.ck_tokens.clear();
             return false;
         }
         return true;
@@ -529,7 +583,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     if (start == n_head) {
         m.checkpoint_save();
-        S.ck_tokens.assign(prompt.begin(), prompt.begin() + (long long) n_head);
+        SL.ck_tokens.assign(prompt.begin(), prompt.begin() + (long long) n_head);
     }
     if (!eval_range(start, prompt.size())) return false;
     const auto t1 = std::chrono::steady_clock::now();
@@ -718,8 +772,8 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     if (!done) R.finish = "length";
     // the model state now holds prompt + every produced token except the last (sampled, not evaluated)
-    S.state_tokens = prompt;
-    S.state_tokens.insert(S.state_tokens.end(), out.begin(), out.end() - 1);
+    SL.state_tokens = prompt;
+    SL.state_tokens.insert(SL.state_tokens.end(), out.begin(), out.end() - 1);
     R.t_gen = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
     if (chat) {  // final parse (also needed by the timing log below)
         R.msg = common_chat_parse(text, false, pp);
@@ -734,7 +788,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
                                           std::chrono::duration<double>(R.t_prompt + R.t_gen));
         json line = { { "t", (double) std::chrono::duration_cast<std::chrono::milliseconds>(now_sys.time_since_epoch()).count() / 1e3 },
                       { "model", S.entries[(size_t) S.active].alias }, { "kind", chat ? "chat" : "completion" },
-                      { "prompt_tokens", R.n_prompt }, { "reused_tokens", R.n_reused }, { "prefill_s", R.t_prompt },
+                      { "prompt_tokens", R.n_prompt }, { "reused_tokens", R.n_reused }, { "slot", R.slot }, { "prefill_s", R.t_prompt },
                       { "gen_tokens", R.n_gen }, { "decode_s", R.t_gen }, { "finish", R.finish },
                       { "idle_before_s", S.last_end.time_since_epoch().count() == 0 ? -1.0
                                          : std::chrono::duration<double>(t0_sys - S.last_end).count() },
@@ -773,8 +827,9 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             fclose(f);
         }
     }
-    fprintf(stderr, "%s: prompt %d tokens (%d reused) in %.1f s, %d generated at %.1f tok/s (temp %.2f top_k %d top_p %.2f)%s%s\n",
-            S.entries[(size_t) S.active].alias.c_str(), R.n_prompt, R.n_reused, R.t_prompt, R.n_gen,
+    const std::string slot_tag = S.slots.size() > 1 ? " [slot " + std::to_string(R.slot) + "]" : std::string();
+    fprintf(stderr, "%s%s: prompt %d tokens (%d reused) in %.1f s, %d generated at %.1f tok/s (temp %.2f top_k %d top_p %.2f)%s%s\n",
+            S.entries[(size_t) S.active].alias.c_str(), slot_tag.c_str(), R.n_prompt, R.n_reused, R.t_prompt, R.n_gen,
             R.n_gen / std::max(R.t_gen, 1e-9), sp.temp, sp.top_k, sp.top_p, R.spec.empty() ? "" : "; ", R.spec.c_str());
     if (!chat) {
         R.text = text;
@@ -817,6 +872,8 @@ int serve(const std::vector<std::string> & args) {
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
     bool kv_lock = false;
+    int n_slots = 1;
+    double kv_pool_gb = 0;
     std::string router_url;
     std::vector<Entry> extra;
     double      cache_gb = -1;
@@ -848,6 +905,8 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--kv") kv = val();
         else if (a == "--kv-v") kv_v = val();
         else if (a == "--kv-lock") kv_lock = true;
+        else if (a == "--slots") n_slots = std::max(1, std::atoi(val().c_str()));
+        else if (a == "--kv-pool-gb") kv_pool_gb = std::atof(val().c_str());
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
@@ -878,6 +937,7 @@ int serve(const std::vector<std::string> & args) {
         fprintf(stderr, "usage: eightfer serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0|q4_0] [--spec auto|K]\n"
                         "         [--kv-v TYPE (V cache type, default: --kv)] [--kv-lock (keep the RAM KV in physical memory)]\n"
+                        "         [--slots N (sequences kept, one per conversation)] [--kv-pool-gb G (RAM KV of all slots)]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
@@ -934,6 +994,8 @@ int serve(const std::vector<std::string> & args) {
         return 1;
     }
     o.kv_lock         = kv_lock;
+    o.n_slots         = n_slots;
+    o.kv_pool_gb      = kv_pool_gb;
     o.residual_path   = res;
     o.expert_cache_gb = cache_gb;
     o.max_record      = S->spec_k + 1;
@@ -993,8 +1055,7 @@ int serve(const std::vector<std::string> & args) {
             return false;
         }
         sp->q35 = dynamic_cast<model::Qwen35 *>(sp->model.get());
-        sp->state_tokens.clear();
-        sp->ck_tokens.clear();
+        sp->slots.clear();
         sp->active = idx;
         fprintf(stderr, "%s loaded in %.1f s\n", sp->entries[(size_t) idx].alias.c_str(),
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -1015,8 +1076,7 @@ int serve(const std::vector<std::string> & args) {
                 if (sp->model && std::chrono::steady_clock::now() - sp->last_used >= std::chrono::seconds(idle_unload)) {
                     sp->q35 = nullptr;
                     sp->model.reset();
-                    sp->state_tokens.clear();
-                    sp->ck_tokens.clear();
+                    sp->slots.clear();
                     fprintf(stderr, "idle for %d s: model unloaded\n", idle_unload);
                 }
             }

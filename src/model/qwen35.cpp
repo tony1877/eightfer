@@ -29,13 +29,32 @@ namespace e8::model {
 
 namespace {
 
-// Zeroed memory straight from the OS: no page takes physical RAM until it is written.
-void * os_alloc(size_t n) {
+// Memory straight from the OS for the RAM KV. os_reserve() takes address space only; os_commit() backs a range
+// (zero-filled, a page takes physical RAM once it is touched), os_decommit() gives a range back.
+void * os_reserve(size_t n) {
 #if defined(_WIN32)
-    return VirtualAlloc(nullptr, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    return VirtualAlloc(nullptr, n, MEM_RESERVE, PAGE_READWRITE);
 #else
-    void * p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void * p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     return p == MAP_FAILED ? nullptr : p;
+#endif
+}
+
+bool os_commit(void * p, size_t n) {
+#if defined(_WIN32)
+    return VirtualAlloc(p, n, MEM_COMMIT, PAGE_READWRITE) != nullptr;
+#else
+    (void) p;
+    (void) n;
+    return true;
+#endif
+}
+
+void os_decommit(void * p, size_t n) {
+#if defined(_WIN32)
+    VirtualFree(p, n, MEM_DECOMMIT);
+#else
+    madvise(p, n, MADV_DONTNEED);
 #endif
 }
 
@@ -49,21 +68,34 @@ void os_free(void * p, size_t n) {
 }
 
 // Keeps [p, p + n) in physical memory. Windows only locks pages within the process's minimum working set, so that
-// is raised by n first.
-bool os_lock(void * p, size_t n) {
+// is first set to `locked_total` (every byte locked so far, these included) plus a margin.
+bool os_lock(void * p, size_t n, size_t locked_total) {
 #if defined(_WIN32)
-    HANDLE h  = GetCurrentProcess();
-    SIZE_T mn = 0, mx = 0;
-    DWORD  fl = 0;
-    if (!GetProcessWorkingSetSizeEx(h, &mn, &mx, &fl)) return false;
-    const SIZE_T extra = n + (SIZE_T) (64u << 20);
-    if (!SetProcessWorkingSetSizeEx(h, mn + extra, std::max(mx, mn + extra) + extra, QUOTA_LIMITS_HARDWS_MIN_DISABLE |
-                                                                                         QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
+    static SIZE_T base_min = 0, base_max = 0;
+    HANDLE        h        = GetCurrentProcess();
+    if (!base_min) {
+        DWORD fl = 0;
+        if (!GetProcessWorkingSetSizeEx(h, &base_min, &base_max, &fl)) return false;
+    }
+    const SIZE_T mn = base_min + locked_total + (SIZE_T) (64u << 20);
+    if (!SetProcessWorkingSetSizeEx(h, mn, std::max(base_max, mn) + (SIZE_T) (64u << 20),
+                                    QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
         return false;
     }
     return VirtualLock(p, n) != 0;
 #else
+    (void) locked_total;
     return mlock(p, n) == 0;
+#endif
+}
+
+size_t os_page() {
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwAllocationGranularity;  // 64 KiB: also the reservation granularity
+#else
+    return 65536;
 #endif
 }
 
@@ -192,6 +224,9 @@ Qwen35::~Qwen35() {
     if (pctx_) ggml_free(pctx_);
     if (hbuf_) ggml_backend_buffer_free(hbuf_);
     if (hmem_) os_free(hmem_, hmem_bytes_);
+    if (slbuf_) ggml_backend_buffer_free(slbuf_);
+    if (slmem_) os_free(slmem_, slmem_bytes_);
+    if (slctx_) ggml_free(slctx_);
     if (hctx_) ggml_free(hctx_);
     if (rctx_) ggml_free(rctx_);
     if (mbuf_) ggml_backend_buffer_free(mbuf_);
@@ -389,6 +424,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             }
         }
         want = std::min<int64_t>(n_ctx_, want / kKvPad * kKvPad);
+        if (opt.n_slots > 1 && want >= n_ctx_) want = n_ctx_ - kKvPad;  // slots keep their sequences in the RAM KV
         if (opt.gpu_kv >= 0 && want >= n_ctx_) mtp_on_ = want_mtp;
         if (want_mtp && !mtp_on_) {
             fprintf(stderr, "MTP drafting off: its %.2f GB of VRAM would come out of the KV window\n",
@@ -497,50 +533,108 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
         }
     }
     if (W_ < n_ctx_) {
-        ggml_init_params hp = { ggml_tensor_overhead() * (size_t) (h.n_layer * h.n_head_kv * 2 + 8), nullptr, true };
+        const int    ns    = std::max(1, opt.n_slots);
+        const size_t nhead = (size_t) (h.n_layer * h.n_head_kv);
+        ggml_init_params hp = { ggml_tensor_overhead() * (nhead * 2 * (size_t) ns + 8), nullptr, true };
         hctx_               = ggml_init(hp);
-        hk_.assign((size_t) (h.n_layer * h.n_head_kv), nullptr);
-        hv_.assign((size_t) (h.n_layer * h.n_head_kv), nullptr);
-        for (int64_t il = 0; il < h.n_layer; il++) {
-            if (h.is_recurrent(il)) continue;
-            for (int64_t j = 0; j < h.n_head_kv; j++) {
-                hk_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, kt, h.head_dim, n_ctx_);
-                hv_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, vt, h.head_dim, n_ctx_);
+        slots_.assign((size_t) ns, KvSlot{});
+        for (KvSlot & sl : slots_) {
+            sl.hk.assign(nhead, nullptr);
+            sl.hv.assign(nhead, nullptr);
+            for (int64_t il = 0; il < h.n_layer; il++) {
+                if (h.is_recurrent(il)) continue;
+                for (int64_t j = 0; j < h.n_head_kv; j++) {
+                    sl.hk[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, kt, h.head_dim, n_ctx_);
+                    sl.hv[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, vt, h.head_dim, n_ctx_);
+                }
             }
         }
-        // masked rows must still be finite for the GPU kernels: zero. Pinned memory is cleared (and resident anyway);
-        // otherwise the memory comes zeroed from the OS and is never written up front, so a page only takes RAM
-        // once a position in it is written. --kv-lock makes all of it resident and locked instead.
-        if (std::getenv("E8_KV_PINNED") && std::atoi(std::getenv("E8_KV_PINNED")) != 0) {
+        hk_ = slots_[0].hk;
+        hv_ = slots_[0].hv;
+        for (size_t i = 0; i < nhead; i++) {
+            if (hk_[i]) kv_row_bytes_ += hk_[i]->nb[1] + hv_[i]->nb[1];
+        }
+        // Masked rows must still be finite for the GPU kernels: zero. Pinned memory (one slot only) is cleared and
+        // resident. Otherwise each slot's region is reserved address space that gets memory (zero-filled by the OS)
+        // as positions are written (ensure_committed), so a slot takes RAM for the context it holds, not for n_ctx.
+        if (ns == 1 && std::getenv("E8_KV_PINNED") && std::atoi(std::getenv("E8_KV_PINNED")) != 0) {
             hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_dev_host_buffer_type(ggml_backend_get_device(gpu_)));
             if (!hbuf_) fprintf(stderr, "warning: pinned allocation for the KV failed, using pageable RAM\n");
             else ggml_backend_buffer_clear(hbuf_, 0);
+            slots_[0].committed = n_ctx_;
         }
         if (!hbuf_) {
             constexpr size_t kAlign = 64;
-            size_t total = 0;
-            for (ggml_tensor * t = ggml_get_first_tensor(hctx_); t; t = ggml_get_next_tensor(hctx_, t)) {
-                total += GGML_PAD(ggml_nbytes(t), kAlign);
+            const size_t     gran   = os_page();
+            size_t           per    = 0;
+            for (size_t i = 0; i < nhead; i++) {
+                if (slots_[0].hk[i]) per += GGML_PAD(ggml_nbytes(slots_[0].hk[i]), kAlign) + GGML_PAD(ggml_nbytes(slots_[0].hv[i]), kAlign);
             }
-            hmem_ = os_alloc(total);
+            per         = (per + gran - 1) / gran * gran;
+            hmem_bytes_ = per * (size_t) ns;
+            hmem_       = os_reserve(hmem_bytes_);
             if (!hmem_) {
-                err = "not enough RAM for the KV cache (lower --ctx or use --kv q8_0)";
+                err = "cannot reserve address space for the RAM KV";
                 return false;
             }
-            hmem_bytes_ = total;
-            hbuf_       = ggml_backend_cpu_buffer_from_ptr(hmem_, total);
-            size_t off  = 0;
-            for (ggml_tensor * t = ggml_get_first_tensor(hctx_); t; t = ggml_get_next_tensor(hctx_, t)) {
-                if (ggml_backend_tensor_alloc(hbuf_, t, (uint8_t *) hmem_ + off) != GGML_STATUS_SUCCESS) {
-                    err = "cannot place the RAM KV tensors";
-                    return false;
+            hbuf_ = ggml_backend_cpu_buffer_from_ptr(hmem_, hmem_bytes_);
+            for (int s = 0; s < ns; s++) {
+                KvSlot & sl = slots_[(size_t) s];
+                sl.base     = (uint8_t *) hmem_ + per * (size_t) s;
+                sl.bytes    = per;
+                size_t off  = 0;
+                for (size_t i = 0; i < nhead; i++) {
+                    for (ggml_tensor * t : { sl.hk[i], sl.hv[i] }) {
+                        if (!t) continue;
+                        if (ggml_backend_tensor_alloc(hbuf_, t, sl.base + off) != GGML_STATUS_SUCCESS) {
+                            err = "cannot place the RAM KV tensors";
+                            return false;
+                        }
+                        off += GGML_PAD(ggml_nbytes(t), kAlign);
+                    }
                 }
-                off += GGML_PAD(ggml_nbytes(t), kAlign);
             }
-            if (opt.kv_lock) {
-                hmem_locked_ = os_lock(hmem_, total);
-                if (!hmem_locked_) fprintf(stderr, "warning: could not lock the RAM KV (%.2f GB) in memory; it may be paged out\n",
-                                           (double) total / 1e9);
+        }
+        pool_bytes_ = opt.kv_pool_gb > 0 ? (size_t) (opt.kv_pool_gb * 1e9) : kv_row_bytes_ * (size_t) n_ctx_;
+        // slots 1..: parked recurrent state and a prompt-reuse checkpoint each, in RAM (pages on demand); slot 0's
+        // checkpoint is conv_ck_/ssm_ck_ and its parked state lives here too
+        slots_[0].conv_ck = conv_ck_;
+        slots_[0].ssm_ck  = ssm_ck_;
+        if (ns > 1) {
+            ggml_init_params sp2 = { ggml_tensor_overhead() * (size_t) (h.n_layer * 4 * ns + 8), nullptr, true };
+            slctx_               = ggml_init(sp2);
+            for (int s = 0; s < ns; s++) {
+                KvSlot & sl = slots_[(size_t) s];
+                sl.conv.assign((size_t) h.n_layer, nullptr);
+                sl.ssm.assign((size_t) h.n_layer, nullptr);
+                if (s > 0) {
+                    sl.conv_ck.assign((size_t) h.n_layer, nullptr);
+                    sl.ssm_ck.assign((size_t) h.n_layer, nullptr);
+                }
+                for (size_t il = 0; il < (size_t) h.n_layer; il++) {
+                    if (!conv_state_[il]) continue;
+                    sl.conv[il] = ggml_dup_tensor(slctx_, conv_state_[il]);
+                    sl.ssm[il]  = ggml_dup_tensor(slctx_, ssm_state_[il]);
+                    if (s > 0) {
+                        sl.conv_ck[il] = ggml_dup_tensor(slctx_, conv_state_[il]);
+                        sl.ssm_ck[il]  = ggml_dup_tensor(slctx_, ssm_state_[il]);
+                    }
+                }
+            }
+            constexpr size_t kAlign = 64;
+            for (ggml_tensor * t = ggml_get_first_tensor(slctx_); t; t = ggml_get_next_tensor(slctx_, t)) {
+                slmem_bytes_ += GGML_PAD(ggml_nbytes(t), kAlign);
+            }
+            slmem_ = os_reserve(slmem_bytes_);
+            if (!slmem_ || !os_commit(slmem_, slmem_bytes_)) {
+                err = "not enough memory for the slots' recurrent states";
+                return false;
+            }
+            slbuf_     = ggml_backend_cpu_buffer_from_ptr(slmem_, slmem_bytes_);
+            size_t off = 0;
+            for (ggml_tensor * t = ggml_get_first_tensor(slctx_); t; t = ggml_get_next_tensor(slctx_, t)) {
+                ggml_backend_tensor_alloc(slbuf_, t, (uint8_t *) slmem_ + off);
+                off += GGML_PAD(ggml_nbytes(t), kAlign);
             }
         }
         ggml_init_params pp = { ggml_tensor_overhead() * (size_t) (h.n_layer * h.n_head_kv * 2 + 8), nullptr, true };
@@ -556,9 +650,14 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             return false;
         }
         if (const char * e = std::getenv("E8_HOST_ATTN_GPU_MIN")) host_gpu_min_ = std::atoi(e);
-        fprintf(stderr, "KV: %d tokens in RAM (%.2f GB, K %s V %s, %s), window of %d in VRAM\n", n_ctx_,
-                (double) ggml_backend_buffer_get_size(hbuf_) / 1e9, ggml_type_name(kt), ggml_type_name(vt),
-                !hmem_ ? "pinned" : hmem_locked_ ? "locked" : "pages on demand", W_);
+        fprintf(stderr, "KV: %d tokens in RAM (%.2f GB, K %s V %s, %s), window of %d in VRAM", n_ctx_,
+                (double) (kv_row_bytes_ * (size_t) n_ctx_) / 1e9, ggml_type_name(kt), ggml_type_name(vt),
+                !hmem_ ? "pinned" : opt.kv_lock ? "locked as used" : "taken as used", W_);
+        if (ns > 1) fprintf(stderr, "; %d slots, pool %.2f GB", ns, (double) pool_bytes_ / 1e9);
+        fprintf(stderr, "\n");
+    } else if (opt.n_slots > 1) {
+        err = "sequence slots need the KV in RAM (a GPU with all layers on it)";
+        return false;
     }
     reset();
 
@@ -689,7 +788,8 @@ void Qwen35::sync_from(const Qwen35 & src) {
     }
 }
 
-void Qwen35::reset() {    for (int i = 0; i < 2; i++) {
+void Qwen35::reset() {
+    for (int i = 0; i < 2; i++) {
         if (sbuf_[i]) {
             ggml_backend_buffer_clear(sbuf_[i], 0);
         }
@@ -703,6 +803,157 @@ void Qwen35::reset() {    for (int i = 0; i < 2; i++) {
     host_valid_ = exact_upto_ = 0;
     sum_upto_ = 0;
     far_rows_ = 0;
+    ck_n_past_ = 0;
+    if (!slots_.empty() && !shadow_) drop_slot(slots_[(size_t) cur_slot_], false);
+}
+
+void Qwen35::drop_slot(KvSlot & s, bool forget) {
+    if (s.base && s.committed > 0) {
+        os_decommit(s.base, s.bytes);
+        committed_bytes_ -= std::min(committed_bytes_, kv_row_bytes_ * (size_t) s.committed);
+        if (opt_.kv_lock) locked_bytes_ -= std::min(locked_bytes_, kv_row_bytes_ * (size_t) s.committed);
+        s.committed = 0;
+    }
+    s.n_past = s.host_valid = s.exact_upto = s.ck_n_past = 0;
+    if (forget) s.epoch++;
+}
+
+bool Qwen35::ensure_committed(int upto, std::string & err) {
+    if (slots_.empty()) return true;
+    KvSlot & sl = slots_[(size_t) cur_slot_];
+    if (!sl.base || upto <= sl.committed) return true;
+    constexpr int kChunk = 4096;  // positions committed at a time
+    const int     to     = std::min(n_ctx_, (upto + kChunk - 1) / kChunk * kChunk);
+    const size_t  need   = kv_row_bytes_ * (size_t) (to - sl.committed);
+    // over the pool budget: empty the least recently used idle slots first
+    while (committed_bytes_ + need > pool_bytes_) {
+        KvSlot * lru = nullptr;
+        for (KvSlot & o : slots_) {
+            if (&o != &sl && o.committed > 0 && (!lru || o.used < lru->used)) lru = &o;
+        }
+        if (!lru) {
+            err = "RAM KV pool full (" + std::to_string(pool_bytes_ / 1000000) + " MB): lower the context or raise --kv-pool-gb";
+            return false;
+        }
+        fprintf(stderr, "KV pool: emptying slot %d (%d tokens) for slot %d\n", (int) (lru - slots_.data()), lru->n_past, cur_slot_);
+        drop_slot(*lru);
+    }
+    const size_t pg = 4096;
+    for (size_t i = 0; i < sl.hk.size(); i++) {
+        for (ggml_tensor * t : { sl.hk[i], sl.hv[i] }) {
+            if (!t) continue;
+            uint8_t * a = (uint8_t *) t->data + t->nb[1] * (size_t) sl.committed;
+            uint8_t * b = (uint8_t *) t->data + t->nb[1] * (size_t) to;
+            a           = (uint8_t *) ((uintptr_t) a / pg * pg);
+            b           = (uint8_t *) (((uintptr_t) b + pg - 1) / pg * pg);
+            if (!os_commit(a, (size_t) (b - a))) {
+                err = "out of memory for the RAM KV";
+                return false;
+            }
+            if (opt_.kv_lock && !os_lock(a, (size_t) (b - a), locked_bytes_ + need)) {
+                static bool warned = false;
+                if (!warned) fprintf(stderr, "warning: could not lock RAM KV pages in memory; they may be paged out\n");
+                warned = true;
+            }
+        }
+    }
+    committed_bytes_ += need;
+    if (opt_.kv_lock) locked_bytes_ += need;
+    sl.committed = to;
+    return true;
+}
+
+bool Qwen35::fill_ring(int from, int to, std::string & err) {
+    // copy positions [from, to) from the RAM KV into the VRAM ring, per KV head (flush_ring's inverse)
+    const auto &         h = hp_;
+    std::vector<uint8_t> buf;
+    for (int p = from; p < to;) {
+        const int s = p % W_;
+        int       e = p + 1;
+        while (e < to && (e % W_) == s + (e - p)) e++;
+        const int cnt = e - p;
+        for (int64_t il = 0; il < h.n_layer; il++) {
+            if (h.is_recurrent(il)) continue;
+            for (int kv = 0; kv < 2; kv++) {
+                ggml_tensor * rc = (kv ? v_cache_ : k_cache_)[(size_t) il];
+                buf.resize(rc->nb[1] * (size_t) cnt);
+                for (int64_t j = 0; j < h.n_head_kv; j++) {
+                    const ggml_tensor * ht = (kv ? hv_ : hk_)[(size_t) (il * h.n_head_kv + j)];
+                    for (int r = 0; r < cnt; r++) {
+                        std::memcpy(buf.data() + rc->nb[1] * (size_t) r + ht->nb[1] * (size_t) j,
+                                    (const uint8_t *) ht->data + ht->nb[1] * (size_t) (p + r), ht->nb[1]);
+                    }
+                }
+                ggml_backend_tensor_set(rc, buf.data(), rc->nb[1] * (size_t) (Kd_ + s), buf.size());
+            }
+        }
+        for (int q = p; q < e; q++) slot_pos_[(size_t) (q % W_)] = q;
+        p = e;
+    }
+    (void) err;
+    return true;
+}
+
+bool Qwen35::select_slot(int s, std::string & err) {
+    if (slots_.empty() && s == 0) return true;
+    if (s < 0 || s >= (int) slots_.size()) {
+        err = "no sequence slot " + std::to_string(s);
+        return false;
+    }
+    if (s == cur_slot_) {
+        slots_[(size_t) s].used = ++use_clock_;
+        return true;
+    }
+    // park the active slot: everything it holds must be in its RAM KV, its recurrent state goes to RAM
+    KvSlot &  o    = slots_[(size_t) cur_slot_];
+    const int upto = std::min(exact_upto_, n_past_);
+    if (dry_pending_ || upto < n_past_ || (host_valid_ < upto && !flush_ring(host_valid_, upto, err)) ||
+        std::min(host_valid_, n_past_) < n_past_) {
+        fprintf(stderr, "slot %d: sequence state incomplete (%s), dropped\n", cur_slot_, err.c_str());
+        err.clear();
+        drop_slot(o);
+    } else {
+        for (size_t il = 0; il < conv_state_.size(); il++) {
+            if (!conv_state_[il]) continue;
+            ggml_backend_tensor_copy(conv_state_[il], o.conv[il]);
+            ggml_backend_tensor_copy(ssm_state_[il], o.ssm[il]);
+        }
+        o.n_past     = n_past_;
+        o.host_valid = n_past_;
+        o.exact_upto = n_past_;
+        o.ck_n_past  = ck_n_past_;
+    }
+    // resume slot s
+    KvSlot & t = slots_[(size_t) s];
+    cur_slot_  = s;
+    t.used     = ++use_clock_;
+    hk_        = t.hk;
+    hv_        = t.hv;
+    conv_ck_   = t.conv_ck;
+    ssm_ck_    = t.ssm_ck;
+    for (int i = 0; i < 2; i++) {
+        if (sbuf_[i]) ggml_backend_buffer_clear(sbuf_[i], 0);
+    }
+    if (t.n_past > 0) {
+        for (size_t il = 0; il < conv_state_.size(); il++) {
+            if (!conv_state_[il]) continue;
+            ggml_backend_tensor_copy(t.conv[il], conv_state_[il]);
+            ggml_backend_tensor_copy(t.ssm[il], ssm_state_[il]);
+        }
+    }
+    n_past_       = t.n_past;
+    host_valid_   = t.host_valid;
+    exact_upto_   = t.exact_upto;
+    ck_n_past_    = t.ck_n_past;
+    saved_n_past_ = saved_n_past1_ = 0;
+    recorded_n_ = recorded_full_ = 0;
+    dry_pending_ = false;
+    hid_row_     = -1;
+    mtp_slot_pos_.assign((size_t) Wm_, -1);
+    slot_pos_.assign((size_t) W_, -1);
+    far_rows_ = far_ws_ = 0;
+    sum_upto_ = 0;  // the page summaries are rebuilt from this slot's RAM KV
+    return fill_ring(std::max(0, n_past_ - W_), n_past_, err);
 }
 
 void Qwen35::update_summaries(int upto) {
@@ -801,6 +1052,7 @@ void gather_op(ggml_tensor * dst, int ith, int nth, void * ud) {
 
 bool Qwen35::flush_ring(int from, int to, std::string & err) {
     // copy positions [from, to) from the VRAM ring to the RAM KV, per KV head
+    if (!ensure_committed(to, err)) return false;
     const auto &         h   = hp_;
     std::vector<uint8_t> buf;
     for (int p = from; p < to;) {
@@ -1554,6 +1806,8 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     sum_upto_  = std::min(sum_upto_, std::min(n_past_, host_valid_) / kPage);
     static const bool sparse_on = !(std::getenv("E8_SPARSE") && std::atoi(std::getenv("E8_SPARSE")) == 0);
     sparse_ = use_host && n <= kSparseBatch && sparse_on && !pmid_.empty();
+    // the active slot needs memory for the rows this eval writes (exact attention without sparse reads them all)
+    if (use_host && !ensure_committed(sparse_ ? n_past_ + n : n_ctx_, err)) return false;
     sel_nodes_.clear();
     if (sparse_) {
         static const int win   = std::getenv("E8_SPARSE_WINDOW") ? std::atoi(std::getenv("E8_SPARSE_WINDOW")) : 4096;

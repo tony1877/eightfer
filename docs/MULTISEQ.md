@@ -17,6 +17,15 @@ Both features need the 27B to hold more than one sequence state. Today `Qwen35` 
 per slot. Slot 0 is today's sequence; `eval(..., seq)` picks the slot. The DeltaNet ops already take n_seqs.
 Attention: each slot owns a disjoint region of the KV ring (ring-exact contexts) so masks stay per slot.
 
+Done (2026-10-08), as parked sequences rather than concurrent ones: `serve --slots N` keeps N sequences (RAM KV region,
+recurrent state and prompt-reuse checkpoint each) and runs one at a time. Switching parks the active slot (VRAM ring
+flushed to its RAM KV, DeltaNet state copied to RAM) and resumes another (state back, ring refilled from RAM, page
+summaries rebuilt); the MTP ring starts empty. Slot RAM KV is reserved address space committed as positions are
+written; all slots share one budget (`--kv-pool-gb`, default the `--ctx` tokens' worth) and a slot that needs more
+empties the least recently used idle ones. `tests/slots_smoke.ps1`: three interleaved ~18K-token conversations, each
+follow-up on its own slot with its prompt reused (0.5 s instead of 16 s; 1.7 s with a 4K VRAM window) and its
+code recalled; single-slot KLD unchanged.
+
 ## Phase 2: speculative full-model pass (single stream, exact)
 
 Cycle c: launch the verify of drafts d[1..k] async on stream A (slot 0). Meanwhile on stream B, copy the

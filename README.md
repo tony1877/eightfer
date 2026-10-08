@@ -106,7 +106,9 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
 - Endpoints: `/v1/chat/completions`, `/v1/completions` (prompt string or token ids, no template), `/v1/models`,
   `/health`. Sampling: `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `presence_penalty`, `frequency_penalty`
   (over the generated tokens, applied exactly inside speculative decoding), `stop`, `max_tokens`.
-- Concurrent requests are accepted and run one at a time, first come first served (the model holds one sequence). A
+- Concurrent requests are accepted and run one at a time, first come first served. `--slots N` (27B, KV in RAM) keeps
+  N sequences, so N conversations (an agent and its subagents) keep their prompt caches: a request goes to the slot it
+  extends furthest, else an empty or the least recently used one; slots share `--kv-pool-gb` (default: `--ctx` tokens). A
   streamed request whose client disconnects stops at the next decode cycle. `tests/server_smoke.ps1` covers all of it.
 - Long context (up to the models' 262144): pass `--ctx 262144 --kv q8_0`. When the 27B's KV does not fit in VRAM next
   to the weights, the full KV (9.1 GB at 256K) lives in RAM and small decode/verify batches use sparse attention:
