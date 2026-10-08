@@ -166,18 +166,20 @@ public:
     bool has_residual() const { return !res_.empty(); }
     uint64_t residual_bytes() const { return res_bytes_; }
 
-    // Sequence slots: each slot is a sequence of its own (RAM KV region, recurrent state, prompt-reuse checkpoint, KV
-    // bookkeeping), so several conversations keep their state. One is active at a time; select_slot() parks the
-    // active one (its VRAM ring flushed to RAM, its recurrent state copied to RAM) and resumes slot s (state back,
-    // the ring refilled from RAM, page summaries rebuilt). A slot's RAM KV takes memory only as positions are written;
-    // when all slots together would pass the pool budget, the least recently used idle slots are emptied first
-    // (slot_epoch() changes when that happens).
+    // Sequence slots: each slot is a sequence of its own (RAM KV region, a part of the VRAM ring and of the MTP ring,
+    // recurrent state, page summaries, prompt-reuse checkpoint, KV bookkeeping), so several conversations keep their
+    // state. One is active at a time; select_slot() parks the active one (recurrent state, page summaries and MTP
+    // hidden row copied to RAM; its ring parts stay in VRAM) and resumes slot s, cheap enough to switch every decode
+    // cycle. A slot's RAM KV takes memory only as positions are written; when all slots together would pass the pool
+    // budget, the least recently used idle slots are emptied first (slot_epoch() changes when that happens).
     int      n_slots() const { return std::max(1, (int) slots_.size()); }
     int      active_slot() const { return cur_slot_; }
     bool     select_slot(int s, std::string & err);
     int      slot_n_past(int s) const { return s == cur_slot_ ? n_past_ : slots_[(size_t) s].n_past; }
     uint64_t slot_epoch(int s) const { return slots_.empty() ? 0 : slots_[(size_t) s].epoch; }
     uint64_t kv_committed_bytes() const { return committed_bytes_; }
+    // a pinned slot (a conversation in progress) is never emptied to make room in the KV pool
+    void     pin_slot(int s, bool on) { if (!slots_.empty()) slots_[(size_t) s].pinned = on; }
 
     // Empties the active slot's KV cache (its RAM pages go back to the OS) and zeroes the recurrent state.
     void reset() override;
@@ -325,6 +327,14 @@ private:
         int                        committed = 0;       // positions [0, committed) have memory in every head
         int                        n_past = 0, host_valid = 0, exact_upto = 0, ck_n_past = 0;
         uint64_t                   epoch = 0, used = 0;
+        bool                       pinned = false;
+        // its part of the VRAM ring and of the MTP ring (views into k_cache_ / mtp_k_ of slot 0's allocation)
+        std::vector<ggml_tensor *> kr, vr;
+        ggml_tensor *              mk = nullptr, * mv = nullptr;
+        std::vector<int>           slot_pos, mtp_slot_pos;
+        uint8_t *                  summ = nullptr;  // page summaries (RAM copy), per head n_ctx / kPage pages
+        int                        sum_upto = 0, sum_saved = 0, far_rows = 0, far_ws = 0;
+        std::vector<float>         hid;             // MTP: hidden state at n_past - 1 (empty = none)
     };
     std::vector<KvSlot>        slots_;
     int                        cur_slot_ = 0;
@@ -335,10 +345,13 @@ private:
     ggml_backend_buffer_t      slbuf_ = nullptr;
     void *                     slmem_ = nullptr;
     size_t                     slmem_bytes_ = 0;
+    ggml_context *             rvctx_ = nullptr;       // the slots' ring views
+    void *                     summem_ = nullptr;      // the slots' page summary copies
+    size_t                     summem_bytes_ = 0;
+    int                        sum_low_ = 0;           // lowest sum_upto_ since the active slot was resumed
     bool ensure_committed(int upto, std::string & err);  // the active slot's RAM KV has memory for [0, upto)
     // gives its RAM KV back to the OS and empties it; `forget` (an eviction, not the owner's reset) bumps its epoch
     void drop_slot(KvSlot & s, bool forget = true);
-    bool fill_ring(int from, int to, std::string & err); // copies positions [from, to) from the RAM KV into the ring
     int                        host_valid_ = 0, exact_upto_ = 0;
     int                        attn_mode_  = 0;  // while building: 0 = ring/plain KV, 1 = RAM KV
     int                        host_gpu_min_ = 1;  // RAM-KV attention on the GPU from this batch size (CPU below)

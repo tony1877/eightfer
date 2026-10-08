@@ -227,6 +227,8 @@ Qwen35::~Qwen35() {
     if (slbuf_) ggml_backend_buffer_free(slbuf_);
     if (slmem_) os_free(slmem_, slmem_bytes_);
     if (slctx_) ggml_free(slctx_);
+    if (summem_) os_free(summem_, summem_bytes_);
+    if (rvctx_) ggml_free(rvctx_);
     if (hctx_) ggml_free(hctx_);
     if (rctx_) ggml_free(rctx_);
     if (mbuf_) ggml_backend_buffer_free(mbuf_);
@@ -649,6 +651,59 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             err = "not enough VRAM for the key page summaries";
             return false;
         }
+        if (ns > 1) {
+            // each slot owns 1/ns of the VRAM ring (its own draft far area first, as the whole ring has) and of the MTP
+            // ring: views into slot 0's tensors, swapped in by select_slot (all slots share W_ / Kd_ / Wm_)
+            const int rs  = (Kd_ + W_) / ns / kKvPad * kKvPad;
+            const int rms = mtp_on_ ? std::max(kKvPad, Wm_ / ns / kKvPad * kKvPad) : 0;
+            if (rs < 2048) {
+                err = "not enough VRAM for " + std::to_string(ns) + " slots' KV windows (" + std::to_string(rs) +
+                      " tokens each; fewer --slots or a smaller --ctx)";
+                return false;
+            }
+            ggml_init_params rp = { ggml_tensor_overhead() * (size_t) ((h.n_layer * 2 + 2) * ns + 8), nullptr, true };
+            rvctx_              = ggml_init(rp);
+            auto view = [&](ggml_tensor * src, int rows, int s) {
+                ggml_tensor * t = ggml_new_tensor_2d(rvctx_, src->type, src->ne[0], rows);
+                ggml_backend_tensor_alloc(src->buffer, t, (uint8_t *) src->data + src->nb[1] * (size_t) rows * (size_t) s);
+                return t;
+            };
+            const size_t pages = (size_t) (n_ctx_ / kPage), sum_head = pages * (size_t) h.head_dim * sizeof(ggml_fp16_t);
+            size_t       nsum  = 0;
+            for (ggml_tensor * t : pmid_) nsum += t ? 1 : 0;
+            summem_bytes_ = sum_head * nsum * (size_t) ns;
+            summem_       = os_reserve(summem_bytes_);
+            if (!summem_ || !os_commit(summem_, summem_bytes_)) {
+                err = "not enough memory for the slots' page summaries";
+                return false;
+            }
+            for (int s = 0; s < ns; s++) {
+                KvSlot & sl = slots_[(size_t) s];
+                sl.kr.assign((size_t) h.n_layer, nullptr);
+                sl.vr.assign((size_t) h.n_layer, nullptr);
+                for (size_t il = 0; il < (size_t) h.n_layer; il++) {
+                    if (!k_cache_[il]) continue;
+                    sl.kr[il] = view(k_cache_[il], rs, s);
+                    sl.vr[il] = view(v_cache_[il], rs, s);
+                }
+                if (mtp_on_) {
+                    sl.mk = view(mtp_k_, rms, s);
+                    sl.mv = view(mtp_v_, rms, s);
+                }
+                sl.summ = (uint8_t *) summem_ + sum_head * nsum * (size_t) s;
+            }
+            k_cache_ = slots_[0].kr;
+            v_cache_ = slots_[0].vr;
+            if (mtp_on_) {
+                mtp_k_ = slots_[0].mk;
+                mtp_v_ = slots_[0].mv;
+                Wm_    = rms;
+            }
+            // the draft far area keeps drafts on long contexts useful (without it, 17K-token prompt: 4.2 vs 21.6 tokens
+            // per cycle): as for one sequence, but shrunk (whole pages) to leave the ring at least 2048 rows
+            Kd_ = Kd_ > 0 ? std::max(0, std::min(Kd_, rs - 2048)) / kPage * kPage : 0;
+            W_  = rs - Kd_;
+        }
         if (const char * e = std::getenv("E8_HOST_ATTN_GPU_MIN")) host_gpu_min_ = std::atoi(e);
         fprintf(stderr, "KV: %d tokens in RAM (%.2f GB, K %s V %s, %s), window of %d in VRAM", n_ctx_,
                 (double) (kv_row_bytes_ * (size_t) n_ctx_) / 1e9, ggml_type_name(kt), ggml_type_name(vt),
@@ -789,9 +844,22 @@ void Qwen35::sync_from(const Qwen35 & src) {
 }
 
 void Qwen35::reset() {
-    for (int i = 0; i < 2; i++) {
-        if (sbuf_[i]) {
-            ggml_backend_buffer_clear(sbuf_[i], 0);
+    if (slots_.size() > 1) {
+        // the state buffers also hold the other slots' ring parts and slot 0's checkpoint: clear only this slot's
+        for (size_t il = 0; il < conv_state_.size(); il++) {
+            for (ggml_tensor * t : { conv_state_[il], ssm_state_[il], k_cache_[il], v_cache_[il] }) {
+                if (t) ggml_backend_tensor_memset(t, 0, 0, ggml_nbytes(t));
+            }
+        }
+        if (mtp_on_) {
+            ggml_backend_tensor_memset(mtp_k_, 0, 0, ggml_nbytes(mtp_k_));
+            ggml_backend_tensor_memset(mtp_v_, 0, 0, ggml_nbytes(mtp_v_));
+        }
+    } else {
+        for (int i = 0; i < 2; i++) {
+            if (sbuf_[i]) {
+                ggml_backend_buffer_clear(sbuf_[i], 0);
+            }
         }
     }
     n_past_       = 0;
@@ -801,7 +869,7 @@ void Qwen35::reset() {
     mtp_slot_pos_.assign((size_t) Wm_, -1);
     slot_pos_.assign((size_t) W_, -1);
     host_valid_ = exact_upto_ = 0;
-    sum_upto_ = 0;
+    sum_upto_ = sum_low_ = 0;
     far_rows_ = 0;
     ck_n_past_ = 0;
     if (!slots_.empty() && !shadow_) drop_slot(slots_[(size_t) cur_slot_], false);
@@ -815,6 +883,11 @@ void Qwen35::drop_slot(KvSlot & s, bool forget) {
         s.committed = 0;
     }
     s.n_past = s.host_valid = s.exact_upto = s.ck_n_past = 0;
+    s.sum_upto = s.sum_saved = 0;
+    s.far_rows = s.far_ws = 0;
+    s.slot_pos.clear();
+    s.mtp_slot_pos.clear();
+    s.hid.clear();
     if (forget) s.epoch++;
 }
 
@@ -829,10 +902,10 @@ bool Qwen35::ensure_committed(int upto, std::string & err) {
     while (committed_bytes_ + need > pool_bytes_) {
         KvSlot * lru = nullptr;
         for (KvSlot & o : slots_) {
-            if (&o != &sl && o.committed > 0 && (!lru || o.used < lru->used)) lru = &o;
+            if (&o != &sl && !o.pinned && o.committed > 0 && (!lru || o.used < lru->used)) lru = &o;
         }
         if (!lru) {
-            err = "RAM KV pool full (" + std::to_string(pool_bytes_ / 1000000) + " MB): lower the context or raise --kv-pool-gb";
+            err = "RAM KV pool full (" + std::to_string(pool_bytes_ / 1000000) + " MB, the other slots in use): lower the context or raise --kv-pool-gb";
             return false;
         }
         fprintf(stderr, "KV pool: emptying slot %d (%d tokens) for slot %d\n", (int) (lru - slots_.data()), lru->n_past, cur_slot_);
@@ -863,37 +936,6 @@ bool Qwen35::ensure_committed(int upto, std::string & err) {
     return true;
 }
 
-bool Qwen35::fill_ring(int from, int to, std::string & err) {
-    // copy positions [from, to) from the RAM KV into the VRAM ring, per KV head (flush_ring's inverse)
-    const auto &         h = hp_;
-    std::vector<uint8_t> buf;
-    for (int p = from; p < to;) {
-        const int s = p % W_;
-        int       e = p + 1;
-        while (e < to && (e % W_) == s + (e - p)) e++;
-        const int cnt = e - p;
-        for (int64_t il = 0; il < h.n_layer; il++) {
-            if (h.is_recurrent(il)) continue;
-            for (int kv = 0; kv < 2; kv++) {
-                ggml_tensor * rc = (kv ? v_cache_ : k_cache_)[(size_t) il];
-                buf.resize(rc->nb[1] * (size_t) cnt);
-                for (int64_t j = 0; j < h.n_head_kv; j++) {
-                    const ggml_tensor * ht = (kv ? hv_ : hk_)[(size_t) (il * h.n_head_kv + j)];
-                    for (int r = 0; r < cnt; r++) {
-                        std::memcpy(buf.data() + rc->nb[1] * (size_t) r + ht->nb[1] * (size_t) j,
-                                    (const uint8_t *) ht->data + ht->nb[1] * (size_t) (p + r), ht->nb[1]);
-                    }
-                }
-                ggml_backend_tensor_set(rc, buf.data(), rc->nb[1] * (size_t) (Kd_ + s), buf.size());
-            }
-        }
-        for (int q = p; q < e; q++) slot_pos_[(size_t) (q % W_)] = q;
-        p = e;
-    }
-    (void) err;
-    return true;
-}
-
 bool Qwen35::select_slot(int s, std::string & err) {
     if (slots_.empty() && s == 0) return true;
     if (s < 0 || s >= (int) slots_.size()) {
@@ -904,25 +946,45 @@ bool Qwen35::select_slot(int s, std::string & err) {
         slots_[(size_t) s].used = ++use_clock_;
         return true;
     }
-    // park the active slot: everything it holds must be in its RAM KV, its recurrent state goes to RAM
-    KvSlot &  o    = slots_[(size_t) cur_slot_];
-    const int upto = std::min(exact_upto_, n_past_);
-    if (dry_pending_ || upto < n_past_ || (host_valid_ < upto && !flush_ring(host_valid_, upto, err)) ||
-        std::min(host_valid_, n_past_) < n_past_) {
-        fprintf(stderr, "slot %d: sequence state incomplete (%s), dropped\n", cur_slot_, err.c_str());
-        err.clear();
-        drop_slot(o);
-    } else {
-        for (size_t il = 0; il < conv_state_.size(); il++) {
-            if (!conv_state_[il]) continue;
-            ggml_backend_tensor_copy(conv_state_[il], o.conv[il]);
-            ggml_backend_tensor_copy(ssm_state_[il], o.ssm[il]);
-        }
-        o.n_past     = n_past_;
-        o.host_valid = n_past_;
-        o.exact_upto = n_past_;
-        o.ck_n_past  = ck_n_past_;
+    if (dry_pending_) {
+        err = "select_slot: a dry eval is not committed";
+        return false;
     }
+    const auto & h     = hp_;
+    const size_t pages = (size_t) (n_ctx_ / kPage), row = (size_t) h.head_dim * sizeof(ggml_fp16_t);
+    // park the active slot: recurrent state, new page summaries and the MTP hidden row to RAM (its ring parts and RAM
+    // KV stay where they are)
+    KvSlot & o = slots_[(size_t) cur_slot_];
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        if (!conv_state_[il]) continue;
+        ggml_backend_tensor_copy(conv_state_[il], o.conv[il]);
+        ggml_backend_tensor_copy(ssm_state_[il], o.ssm[il]);
+    }
+    o.n_past       = n_past_;
+    o.host_valid   = host_valid_;
+    o.exact_upto   = exact_upto_;
+    o.ck_n_past    = ck_n_past_;
+    o.slot_pos     = std::move(slot_pos_);
+    o.mtp_slot_pos = std::move(mtp_slot_pos_);
+    const int from = std::min(o.sum_saved, sum_low_);
+    if (sum_upto_ > from) {
+        size_t hi = 0;
+        for (ggml_tensor * t : pmid_) {
+            if (!t) continue;
+            ggml_backend_tensor_get(t, o.summ + (hi * pages + (size_t) from) * row, row * (size_t) from,
+                                    row * (size_t) (sum_upto_ - from));
+            hi++;
+        }
+    }
+    o.sum_upto = o.sum_saved = sum_upto_;
+    o.far_rows = far_rows_;
+    o.far_ws   = far_ws_;
+    o.hid.clear();
+    if (mtp_on_ && hid_row_ >= 0) {
+        o.hid.resize((size_t) h.n_embd);
+        ggml_backend_tensor_get(mtp_hid_, o.hid.data(), mtp_hid_->nb[1] * (size_t) hid_row_, o.hid.size() * sizeof(float));
+    }
+
     // resume slot s
     KvSlot & t = slots_[(size_t) s];
     cur_slot_  = s;
@@ -931,29 +993,49 @@ bool Qwen35::select_slot(int s, std::string & err) {
     hv_        = t.hv;
     conv_ck_   = t.conv_ck;
     ssm_ck_    = t.ssm_ck;
-    for (int i = 0; i < 2; i++) {
-        if (sbuf_[i]) ggml_backend_buffer_clear(sbuf_[i], 0);
+    k_cache_   = t.kr;
+    v_cache_   = t.vr;
+    if (mtp_on_) {
+        mtp_k_ = t.mk;
+        mtp_v_ = t.mv;
     }
-    if (t.n_past > 0) {
-        for (size_t il = 0; il < conv_state_.size(); il++) {
-            if (!conv_state_[il]) continue;
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        if (!conv_state_[il]) continue;
+        if (t.n_past > 0) {
             ggml_backend_tensor_copy(t.conv[il], conv_state_[il]);
             ggml_backend_tensor_copy(t.ssm[il], ssm_state_[il]);
+        } else {
+            ggml_backend_tensor_memset(conv_state_[il], 0, 0, ggml_nbytes(conv_state_[il]));
+            ggml_backend_tensor_memset(ssm_state_[il], 0, 0, ggml_nbytes(ssm_state_[il]));
         }
     }
     n_past_       = t.n_past;
     host_valid_   = t.host_valid;
     exact_upto_   = t.exact_upto;
     ck_n_past_    = t.ck_n_past;
+    slot_pos_     = std::move(t.slot_pos);
+    mtp_slot_pos_ = std::move(t.mtp_slot_pos);
+    if ((int) slot_pos_.size() != W_) slot_pos_.assign((size_t) W_, -1);
+    if ((int) mtp_slot_pos_.size() != Wm_) mtp_slot_pos_.assign((size_t) Wm_, -1);
+    sum_upto_ = sum_low_ = t.sum_upto;
+    if (sum_upto_ > 0) {
+        size_t hi = 0;
+        for (ggml_tensor * p : pmid_) {
+            if (!p) continue;
+            ggml_backend_tensor_set(p, t.summ + hi * pages * row, 0, row * (size_t) sum_upto_);
+            hi++;
+        }
+    }
+    hid_row_ = -1;
+    if (mtp_on_ && !t.hid.empty()) {
+        ggml_backend_tensor_set(mtp_hid_, t.hid.data(), 0, t.hid.size() * sizeof(float));
+        hid_row_ = 0;
+    }
     saved_n_past_ = saved_n_past1_ = 0;
     recorded_n_ = recorded_full_ = 0;
-    dry_pending_ = false;
-    hid_row_     = -1;
-    mtp_slot_pos_.assign((size_t) Wm_, -1);
-    slot_pos_.assign((size_t) W_, -1);
-    far_rows_ = far_ws_ = 0;
-    sum_upto_ = 0;  // the page summaries are rebuilt from this slot's RAM KV
-    return fill_ring(std::max(0, n_past_ - W_), n_past_, err);
+    far_rows_   = t.far_rows;
+    far_ws_     = t.far_ws;
+    return true;
 }
 
 void Qwen35::update_summaries(int upto) {
@@ -1804,6 +1886,7 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     for (int i = 0; i < n; i++) slot_pos_[(size_t) ((n_past_ + i) % W_)] = n_past_ + i;
     attn_mode_ = use_host ? 1 : 0;
     sum_upto_  = std::min(sum_upto_, std::min(n_past_, host_valid_) / kPage);
+    sum_low_   = std::min(sum_low_, sum_upto_);
     static const bool sparse_on = !(std::getenv("E8_SPARSE") && std::atoi(std::getenv("E8_SPARSE")) == 0);
     sparse_ = use_host && n <= kSparseBatch && sparse_on && !pmid_.empty();
     // the active slot needs memory for the rows this eval writes (exact attention without sparse reads them all)

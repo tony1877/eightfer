@@ -11,11 +11,14 @@
 // tool_calls) come from llama.cpp's common library, so requests and responses look like llama-server's. Sampling:
 // temperature, top_p, top_k, min_p, seed, presence_penalty, frequency_penalty, stop, max_tokens.
 //
-// Concurrency: requests are accepted in parallel and run one at a time, first come first served. A request whose client
-// disconnects stops at the next decode step, so it does not hold up the queue.
+// Concurrency: the model is used by one request at a time, in turns taken first come first served (Turn). A request
+// holds the model for its prompt, then gives it up after every decode cycle, so requests on different sequence slots
+// decode concurrently, a cycle each in turn. Model swaps and unloads wait until no request is decoding. A request
+// whose client disconnects stops at the next decode cycle.
 //
 // Sequence slots (--slots N, 27B with the KV in RAM): the model keeps N sequences, each with its own prompt-reuse state,
-// so N conversations (an agent and its subagents) do not evict each other's prompts. A request goes to the slot whose
+// so N conversations (an agent and its subagents) run side by side without evicting each other's prompts. A slot
+// serves one request at a time; with more requests than slots the others wait for one. A request goes to the slot whose
 // state or checkpoint its prompt extends the furthest, else to an empty slot, else to the least recently used one.
 // Slots share one RAM KV budget (--kv-pool-gb, default the --ctx tokens' worth); a slot that needs more memory empties
 // the least recently used idle slots.
@@ -190,7 +193,9 @@ struct Server {
     struct Slot {
         std::vector<int32_t> state_tokens, ck_tokens;
         uint64_t             epoch = 0, used = 0;
+        bool                 busy = false;  // a request is using it
     };
+    int                              streams = 0;  // requests holding a slot (the model must stay loaded)
     std::vector<Slot>                slots;
     uint64_t                         slot_clock = 0;
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
@@ -270,23 +275,47 @@ int32_t sample(const float * lg, int64_t nv, const runtime::SamplerParams & sp, 
     return p.back().second;
 }
 
-// holds the model for one request; waits for the requests that arrived earlier
+// holds the model; waits for the turns asked for earlier. release() / acquire() give it up and queue again (a decoding
+// request does so after every cycle). An exclusive turn (unloading or swapping the model) also waits until no request
+// holds a sequence slot.
 class Turn {
 public:
-    explicit Turn(Server & S) : S_(S) {
+    explicit Turn(Server & S, bool exclusive = false) : S_(S), excl_(exclusive) { acquire(); }
+    ~Turn() { release(); }
+    void acquire() {
+        if (held_) return;
         std::unique_lock<std::mutex> lk(S_.mu);
-        const uint64_t t = S_.next_ticket++;
-        S_.cv.wait(lk, [&] { return S_.serving == t; });
+        for (;;) {
+            if (excl_) S_.cv.wait(lk, [&] { return S_.streams == 0; });
+            const uint64_t t = S_.next_ticket++;
+            S_.cv.wait(lk, [&] { return S_.serving == t; });
+            if (!excl_ || S_.streams == 0) break;
+            S_.serving++;  // a request started in between: let it run, queue again
+            S_.cv.notify_all();
+        }
+        held_ = true;
     }
-    ~Turn() {
+    void release() {
+        if (!held_) return;
         {
             std::lock_guard<std::mutex> lk(S_.mu);
             S_.serving++;
         }
+        held_ = false;
         S_.cv.notify_all();
+    }
+    // gives up the turn until `ready` (checked under the lock) holds, then queues again
+    template <class F> void wait_for(F ready) {
+        release();
+        {
+            std::unique_lock<std::mutex> lk(S_.mu);
+            S_.cv.wait(lk, ready);
+        }
+        acquire();
     }
 private:
     Server & S_;
+    bool     excl_ = false, held_ = false;
 };
 
 // frees the model (the next request of ours loads it again); the caller holds a Turn
@@ -316,7 +345,7 @@ struct Result {
 // Runs one request: chat (body has "messages") or completion ("prompt"). `on_delta` (streaming) receives OpenAI delta
 // objects as the output grows (chat: {content, reasoning_content, tool_calls}; completion: {text}) and returns false
 // when the client is gone, which stops generation (as does `cancelled`).
-bool run_request(Server & S, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
+bool run_request(Server & S, Turn & turn, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
                  const std::function<bool()> & cancelled, std::string & err) {
     int idx = 0;  // the entry this request names (the main model when it names none of ours)
     if (body.contains("model") && body["model"].is_string()) {
@@ -325,10 +354,15 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         }
     }
     if (S.active != idx || !S.model) {
+        if (S.model && S.streams > 0) {  // another model: wait until no request is decoding on this one
+            turn.wait_for([&] { return S.streams == 0; });
+            if (S.active == idx && S.model) goto loaded;
+        }
         unload_model(S);
         if (!S.load(idx, err)) return false;
         S.active = idx;
     }
+loaded:
     S.vocab = S.entries[(size_t) idx].vocab;
     S.tmpl  = S.entries[(size_t) idx].tmpls.get();
     S.last_used     = std::chrono::steady_clock::now();
@@ -503,6 +537,14 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     // least recently used
     const int n_slots = S.q35 ? S.q35->n_slots() : 1;
     if ((int) S.slots.size() != n_slots) S.slots.assign((size_t) n_slots, Server::Slot{});
+    auto any_free = [&] {
+        return S.model.get() != &m || std::any_of(S.slots.begin(), S.slots.end(), [](const Server::Slot & x) { return !x.busy; });
+    };
+    if (!any_free()) turn.wait_for(any_free);
+    if (S.model.get() != &m || (int) S.slots.size() != n_slots) {
+        err = "the model changed while this request waited for a slot";
+        return false;
+    }
     auto sync_slot = [&](int s) {  // forget tokens of a sequence the model has dropped
         auto & sl = S.slots[(size_t) s];
         if (S.q35 && S.q35->slot_epoch(s) != sl.epoch) {
@@ -516,6 +558,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     for (int s = 0; s < n_slots; s++) {
         sync_slot(s);
         const auto & sl  = S.slots[(size_t) s];
+        if (sl.busy) continue;
         const int    np  = S.q35 ? S.q35->slot_n_past(s) : m.n_past();
         size_t       len = 0;
         if (extends(sl.state_tokens) && (int) sl.state_tokens.size() == np) len = sl.state_tokens.size();
@@ -527,20 +570,47 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
     }
     if (slot < 0) {
         for (int s = 0; s < n_slots && slot < 0; s++) {
-            if (S.slots[(size_t) s].state_tokens.empty() && S.slots[(size_t) s].ck_tokens.empty()) slot = s;
+            const auto & x = S.slots[(size_t) s];
+            if (!x.busy && x.state_tokens.empty() && x.ck_tokens.empty()) slot = s;
         }
     }
     if (slot < 0) {
-        slot = 0;
-        for (int s = 1; s < n_slots; s++) {
-            if (S.slots[(size_t) s].used < S.slots[(size_t) slot].used) slot = s;
+        for (int s = 0; s < n_slots; s++) {
+            if (!S.slots[(size_t) s].busy && (slot < 0 || S.slots[(size_t) s].used < S.slots[(size_t) slot].used)) slot = s;
         }
     }
     if (S.q35 && !S.q35->select_slot(slot, err)) return false;
-    sync_slot(slot);  // parking the previous slot can drop it, never this one, but stay exact
+    sync_slot(slot);
+    // hold the slot (and keep the model loaded) until this request ends
+    struct Hold {
+        Server & S;
+        int      slot;
+        Hold(Server & s, int i) : S(s), slot(i) {
+            std::lock_guard<std::mutex> lk(S.mu);
+            S.slots[(size_t) slot].busy = true;
+            S.streams++;
+            if (S.q35) S.q35->pin_slot(slot, true);
+        }
+        ~Hold() {
+            {
+                std::lock_guard<std::mutex> lk(S.mu);
+                if (slot < (int) S.slots.size()) S.slots[(size_t) slot].busy = false;
+                S.streams--;
+                if (S.q35) S.q35->pin_slot(slot, false);
+            }
+            S.cv.notify_all();
+        }
+    } slot_hold(S, slot);
     auto & SL = S.slots[(size_t) slot];
     SL.used   = ++S.slot_clock;
     R.slot    = slot;
+    // between decode cycles: let the other requests run a cycle, then continue on this slot
+    auto yield = [&]() {
+        turn.release();
+        turn.acquire();
+        S.last_used = std::chrono::steady_clock::now();
+        return !S.q35 || S.q35->select_slot(slot, err);
+    };
 
     size_t start = 0;
     if (extends(SL.state_tokens) && (int) SL.state_tokens.size() == m.n_past()) {
@@ -741,7 +811,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
                     continue;
                 }
             }
-            if (!dec_p->step(out, err)) return false;
+            if (!yield() || !dec_p->step(out, err)) return false;
             consume();
         }
         const auto & st = dec_p->stats();
@@ -765,7 +835,7 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         next();
         consume();
         while (!done && m.n_past() + 2 < m.n_ctx()) {
-            if (!m.eval_last(&out.back(), 1, last.data(), err)) return false;
+            if (!yield() || !m.eval_last(&out.back(), 1, last.data(), err)) return false;
             next();
             consume();
         }
@@ -1072,7 +1142,7 @@ int serve(const std::vector<std::string> & args) {
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
                 if (!sp->model || std::chrono::steady_clock::now() - sp->last_used < std::chrono::seconds(idle_unload)) continue;
-                Turn turn(*sp);
+                Turn turn(*sp, true);
                 if (sp->model && std::chrono::steady_clock::now() - sp->last_used >= std::chrono::seconds(idle_unload)) {
                     sp->q35 = nullptr;
                     sp->model.reset();
@@ -1159,7 +1229,7 @@ int serve(const std::vector<std::string> & args) {
     });
     http.Post("/unload", [&](const httplib::Request & req, httplib::Response & resp) {  // free the GPU now
         if (!authorized(req, resp)) return;
-        Turn turn(*S);
+        Turn turn(*S, true);
         const bool was = S->model != nullptr;
         unload_model(*S);
         resp.set_content(json{ { "success", true }, { "unloaded", was } }.dump(), "application/json");
@@ -1196,7 +1266,7 @@ int serve(const std::vector<std::string> & args) {
                     return c;
                 };
                 if (!body.value("stream", false)) {
-                    Turn turn(*S);
+                    Turn turn(*S, true);
                     unload_model(*S);
                     auto r = client()->Post(path, hd, rbody, "application/json");
                     if (!r) {
@@ -1210,7 +1280,7 @@ int serve(const std::vector<std::string> & args) {
                     return;
                 }
                 resp.set_chunked_content_provider("text/event-stream", [srv, path, rbody, hd, client](size_t, httplib::DataSink & sink) {
-                    Turn turn(*srv);
+                    Turn turn(*srv, true);
                     unload_model(*srv);
                     auto r = client()->Post(path, hd, rbody, "application/json", [&](const char * d, size_t n) {
                         return sink.is_writable() && sink.write(d, n);
@@ -1237,7 +1307,7 @@ int serve(const std::vector<std::string> & args) {
                 std::string e;
                 bool        ok = false;
                 try {
-                    ok = run_request(*S, body, R, nullptr, [&] { return req.is_connection_closed(); }, e);
+                    ok = run_request(*S, turn, body, R, nullptr, [&] { return req.is_connection_closed(); }, e);
                 } catch (const std::exception & ex) {
                     e = ex.what();
                 }
@@ -1286,7 +1356,7 @@ int serve(const std::vector<std::string> & args) {
                 std::string e;
                 bool        ok = false;
                 try {
-                    ok = run_request(SS, body, R, [&](const json & d) { return send(delta(d, nullptr)); },
+                    ok = run_request(SS, turn, body, R, [&](const json & d) { return send(delta(d, nullptr)); },
                                      [&] { return !sink.is_writable(); }, e);
                 } catch (const std::exception & ex) {
                     e = ex.what();

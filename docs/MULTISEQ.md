@@ -26,6 +26,14 @@ empties the least recently used idle ones. `tests/slots_smoke.ps1`: three interl
 follow-up on its own slot with its prompt reused (0.5 s instead of 16 s; 1.7 s with a 4K VRAM window) and its
 code recalled; single-slot KLD unchanged.
 
+Concurrent decoding (2026-10-08): a request gives up the model after every decode cycle, so requests on different
+slots decode a cycle each in turn. Switching is cheap: each slot owns 1/N of the VRAM ring (its own draft far area
+first, shrunk to leave 2048 ring rows) and of the MTP ring as views swapped in with the slot; parking copies only
+the recurrent state, new page summaries and the MTP hidden row to RAM. Without a per-slot far area drafts on long
+prompts collapse (17K tokens: 4.2 vs 21.6 tokens per cycle). `tests/concurrent_smoke.ps1`: 4 requests on 3 slots
+all finish and overlap; with a fixed k (`--spec 16`) every output equals its run alone; per-cycle draft and verify
+times are unchanged. No throughput gain yet (cycles take turns): that is phase 3.
+
 ## Phase 2: speculative full-model pass (single stream, exact)
 
 Cycle c: launch the verify of drafts d[1..k] async on stream A (slot 0). Meanwhile on stream B, copy the
