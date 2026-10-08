@@ -245,6 +245,52 @@ int gen(const std::vector<std::string> & args) {
             fprintf(stderr, "%s\n", err.c_str());
             return 1;
         }
+        // draft checks: base only, the VRAM window, as draft_rounds runs them (n = 1 + proposals)
+        m.save_state();
+        {
+            std::vector<float>   tl((size_t) 8 * 20);
+            std::vector<int32_t> ti((size_t) 8 * 20);
+            for (int n : { 1, 2, 4, 7 }) {
+                for (int variant = 0; variant < 3; variant++) {
+                    model::EvalOpts o;
+                    o.residual  = false;
+                    o.window_ok = true;
+                    o.record    = variant > 0 || n > 1;
+                    o.dry       = o.record;
+                    o.argmax    = variant != 2;
+                    o.topk      = variant == 2 ? 20 : 0;
+                    double best = 1e9, sum = 0;
+                    const int reps = 30;
+                    for (int rep = 0; rep < reps; rep++) {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        if (!m.eval(prompt.data() + prompt.size() - (size_t) n, n, o, variant == 2 ? tl.data() : nullptr, ti.data(), err) ||
+                            (o.dry && !m.commit(0, err))) {
+                            fprintf(stderr, "%s\n", err.c_str());
+                            return 1;
+                        }
+                        if (!o.dry) m.restore_state();
+                        const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                        if (rep >= 3) {
+                            best = std::min(best, t);
+                            sum += t;
+                        }
+                    }
+                    static const char * vn[] = { "plain argmax", "dry+record argmax", "dry+record top-20" };
+                    printf("profile: draft check n=%d, %s: best %.2f ms, mean %.2f ms\n", n, vn[variant], best * 1e3, sum / (reps - 3) * 1e3);
+                }
+            }
+            for (int rep = 0; rep < 3; rep++) {  // MTP steps
+                double best = 1e9;
+                for (int r2 = 0; r2 < 30; r2++) {
+                    int32_t    id = -1;
+                    const auto t0 = std::chrono::steady_clock::now();
+                    if (m.has_mtp() && !m.mtp_step(prompt.back(), m.n_past() - 1, -1, nullptr, &id, err)) break;
+                    best = std::min(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+                }
+                if (rep == 2) printf("profile: MTP step argmax: best %.2f ms\n", best * 1e3);
+            }
+        }
+        m.save_state();
         std::vector<int32_t> batch(prompt.end() - std::min<size_t>(prompt.size(), (size_t) k + 1), prompt.end());
         std::vector<float>   lg(batch.size() * (size_t) m.hp().n_vocab);
         for (int mode = 0; mode < 3; mode++) {
@@ -256,7 +302,7 @@ int gen(const std::vector<std::string> & args) {
             for (int rep = 0; rep < 5; rep++) {
                 m.save_state();
                 const auto t0 = std::chrono::steady_clock::now();
-                int32_t    ids[16];
+                int32_t    ids[160];
                 if (!m.eval(batch.data(), (int) batch.size(), o, mode == 0 ? nullptr : lg.data(), ids, err)) {
                     fprintf(stderr, "%s\n", err.c_str());
                     return 1;
