@@ -112,6 +112,11 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
   N sequences, so N conversations (an agent and its subagents) keep their prompt caches: a request goes to the slot it
   extends furthest, else an empty or the least recently used one; slots share `--kv-pool-gb` (default: `--ctx` tokens). A
   streamed request whose client disconnects stops at the next decode cycle. `tests/server_smoke.ps1` covers all of it.
+- Side sequence (one slot, KV in RAM; on unless `--no-side`): a request that continues neither the conversation nor the
+  parked sequence (a client's session title, a summary) parks the conversation's state in RAM (its VRAM ring rows,
+  recurrent state, page summaries, MTP ring; its own RAM KV region stays) and runs on an empty sequence with the whole
+  window; the conversation's next turn swaps it back. 17K and 30K-token conversations: ~150 ms per swap, the next turn
+  reuses the whole prompt and its output is identical to a run without the side request.
 - Long context (up to the models' 262144): pass `--ctx 262144 --kv q8_0`. When the 27B's KV does not fit in VRAM next
   to the weights, the full KV (9.1 GB at 256K) lives in RAM and small decode/verify batches use sparse attention:
   per 64-key page a midpoint key in VRAM ranks pages for the batch's queries, and attention is exact over the top 128

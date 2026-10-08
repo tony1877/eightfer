@@ -112,6 +112,7 @@ struct LoadOptions {
     ggml_type kv_type_v    = GGML_TYPE_COUNT;  // V cache type; GGML_TYPE_COUNT = kv_type
     bool      kv_lock      = false; // lock the RAM KV's pages in physical memory as they are taken (never paged out)
     int       n_slots      = 1;     // sequence slots (see Qwen35::select_slot); > 1 needs the KV in RAM
+    bool      side_seq     = false; // one slot, KV in RAM: a second, parked sequence (see Qwen35::swap_side)
     double    kv_pool_gb   = 0;     // most RAM KV memory taken by all slots together; 0 = n_ctx tokens' worth
     int       draft_batch  = 1;     // slots: requests drafted at once (VRAM for draft_batch - 1 more recurrent states)
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
@@ -189,6 +190,17 @@ public:
     uint64_t kv_committed_bytes() const { return committed_bytes_; }
     // a pinned slot (a conversation in progress) is never emptied to make room in the KV pool
     void     pin_slot(int s, bool on) { if (!slots_.empty()) slots_[(size_t) s].pinned = on; }
+
+    // Side sequence (one slot, KV in RAM, LoadOptions::side_seq): a second sequence with a RAM KV region of its own,
+    // parked while the other one runs, so a short unrelated request (a session title) does not evict a conversation.
+    // swap_side() parks the active sequence (its VRAM state: ring rows in use, recurrent state, page summaries, MTP
+    // ring; its prompt-reuse checkpoint) in RAM and resumes the parked one, or an empty one. The whole VRAM window
+    // stays the active sequence's. side_epoch() changes when the parked sequence is dropped (KV pool full).
+    bool     has_side() const { return side_on_; }
+    bool     swap_side(std::string & err);
+    void     drop_side();
+    int      side_n_past() const { return side_.n_past; }
+    uint64_t side_epoch() const { return side_.kv.epoch; }
 
     // Joint verify (sequence slots): the sequences of several slots in one pass over the weights (base + residual), so
     // they share the residual's trip over PCIe. Each sequence runs the recurrence from its slot's committed state and
@@ -405,6 +417,14 @@ private:
                   const std::vector<ggml_tensor *> & hk, const std::vector<ggml_tensor *> & hv,
                   const std::vector<ggml_tensor *> & sel, int kp);
     std::vector<KvSlot>        slots_;
+    struct SideSeq {  // the parked side sequence (swap_side)
+        KvSlot               kv;  // its RAM KV region and bookkeeping
+        int                  n_past = 0, host_valid = 0, exact_upto = 0, ck_n_past = 0, far_rows = 0, far_ws = 0, sum_upto = 0;
+        std::vector<int>     slot_pos, mtp_slot_pos;
+        std::vector<uint8_t> blob;  // VRAM state and checkpoint bytes
+    };
+    bool                       side_on_ = false;
+    SideSeq                    side_;
     int                        cur_slot_ = 0;
     uint64_t                   use_clock_ = 0;
     size_t                     kv_row_bytes_ = 0;      // RAM KV bytes per position (all heads, K and V)

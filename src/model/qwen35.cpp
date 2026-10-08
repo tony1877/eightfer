@@ -556,10 +556,16 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
     if (W_ < n_ctx_) {
         const int    ns    = std::max(1, opt.n_slots);
         const size_t nhead = (size_t) (h.n_layer * h.n_head_kv);
-        ggml_init_params hp = { ggml_tensor_overhead() * (nhead * 2 * (size_t) ns + 8), nullptr, true };
+        side_on_           = opt.side_seq && ns == 1 && !(std::getenv("E8_KV_PINNED") && std::atoi(std::getenv("E8_KV_PINNED")) != 0);
+        const int    nreg  = ns + (side_on_ ? 1 : 0);  // RAM KV regions
+        ggml_init_params hp = { ggml_tensor_overhead() * (nhead * 2 * (size_t) nreg + 8), nullptr, true };
         hctx_               = ggml_init(hp);
         slots_.assign((size_t) ns, KvSlot{});
-        for (KvSlot & sl : slots_) {
+        std::vector<KvSlot *> regs;
+        for (KvSlot & sl : slots_) regs.push_back(&sl);
+        if (side_on_) regs.push_back(&side_.kv);
+        for (KvSlot * slp : regs) {
+            KvSlot & sl = *slp;
             sl.hk.assign(nhead, nullptr);
             sl.hv.assign(nhead, nullptr);
             for (int64_t il = 0; il < h.n_layer; il++) {
@@ -592,15 +598,15 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
                 if (slots_[0].hk[i]) per += GGML_PAD(ggml_nbytes(slots_[0].hk[i]), kAlign) + GGML_PAD(ggml_nbytes(slots_[0].hv[i]), kAlign);
             }
             per         = (per + gran - 1) / gran * gran;
-            hmem_bytes_ = per * (size_t) ns;
+            hmem_bytes_ = per * (size_t) nreg;
             hmem_       = os_reserve(hmem_bytes_);
             if (!hmem_) {
                 err = "cannot reserve address space for the RAM KV";
                 return false;
             }
             hbuf_ = ggml_backend_cpu_buffer_from_ptr(hmem_, hmem_bytes_);
-            for (int s = 0; s < ns; s++) {
-                KvSlot & sl = slots_[(size_t) s];
+            for (int s = 0; s < nreg; s++) {
+                KvSlot & sl = *regs[(size_t) s];
                 sl.base     = (uint8_t *) hmem_ + per * (size_t) s;
                 sl.bytes    = per;
                 size_t off  = 0;
@@ -617,6 +623,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             }
         }
         pool_bytes_ = opt.kv_pool_gb > 0 ? (size_t) (opt.kv_pool_gb * 1e9) : kv_row_bytes_ * (size_t) n_ctx_;
+        if (side_on_ && opt.kv_pool_gb <= 0) pool_bytes_ += kv_row_bytes_ * 32768;  // (room for a side sequence)
         // slots 1..: parked recurrent state and a prompt-reuse checkpoint each, in RAM (pages on demand); slot 0's
         // checkpoint is conv_ck_/ssm_ck_ and its parked state lives here too
         slots_[0].conv_ck = conv_ck_;
@@ -938,6 +945,11 @@ bool Qwen35::ensure_committed_slot(KvSlot & sl, int upto, std::string & err) {
         for (KvSlot & o : slots_) {
             if (&o != &sl && !o.pinned && o.committed > 0 && (!lru || o.used < lru->used)) lru = &o;
         }
+        if (!lru && side_on_ && &sl != &side_.kv && side_.kv.committed > 0) {
+            fprintf(stderr, "KV pool: dropping the parked side sequence (%d tokens)\n", side_.n_past);
+            drop_side();
+            continue;
+        }
         if (!lru) {
             err = "RAM KV pool full (" + std::to_string(pool_bytes_ / 1000000) + " MB, the other slots in use): lower the context or raise --kv-pool-gb";
             return false;
@@ -1069,6 +1081,123 @@ bool Qwen35::select_slot(int s, std::string & err) {
     recorded_n_ = recorded_full_ = 0;
     far_rows_   = t.far_rows;
     far_ws_     = t.far_ws;
+    return true;
+}
+
+void Qwen35::drop_side() {
+    if (!side_on_) return;
+    drop_slot(side_.kv, true);
+    side_.n_past = side_.host_valid = side_.exact_upto = side_.ck_n_past = side_.far_rows = side_.far_ws = side_.sum_upto = 0;
+    side_.slot_pos.clear();
+    side_.mtp_slot_pos.clear();
+    std::vector<uint8_t>().swap(side_.blob);
+}
+
+bool Qwen35::swap_side(std::string & err) {
+    if (!side_on_) {
+        err = "no side sequence (one slot with the KV in RAM only)";
+        return false;
+    }
+    if (dry_pending_) {
+        err = "swap_side: a dry eval is not committed";
+        return false;
+    }
+    // the VRAM state of a sequence of n_past positions, in a fixed order: recurrent state, prompt-reuse checkpoint,
+    // ring rows in use (draft far area first), MTP ring rows in use, page summaries
+    struct Part {
+        ggml_tensor * t;
+        size_t        n;
+    };
+    auto parts = [&](int n_past, int ck_n_past, int sum_upto) {
+        std::vector<Part> v;
+        if (n_past <= 0) return v;
+        for (size_t il = 0; il < conv_state_.size(); il++) {
+            if (!conv_state_[il]) continue;
+            v.push_back({ conv_state_[il], ggml_nbytes(conv_state_[il]) });
+            v.push_back({ ssm_state_[il], ggml_nbytes(ssm_state_[il]) });
+            if (ck_n_past > 0) {
+                v.push_back({ conv_ck_[il], ggml_nbytes(conv_ck_[il]) });
+                v.push_back({ ssm_ck_[il], ggml_nbytes(ssm_ck_[il]) });
+            }
+        }
+        const int rows = Kd_ + std::min(n_past, W_);
+        for (size_t il = 0; il < k_cache_.size(); il++) {
+            if (!k_cache_[il]) continue;
+            v.push_back({ k_cache_[il], k_cache_[il]->nb[1] * (size_t) rows });
+            v.push_back({ v_cache_[il], v_cache_[il]->nb[1] * (size_t) rows });
+        }
+        if (mtp_on_) {
+            const int mr = std::min(n_past, Wm_);
+            v.push_back({ mtp_k_, mtp_k_->nb[1] * (size_t) mr });
+            v.push_back({ mtp_v_, mtp_v_->nb[1] * (size_t) mr });
+        }
+        for (ggml_tensor * t : pmid_) {
+            if (t && sum_upto > 0) v.push_back({ t, t->nb[1] * (size_t) std::min<int64_t>(sum_upto, t->ne[1]) });
+        }
+        return v;
+    };
+
+    // park the active sequence
+    SideSeq a;
+    a.n_past     = n_past_;
+    a.host_valid = host_valid_;
+    a.exact_upto = exact_upto_;
+    a.ck_n_past  = ck_n_past_;
+    a.far_rows   = far_rows_;
+    a.far_ws     = far_ws_;
+    a.sum_upto   = sum_upto_;
+    {
+        const auto ps = parts(a.n_past, a.ck_n_past, a.sum_upto);
+        size_t     tot = 0;
+        for (auto & q : ps) tot += q.n;
+        a.blob.resize(tot);
+        size_t off = 0;
+        for (auto & q : ps) {
+            ggml_backend_tensor_get(q.t, a.blob.data() + off, 0, q.n);
+            off += q.n;
+        }
+    }
+    a.slot_pos     = std::move(slot_pos_);
+    a.mtp_slot_pos = std::move(mtp_slot_pos_);
+    a.kv           = std::move(slots_[0]);
+
+    // resume the parked one (or an empty one)
+    SideSeq b  = std::move(side_);
+    slots_[0]  = std::move(b.kv);
+    hk_        = slots_[0].hk;
+    hv_        = slots_[0].hv;
+    side_      = std::move(a);
+    if (b.n_past <= 0) {
+        // (reset() empties the region now active: already empty, or a sequence of no positions)
+        reset();
+        return true;
+    }
+    n_past_     = b.n_past;
+    host_valid_ = b.host_valid;
+    exact_upto_ = b.exact_upto;
+    ck_n_past_  = b.ck_n_past;
+    far_rows_   = b.far_rows;
+    far_ws_     = b.far_ws;
+    sum_upto_ = sum_low_ = b.sum_upto;
+    {
+        const auto ps  = parts(b.n_past, b.ck_n_past, b.sum_upto);
+        size_t     off = 0;
+        for (auto & q : ps) {
+            if (off + q.n > b.blob.size()) {
+                err = "swap_side: parked state is short";
+                return false;
+            }
+            ggml_backend_tensor_set(q.t, b.blob.data() + off, 0, q.n);
+            off += q.n;
+        }
+    }
+    slot_pos_     = std::move(b.slot_pos);
+    mtp_slot_pos_ = std::move(b.mtp_slot_pos);
+    if ((int) slot_pos_.size() != W_) slot_pos_.assign((size_t) W_, -1);
+    if ((int) mtp_slot_pos_.size() != Wm_) mtp_slot_pos_.assign((size_t) Wm_, -1);
+    hid_row_      = -1;
+    saved_n_past_ = saved_n_past1_ = 0;
+    recorded_n_ = recorded_full_ = 0;
     return true;
 }
 

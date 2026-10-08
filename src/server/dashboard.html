@@ -234,11 +234,11 @@ function annotate(R) {
     r.start = r.t - (r.prefill_s || 0) - (r.decode_s || 0);
     const newTok = r.prompt_tokens - r.reused_tokens;
     // side request: short, unrelated prompt (session titles, summaries) next to a long conversation
-    r.side = main != null && main.prompt_tokens > 4000 && r.prompt_tokens < main.prompt_tokens * 0.4 && r.reused_tokens < 256;
+    r.isSide = r.side === "parked" || r.side == null && main != null && main.prompt_tokens > 4000 && r.prompt_tokens < main.prompt_tokens * 0.4 && r.reused_tokens < 256;
     // cache miss: the conversation continued but most of it was prefilled again
-    r.miss = !r.side && main != null && r.prompt_tokens >= main.prompt_tokens * 0.8 && main.prompt_tokens > 2000 && newTok > Math.max(2000, r.prompt_tokens * 0.5);
+    r.miss = !r.isSide && main != null && r.prompt_tokens >= main.prompt_tokens * 0.8 && main.prompt_tokens > 2000 && newTok > Math.max(2000, r.prompt_tokens * 0.5);
     r.loop = (r.reasoning_repeat || 0) > .3 || (r.content_repeat || 0) > .3;
-    if (!r.side) main = r;
+    if (!r.isSide) main = r;
   }
 }
 function sessions(R, gap) {
@@ -266,7 +266,7 @@ function hideTip() { tip.style.opacity = 0; }
 const trow = (k, v, c) => `<div class="r"><span>${c ? `<i style="background:${c}"></i>` : ""}${k}</span><b class="num">${v}</b></div>`;
 function reqTip(r) {
   const s = r.spec || {};
-  return `<div class="h">${clock(r.t)} · ${r.side ? "side request" : r.kind || "chat"}</div>` +
+  return `<div class="h">${clock(r.t)} · ${r.isSide ? "side request" : r.kind || "chat"}</div>` +
     trow("prompt", `${fmt(r.prompt_tokens)} (${fmt(r.reused_tokens)} reused)`) + trow("prefill", dur(r.prefill_s)) +
     trow("generated", `${fmt(r.gen_tokens)} tok`) + trow("decode", `${dur(r.decode_s)} · ${fmt(tps(r), 1)} tok/s`) +
     (s.cycles ? trow("tok/cycle", fmt(tpc(r), 2)) : "") + (r.tool_calls ? trow("tool calls", r.tool_calls) : "") + trow("finish", r.finish);
@@ -417,7 +417,7 @@ function kpis(R, wall) {
     kpi("Drafts kept", fmt(pct(mk + ek, mp + ep), 0), "%", `MTP ${fmt(pct(mk, mp), 0)}% · echo ${fmt(pct(ek, ep), 0)}%`) +
     kpi("Model busy", fmt(wall > 0 ? pct(busy, wall) : null, 0), "%", `${dur(busy)} of ${dur(wall)} wall`) +
     kpi("Peak context", kfmt(ctx), "tok", cfg.ctx ? `of ${kfmt(cfg.ctx)} (${fmt(pct(ctx, cfg.ctx), 0)}%)` : "") +
-    kpi("Requests", fmt(R.length), "", `${fmt(sum(R, r => r.tool_calls))} tool calls · ${R.filter(r => r.side).length} side`);
+    kpi("Requests", fmt(R.length), "", `${fmt(sum(R, r => r.tool_calls))} tool calls · ${R.filter(r => r.isSide).length} side`);
 }
 
 // ---- insights
@@ -425,12 +425,14 @@ function insights(R, wall) {
   const out = [];
   const add = (lvl, html) => out.push(`<div class="ins ${lvl}"><span class="ic">${{ good: "✓", warn: "!", bad: "!", info: "i" }[lvl]}</span><div>${html}</div></div>`);
   if (!R.length) { $("ins").innerHTML = `<div class="empty">nothing yet</div>`; return; }
-  const misses = R.filter(r => r.miss), side = R.filter(r => r.side);
+  const misses = R.filter(r => r.miss), side = R.filter(r => r.isSide);
   if (misses.length) {
     const lost = sum(misses, r => r.prefill_s), afterSide = misses.filter(r => { const i = R.indexOf(r); return i > 0 && R[i - 1].side; }).length;
     add("bad", `<b>${misses.length} cache miss${misses.length > 1 ? "es" : ""}</b> re-prefilled ${kfmt(sum(misses, r => r.prompt_tokens - r.reused_tokens))} tokens, costing <b>${dur(lost)}</b>` +
       (afterSide ? ` · ${afterSide} right after a side request (session title / summary) evicted the conversation` : ""));
   } else if (R.length > 2) add("good", `<b>No cache misses</b> · ${fmt(pct(sum(R, r => r.reused_tokens), sum(R, r => r.prompt_tokens)), 0)}% of prompt tokens came from cache`);
+  const kept = R.filter(r => r.side === "resumed");
+  if (kept.length) add("good", `<b>Side sequence kept the conversation ${kept.length} time${kept.length > 1 ? "s" : ""}</b> · ${kfmt(sum(kept, r => r.reused_tokens))} tokens reused instead of prefilled again`);
   if (side.length) add("info", `<b>${side.length} side request${side.length > 1 ? "s" : ""}</b> (short prompts beside the conversation) took ${dur(sum(side, r => r.prefill_s + r.decode_s))}`);
   const loops = R.filter(r => r.loop);
   if (loops.length) add("warn", `<b>${loops.length} repetition loop${loops.length > 1 ? "s" : ""}</b> in reasoning or content · last at ${clock(loops[loops.length - 1].t)}`);
@@ -465,7 +467,7 @@ function timeSplit(R, sess) {
     for (const r of sess.R) {
       if (r.start - t > 0.05) segs.push({ f: r.start - t, c: "var(--grid)", tip: `<div class="h">idle</div>${trow("waiting", dur(r.start - t))}` });
       const p = parts(r), tp = reqTip(r);
-      [["pre", "var(--s1)"], ["draft", "var(--s2)"], ["verify", "var(--s3)"], ["other", "var(--s4)"]].forEach(([k, c]) => { if (p[k] > 0.02) segs.push({ f: p[k], c, tip: tp, edge: r.side ? "side" : r.miss ? "miss" : "" }); });
+      [["pre", "var(--s1)"], ["draft", "var(--s2)"], ["verify", "var(--s3)"], ["other", "var(--s4)"]].forEach(([k, c]) => { if (p[k] > 0.02) segs.push({ f: p[k], c, tip: tp, edge: r.isSide ? "side" : r.miss ? "miss" : "" }); });
       t = Math.max(t, r.t);
     }
     h = `<div class="lane">` + segs.map((s, i) => `<div class="seg" data-i="${i}" style="flex:${s.f};background:${s.c}${s.edge === "miss" && s.c === "var(--s1)" ? ";box-shadow:inset 0 3px 0 var(--bad)" : ""}"></div>`).join("") + `</div>
@@ -488,7 +490,7 @@ function table(R) {
   const rows = R.slice(-300).reverse().map(r => {
     const s = r.spec || {}, flags = [];
     if (r.miss) flags.push(`<span class="pill bad">cache miss</span>`);
-    if (r.side) flags.push(`<span class="pill">side</span>`);
+    if (r.isSide) flags.push(`<span class="pill">side</span>`);
     if (r.loop) flags.push(`<span class="pill warn">loop</span>`);
     if (r.finish === "length") flags.push(`<span class="pill warn">length</span>`);
     if (r.tool_calls) flags.push(`<span class="pill good">${r.tool_calls} tool${r.tool_calls > 1 ? "s" : ""}</span>`);

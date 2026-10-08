@@ -29,6 +29,12 @@
 // Slots share one RAM KV budget (--kv-pool-gb, default the --ctx tokens' worth); a slot that needs more memory empties
 // the least recently used idle slots.
 //
+// Side sequence (one slot, KV in RAM; --no-side turns it off): a request that continues neither the active sequence
+// nor the parked one (a session title, a summary, another conversation) parks the active sequence and starts on an
+// empty one, so it does not evict a conversation's prompt; a request that continues the parked sequence swaps it back
+// (Qwen35::swap_side, ~0.1 s). The parked sequence is the one swapped out last: one conversation and one side request
+// are kept, and the whole VRAM window always belongs to the running request.
+//
 // Sharing the GPU (--idle-unload SEC, --unload-router URL): the model loads on the first request and is freed after SEC
 // idle seconds; before loading, every model loaded by a llama-server router at URL is unloaded (same API key), so the
 // two servers take turns on the GPU. The router is also proxied: /v1/models lists its models too, and a completion
@@ -202,6 +208,7 @@ struct Server {
         uint64_t             epoch = 0, used = 0;
         bool                 busy = false;  // a request is using it
     };
+    Slot                             park;         // the parked side sequence's tokens (one slot, Qwen35::swap_side)
     int                              streams = 0;  // requests holding a slot (the model must stay loaded)
     // decode rounds (sequence slots): requests in their decode loop, and the drafted cycles waiting for the verify
     struct Job {
@@ -394,6 +401,7 @@ struct Result {
     std::string     text;  // completion requests
     std::string     finish = "stop";
     int             n_prompt = 0, n_gen = 0, n_reused = 0, slot = 0;
+    int             side_swap = 0;  // side sequence: 1 = parked the conversation, 2 = resumed the parked one
     double          t_prompt = 0, t_gen = 0;
 };
 
@@ -762,6 +770,47 @@ loaded:
         S.last_used = std::chrono::steady_clock::now();
         return !S.q35 || S.q35->select_slot(slot, err);
     };
+
+    // ---- side sequence (one slot): park the active sequence for a request that does not continue it, swap back for
+    // one that continues the parked sequence
+    if (S.q35 && S.q35->has_side() && n_slots == 1) {
+        if (S.q35->side_epoch() != S.park.epoch) {  // dropped (KV pool full)
+            S.park.state_tokens.clear();
+            S.park.ck_tokens.clear();
+            S.park.epoch = S.q35->side_epoch();
+        }
+        auto reuse = [&](const Server::Slot & x, int np) -> size_t {
+            if (extends(x.state_tokens) && (int) x.state_tokens.size() == np) return x.state_tokens.size();
+            if (extends(x.ck_tokens)) return x.ck_tokens.size();
+            return 0;
+        };
+        constexpr size_t kSideMin = 2048;  // an active sequence worth keeping
+        const size_t     ra = reuse(SL, m.n_past()), rp = reuse(S.park, S.q35->side_n_past());
+        const size_t     ka = std::max(SL.state_tokens.size(), SL.ck_tokens.size());
+        const bool       back = rp > ra, fresh = !back && ra == 0 && ka >= kSideMin;
+        if (back || fresh) {
+            const auto ts = std::chrono::steady_clock::now();
+            if (fresh) {  // the new request starts on an empty sequence: forget the parked one
+                S.q35->drop_side();
+                S.park.state_tokens.clear();
+                S.park.ck_tokens.clear();
+            }
+            if (!S.q35->swap_side(err)) {
+                SL.state_tokens.clear();
+                SL.ck_tokens.clear();
+                return false;
+            }
+            std::swap(SL.state_tokens, S.park.state_tokens);
+            std::swap(SL.ck_tokens, S.park.ck_tokens);
+            SL.epoch     = S.q35->slot_epoch(0);
+            S.park.epoch = S.q35->side_epoch();
+            fprintf(stderr, "side sequence: %s (%zu tokens parked, %.0f ms)\n",
+                    back ? "resumed the parked sequence" : "parked the conversation for an unrelated request",
+                    std::max(S.park.state_tokens.size(), S.park.ck_tokens.size()),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts).count());
+            R.side_swap = back ? 2 : 1;
+        }
+    }
 
     size_t start = 0;
     if (extends(SL.state_tokens) && (int) SL.state_tokens.size() == m.n_past()) {
@@ -1178,6 +1227,7 @@ loaded:
                       { "idle_before_s", S.last_end.time_since_epoch().count() == 0 ? -1.0
                                          : std::chrono::duration<double>(t0_sys - S.last_end).count() },
                       { "temp", sp.temp }, { "spec", R.stats } };
+        if (R.side_swap) line["side"] = R.side_swap == 1 ? "parked" : "resumed";
         if (chat) {  // shape of the output (sizes and a repetition score, no text)
             auto rep = [](const std::string & s) {  // share of repeated lines (a reasoning loop shows as high)
                 std::unordered_map<std::string, int> seen;
@@ -1256,7 +1306,7 @@ int serve(const std::vector<std::string> & args) {
     std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16", kv_v;
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
-    bool kv_lock = false;
+    bool kv_lock = false, side = true;
     int n_slots = 1, draft_batch = 0;
     double kv_pool_gb = 0;
     std::string router_url;
@@ -1290,6 +1340,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--kv") kv = val();
         else if (a == "--kv-v") kv_v = val();
         else if (a == "--kv-lock") kv_lock = true;
+        else if (a == "--no-side") side = false;
         else if (a == "--slots") n_slots = std::max(1, std::atoi(val().c_str()));
         else if (a == "--kv-pool-gb") kv_pool_gb = std::atof(val().c_str());
         else if (a == "--draft-batch") draft_batch = std::max(1, std::atoi(val().c_str()));
@@ -1324,6 +1375,7 @@ int serve(const std::vector<std::string> & args) {
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0|q4_0] [--spec auto|K]\n"
                         "         [--kv-v TYPE (V cache type, default: --kv)] [--kv-lock (keep the RAM KV in physical memory)]\n"
                         "         [--slots N (sequences kept, one per conversation)] [--kv-pool-gb G (RAM KV of all slots)]\n"
+                        "         [--no-side (one slot: no parked side sequence for unrelated requests)]\n"
                         "         [--draft-batch N (slots: requests drafted together, default min(slots, 2))]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
@@ -1382,6 +1434,7 @@ int serve(const std::vector<std::string> & args) {
     }
     S->config = { { "ctx", n_ctx }, { "kv", kv }, { "kv_v", kv_v.empty() ? kv : kv_v }, { "slots", n_slots } };
     o.kv_lock         = kv_lock;
+    o.side_seq        = side && n_slots == 1;
     o.n_slots         = n_slots;
     o.kv_pool_gb      = kv_pool_gb;
     o.draft_batch     = n_slots > 1 ? (draft_batch > 0 ? std::min(draft_batch, n_slots) : std::min(n_slots, 2)) : 1;
