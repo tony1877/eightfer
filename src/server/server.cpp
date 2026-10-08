@@ -434,7 +434,9 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
             in.enable_thinking                        = false;
             in.chat_template_kwargs["enable_thinking"] = "false";
         } else {
-            in.chat_template_kwargs["reasoning_effort"] = json(re).dump();
+            // not passed to the template: Qwen templates add an effort sentence to the system prompt only while
+            // thinking is on, so the prompt (and the prefix cache) would change whenever thinking toggles between
+            // agent steps. The budget below enforces the effort instead.
             if (re == "minimal" || re == "low") req_think_budget = 2048;
             else if (re == "medium") req_think_budget = 8192;
             else if (re == "high") req_think_budget = 24576;
@@ -488,6 +490,20 @@ bool run_request(Server & S, const json & body, Result & R, const std::function<
         m.checkpoint_restore();
         start = S.ck_tokens.size();
     } else {
+        if (!S.ck_tokens.empty()) {
+            // reuse miss: where the new prompt leaves the checkpointed one (debugging cache hit rates)
+            size_t d = 0;
+            while (d < S.ck_tokens.size() && d < prompt.size() && S.ck_tokens[d] == prompt[d]) d++;
+            auto piece = [&](const std::vector<int32_t> & v, size_t a, size_t b) {
+                std::string s;
+                for (size_t i = a; i < std::min(b, v.size()); i++) s += common_token_to_piece(S.vocab, v[i], true);
+                for (auto & c : s) if (c == '\n') c = '|';
+                return s.substr(0, 160);
+            };
+            fprintf(stderr, "prompt reuse miss: diverges at token %zu of %zu (checkpoint %zu)\n  before: %s\n  old:    %s\n  new:    %s\n",
+                    d, prompt.size(), S.ck_tokens.size(), piece(prompt, d > 25 ? d - 25 : 0, d).c_str(),
+                    piece(S.ck_tokens, d, d + 30).c_str(), piece(prompt, d, d + 30).c_str());
+        }
         m.reset();
     }
     R.n_prompt = (int) prompt.size();
