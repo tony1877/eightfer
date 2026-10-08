@@ -1,7 +1,7 @@
 // `eightfer serve`: OpenAI-compatible HTTP server (DESIGN.md M6).
 //
 //   eightfer serve <model.gguf> [--res r.gguf] [--host 127.0.0.1] [--port 8090] [--alias NAME]
-//                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0] [--spec auto|K]
+//                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v TYPE] [--kv-lock] [--spec auto|K]
 //                  [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N]
 //
 // Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions (stream or not),
@@ -813,9 +813,10 @@ json timings(const Result & R) {
 } // namespace
 
 int serve(const std::vector<std::string> & args) {
-    std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16";
+    std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16", kv_v;
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
+    bool kv_lock = false;
     std::string router_url;
     std::vector<Entry> extra;
     double      cache_gb = -1;
@@ -845,6 +846,8 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
         else if (a == "--gpu-kv") gpu_kv = std::atoi(val().c_str());
         else if (a == "--kv") kv = val();
+        else if (a == "--kv-v") kv_v = val();
+        else if (a == "--kv-lock") kv_lock = true;
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
         else if (a == "--threads") threads = std::atoi(val().c_str());
@@ -873,7 +876,8 @@ int serve(const std::vector<std::string> & args) {
     }
     if (model_path.empty()) {
         fprintf(stderr, "usage: eightfer serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
-                        "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0] [--spec auto|K]\n"
+                        "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0|q4_0] [--spec auto|K]\n"
+                        "         [--kv-v TYPE (V cache type, default: --kv)] [--kv-lock (keep the RAM KV in physical memory)]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
@@ -918,7 +922,18 @@ int serve(const std::vector<std::string> & args) {
     o.n_ctx           = n_ctx;
     o.gpu_kv = gpu_kv;
     o.n_threads       = threads;
-    o.kv_type         = kv == "q8_0" ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
+    auto kv_type = [](const std::string & t, ggml_type & out) {
+        if (t == "f16") out = GGML_TYPE_F16;
+        else if (t == "q8_0") out = GGML_TYPE_Q8_0;
+        else if (t == "q4_0") out = GGML_TYPE_Q4_0;
+        else return false;
+        return true;
+    };
+    if (!kv_type(kv, o.kv_type) || (!kv_v.empty() && !kv_type(kv_v, o.kv_type_v))) {
+        fprintf(stderr, "error: KV cache types are f16, q8_0 or q4_0\n");
+        return 1;
+    }
+    o.kv_lock         = kv_lock;
     o.residual_path   = res;
     o.expert_cache_gb = cache_gb;
     o.max_record      = S->spec_k + 1;

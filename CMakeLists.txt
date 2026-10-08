@@ -24,6 +24,9 @@ set(GGML_CUDA ${EIGHTFER_CUDA} CACHE BOOL "" FORCE)
 # CUDA graphs: llama.cpp's top-level CMake defaults them ON, ggml alone defaults OFF. Without them every decode
 # step pays one launch per kernel (thousands per token on WDDM).
 set(GGML_CUDA_GRAPHS ON CACHE BOOL "" FORCE)
+# Flash-attention kernels for the KV types we serve with (ggml's default list lacks mixed q8_0 K / q4_0 V, which
+# would otherwise be converted to F16 on every attention call)
+set(GGML_CUDA_FA_QUANTS "q4_0-q4_0;q8_0-q8_0;q8_0-q4_0;f16-f16;bf16-bf16" CACHE STRING "" FORCE)
 foreach (opt LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_EXAMPLES LLAMA_BUILD_SERVER LLAMA_BUILD_APP LLAMA_BUILD_UI
              LLAMA_OPENSSL LLAMA_SUBPROCESS LLAMA_LLGUIDANCE)
     set(${opt} OFF CACHE BOOL "" FORCE)

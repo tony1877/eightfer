@@ -101,7 +101,7 @@ ggml_type kv_type(const std::string & s) {
 } // namespace
 
 int ppl(const std::vector<std::string> & args) {
-    std::string model, tokens_path, kld_path, res_path, save_path, kv = "f16";
+    std::string model, tokens_path, kld_path, res_path, save_path, kv = "f16", kv_v;
     int         n_ctx = 512, n_chunks = -1, gpu_layers = 0, threads = 0, n_batch = 512;
     int gpu_kv = -1;
     for (size_t i = 2; i < args.size(); i++) {
@@ -116,6 +116,7 @@ int ppl(const std::vector<std::string> & args) {
         else if (k == "--threads") threads = std::atoi(val().c_str());
         else if (k == "--batch") n_batch = std::atoi(val().c_str());
         else if (k == "--kv") kv = val();
+        else if (k == "--kv-v") kv_v = val();
         else if (k == "--res") res_path = val();
         else if (k == "--save-kld") save_path = val();
         else if (model.empty() && k[0] != '-') model = k;
@@ -126,7 +127,7 @@ int ppl(const std::vector<std::string> & args) {
     }
     if (model.empty() || (tokens_path.empty() && kld_path.empty()) || n_ctx < 16 || n_batch < 1) {
         fprintf(stderr, "usage: eightfer ppl <model.gguf> --tokens <ids.txt> [--ctx 512] [--chunks N] [--gpu-layers N]\n"
-                        "                    [--batch 512] [--kv f16|q8_0|q4_0] [--threads N] [--res <pack .res.gguf>]\n"
+                        "                    [--batch 512] [--kv f16|q8_0|q4_0] [--kv-v TYPE] [--threads N] [--res <pack .res.gguf>]\n"
                         "                    [--save-kld <file> (write this run's log-probs as a --kld-base reference)]\n"
                         "       eightfer ppl <model.gguf> --kld-base <llama-perplexity logits file> [...]\n"
                         "                    (tokens and ctx from the file; adds KL divergence vs llama.cpp)\n");
@@ -170,6 +171,7 @@ int ppl(const std::vector<std::string> & args) {
     o.gpu_kv = gpu_kv;
     o.n_threads    = threads;
     o.kv_type      = kv_type(kv);
+    if (!kv_v.empty()) o.kv_type_v = kv_type(kv_v);
     o.n_ubatch     = std::min(n_batch, n_ctx);
     o.residual_path = res_path;
     if (const char * ec = std::getenv("E8_EXPERT_CACHE_GB")) o.expert_cache_gb = std::atof(ec);

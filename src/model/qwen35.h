@@ -100,6 +100,9 @@ struct LoadOptions {
     bool      output_gpu   = true;  // output norm + LM head on the GPU (when a GPU exists)
     int       n_ctx        = 4096;  // KV capacity, rounded up to a multiple of 256
     ggml_type kv_type      = GGML_TYPE_F16;
+    ggml_type kv_type_v    = GGML_TYPE_COUNT;  // V cache type; GGML_TYPE_COUNT = kv_type
+    bool      kv_lock      = false; // lock the RAM KV in physical memory up front (never paged out); else its pages
+                                    // are taken from the OS as positions are written
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
     int       n_ubatch     = 1024;  // most tokens per eval() call (prefill batches; one pass over the weights each)
     std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
@@ -295,6 +298,9 @@ private:
     std::vector<ggml_tensor *> hk_, hv_;
     ggml_context *             hctx_ = nullptr;
     ggml_backend_buffer_t      hbuf_ = nullptr;
+    void *                     hmem_ = nullptr;  // hbuf_'s memory when it comes straight from the OS (not pinned)
+    size_t                     hmem_bytes_ = 0;
+    bool                       hmem_locked_ = false;
     int                        host_valid_ = 0, exact_upto_ = 0;
     int                        attn_mode_  = 0;  // while building: 0 = ring/plain KV, 1 = RAM KV
     int                        host_gpu_min_ = 1;  // RAM-KV attention on the GPU from this batch size (CPU below)

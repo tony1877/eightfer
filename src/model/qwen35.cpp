@@ -21,11 +21,51 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <sys/mman.h>
 #endif
 
 namespace e8::model {
 
 namespace {
+
+// Zeroed memory straight from the OS: no page takes physical RAM until it is written.
+void * os_alloc(size_t n) {
+#if defined(_WIN32)
+    return VirtualAlloc(nullptr, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+    void * p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return p == MAP_FAILED ? nullptr : p;
+#endif
+}
+
+void os_free(void * p, size_t n) {
+#if defined(_WIN32)
+    (void) n;
+    VirtualFree(p, 0, MEM_RELEASE);
+#else
+    munmap(p, n);
+#endif
+}
+
+// Keeps [p, p + n) in physical memory. Windows only locks pages within the process's minimum working set, so that
+// is raised by n first.
+bool os_lock(void * p, size_t n) {
+#if defined(_WIN32)
+    HANDLE h  = GetCurrentProcess();
+    SIZE_T mn = 0, mx = 0;
+    DWORD  fl = 0;
+    if (!GetProcessWorkingSetSizeEx(h, &mn, &mx, &fl)) return false;
+    const SIZE_T extra = n + (SIZE_T) (64u << 20);
+    if (!SetProcessWorkingSetSizeEx(h, mn + extra, std::max(mx, mn + extra) + extra, QUOTA_LIMITS_HARDWS_MIN_DISABLE |
+                                                                                         QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
+        return false;
+    }
+    return VirtualLock(p, n) != 0;
+#else
+    return mlock(p, n) == 0;
+#endif
+}
 
 constexpr int    kGraphSize = 16384;
 constexpr int64_t kResChunkRows = 24832;  // residual rows per GPU-staged matmul piece (see load_residual)
@@ -151,6 +191,7 @@ Qwen35::~Qwen35() {
     if (pbuf_) ggml_backend_buffer_free(pbuf_);
     if (pctx_) ggml_free(pctx_);
     if (hbuf_) ggml_backend_buffer_free(hbuf_);
+    if (hmem_) os_free(hmem_, hmem_bytes_);
     if (hctx_) ggml_free(hctx_);
     if (rctx_) ggml_free(rctx_);
     if (mbuf_) ggml_backend_buffer_free(mbuf_);
@@ -167,6 +208,8 @@ Qwen35::~Qwen35() {
 
 bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string & err) {
     opt_ = opt;
+    if (opt_.kv_type_v == GGML_TYPE_COUNT) opt_.kv_type_v = opt_.kv_type;
+    const ggml_type kt = opt_.kv_type, vt = opt_.kv_type_v;
     if (!file_.open(path, err) || !hp_.load(file_, err)) {
         return false;
     }
@@ -297,7 +340,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
     }
     if (all_gpu && n_attn > 0) {
         const int64_t row     = h.head_dim * h.n_head_kv;
-        const double  tok     = 2.0 * (double) n_attn * (double) ggml_row_size(opt.kv_type, row);
+        const double  tok     = (double) n_attn * (double) (ggml_row_size(kt, row) + ggml_row_size(vt, row));
         int64_t       want    = opt.gpu_kv;
         if (want < 0) {
             size_t fr = 0, tot = 0;
@@ -307,14 +350,14 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             const double state   = 2.0 * (double) (h.n_layer - n_attn) *
                                  (double) (h.ssm_d_state * h.ssm_d_state * h.ssm_n_v + h.conv_channels() * 4) * 4.0;
             // MTP: weights, a second state snapshot, its KV ring and the hidden-state buffer
-            const double mtp_cost = mtp_w + 2.0 * (double) opt.mtp_window * (double) ggml_row_size(opt.kv_type, h.head_dim * h.n_head_kv) +
+            const double mtp_cost = mtp_w + (double) opt.mtp_window * (double) (ggml_row_size(kt, h.head_dim * h.n_head_kv) + ggml_row_size(vt, h.head_dim * h.n_head_kv)) +
                                     4.0 * (double) h.n_embd * (double) (opt_.n_ubatch + 1);
             double       reserve = (std::getenv("E8_VRAM_RESERVE_GB") ? std::atof(std::getenv("E8_VRAM_RESERVE_GB")) * 1e9 : 0.15e9) + state;  // measured: 256K ctx, 7.9K window peaked at 15.5 of 16.3 GB
             // with sparse attention big batches are split (see eval), so the compute buffer is the biggest verify's
             // (~0.35 GB at 88 tokens, measured; 0.5 for 128); else one layer's full per-head K/V copies, F16, mask
             const bool   sparse_env = !(std::getenv("E8_SPARSE") && std::atoi(std::getenv("E8_SPARSE")) == 0);
             const double stage   = sparse_env ? 0.5e9
-                                              : (double) n_ctx_ * (2.0 * (double) h.n_head_kv * (double) ggml_row_size(opt.kv_type, h.head_dim) +
+                                              : (double) n_ctx_ * ((double) h.n_head_kv * (double) (ggml_row_size(kt, h.head_dim) + ggml_row_size(vt, h.head_dim)) +
                                                                    4.0 * (double) h.head_dim + 2.0 * (double) opt_.n_ubatch);
             // prefill batches past 512 must not cost MTP or the whole KV in VRAM: then they drop to 512
             const double big = 0.15e9 * std::max(0, opt_.n_ubatch - 512) / 512.0;
@@ -431,14 +474,14 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             rec_g_[(size_t) il]      = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
             rec_beta_[(size_t) il]   = ggml_new_tensor_2d(c, GGML_TYPE_F32, h.ssm_n_v, n_rec);
         } else {
-            k_cache_[(size_t) il] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, Kd_ + W_);
-            v_cache_[(size_t) il] = ggml_new_tensor_2d(c, opt.kv_type, h.head_dim * h.n_head_kv, Kd_ + W_);
+            k_cache_[(size_t) il] = ggml_new_tensor_2d(c, kt, h.head_dim * h.n_head_kv, Kd_ + W_);
+            v_cache_[(size_t) il] = ggml_new_tensor_2d(c, vt, h.head_dim * h.n_head_kv, Kd_ + W_);
         }
     }
     if (mtp_on_) {
         Wm_       = std::max(kKvPad, std::min(n_ctx_, opt.mtp_window / kKvPad * kKvPad));
-        mtp_k_    = ggml_new_tensor_2d(sctx_[0], opt.kv_type, h.head_dim * h.n_head_kv, Wm_);
-        mtp_v_    = ggml_new_tensor_2d(sctx_[0], opt.kv_type, h.head_dim * h.n_head_kv, Wm_);
+        mtp_k_    = ggml_new_tensor_2d(sctx_[0], kt, h.head_dim * h.n_head_kv, Wm_);
+        mtp_v_    = ggml_new_tensor_2d(sctx_[0], vt, h.head_dim * h.n_head_kv, Wm_);
         mtp_hid_  = ggml_new_tensor_2d(sctx_[0], GGML_TYPE_F32, h.n_embd, opt_.n_ubatch);
         mtp_chain_ = ggml_new_tensor_2d(sctx_[0], GGML_TYPE_F32, h.n_embd, 1);
     }
@@ -461,20 +504,45 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
         for (int64_t il = 0; il < h.n_layer; il++) {
             if (h.is_recurrent(il)) continue;
             for (int64_t j = 0; j < h.n_head_kv; j++) {
-                hk_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, opt.kv_type, h.head_dim, n_ctx_);
-                hv_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, opt.kv_type, h.head_dim, n_ctx_);
+                hk_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, kt, h.head_dim, n_ctx_);
+                hv_[(size_t) (il * h.n_head_kv + j)] = ggml_new_tensor_2d(hctx_, vt, h.head_dim, n_ctx_);
             }
         }
+        // masked rows must still be finite for the GPU kernels: zero. Pinned memory is cleared (and resident anyway);
+        // otherwise the memory comes zeroed from the OS and is never written up front, so a page only takes RAM
+        // once a position in it is written. --kv-lock makes all of it resident and locked instead.
         if (std::getenv("E8_KV_PINNED") && std::atoi(std::getenv("E8_KV_PINNED")) != 0) {
             hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_dev_host_buffer_type(ggml_backend_get_device(gpu_)));
             if (!hbuf_) fprintf(stderr, "warning: pinned allocation for the KV failed, using pageable RAM\n");
+            else ggml_backend_buffer_clear(hbuf_, 0);
         }
-        if (!hbuf_) hbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(hctx_, ggml_backend_get_default_buffer_type(cpu_));
         if (!hbuf_) {
-            err = "not enough RAM for the KV cache (lower --ctx or use --kv q8_0)";
-            return false;
+            constexpr size_t kAlign = 64;
+            size_t total = 0;
+            for (ggml_tensor * t = ggml_get_first_tensor(hctx_); t; t = ggml_get_next_tensor(hctx_, t)) {
+                total += GGML_PAD(ggml_nbytes(t), kAlign);
+            }
+            hmem_ = os_alloc(total);
+            if (!hmem_) {
+                err = "not enough RAM for the KV cache (lower --ctx or use --kv q8_0)";
+                return false;
+            }
+            hmem_bytes_ = total;
+            hbuf_       = ggml_backend_cpu_buffer_from_ptr(hmem_, total);
+            size_t off  = 0;
+            for (ggml_tensor * t = ggml_get_first_tensor(hctx_); t; t = ggml_get_next_tensor(hctx_, t)) {
+                if (ggml_backend_tensor_alloc(hbuf_, t, (uint8_t *) hmem_ + off) != GGML_STATUS_SUCCESS) {
+                    err = "cannot place the RAM KV tensors";
+                    return false;
+                }
+                off += GGML_PAD(ggml_nbytes(t), kAlign);
+            }
+            if (opt.kv_lock) {
+                hmem_locked_ = os_lock(hmem_, total);
+                if (!hmem_locked_) fprintf(stderr, "warning: could not lock the RAM KV (%.2f GB) in memory; it may be paged out\n",
+                                           (double) total / 1e9);
+            }
         }
-        ggml_backend_buffer_clear(hbuf_, 0);  // masked rows must still be finite for the GPU kernels
         ggml_init_params pp = { ggml_tensor_overhead() * (size_t) (h.n_layer * h.n_head_kv * 2 + 8), nullptr, true };
         pctx_               = ggml_init(pp);
         pmid_.assign(hk_.size(), nullptr);
@@ -488,8 +556,9 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
             return false;
         }
         if (const char * e = std::getenv("E8_HOST_ATTN_GPU_MIN")) host_gpu_min_ = std::atoi(e);
-        fprintf(stderr, "KV: %d tokens in RAM (%.2f GB), window of %d in VRAM\n", n_ctx_,
-                (double) ggml_backend_buffer_get_size(hbuf_) / 1e9, W_);
+        fprintf(stderr, "KV: %d tokens in RAM (%.2f GB, K %s V %s, %s), window of %d in VRAM\n", n_ctx_,
+                (double) ggml_backend_buffer_get_size(hbuf_) / 1e9, ggml_type_name(kt), ggml_type_name(vt),
+                !hmem_ ? "pinned" : hmem_locked_ ? "locked" : "pages on demand", W_);
     }
     reset();
 
@@ -684,7 +753,6 @@ void Qwen35::fill_draft_far() {
     // after a sparse verify: copy its best-scoring pages (per KV head) from RAM into each ring's draft far area
     const auto &  h   = hp_;
     const int64_t nkv = h.n_head_kv;
-    const size_t  hrs = ggml_row_size(opt_.kv_type, h.head_dim);
     const int     np  = std::min(Kd_ / kPage, sp_kp_);
     if (np <= 0 || sel_nodes_.empty()) return;
     std::vector<int32_t> sel((size_t) sp_kp_);
@@ -700,8 +768,8 @@ void Qwen35::fill_draft_far() {
                 const ggml_tensor * ht = (kv ? hv_ : hk_)[hi];
                 for (int p = 0; p < np; p++) {
                     for (int r = 0; r < kPage; r++) {
-                        std::memcpy(buf.data() + rc->nb[1] * (size_t) (p * kPage + r) + hrs * (size_t) j,
-                                    (const uint8_t *) ht->data + ht->nb[1] * (size_t) (sel[(size_t) p] * kPage + r), hrs);
+                        std::memcpy(buf.data() + rc->nb[1] * (size_t) (p * kPage + r) + ht->nb[1] * (size_t) j,
+                                    (const uint8_t *) ht->data + ht->nb[1] * (size_t) (sel[(size_t) p] * kPage + r), ht->nb[1]);
                     }
                 }
             }
@@ -734,7 +802,6 @@ void gather_op(ggml_tensor * dst, int ith, int nth, void * ud) {
 bool Qwen35::flush_ring(int from, int to, std::string & err) {
     // copy positions [from, to) from the VRAM ring to the RAM KV, per KV head
     const auto &         h   = hp_;
-    const size_t         hrs = ggml_row_size(opt_.kv_type, h.head_dim);
     std::vector<uint8_t> buf;
     for (int p = from; p < to;) {
         const int s = p % W_;
@@ -755,7 +822,7 @@ bool Qwen35::flush_ring(int from, int to, std::string & err) {
                     ggml_tensor * ht = (kv ? hv_ : hk_)[(size_t) (il * h.n_head_kv + j)];
                     for (int r = 0; r < cnt; r++) {
                         std::memcpy((uint8_t *) ht->data + ht->nb[1] * (size_t) (p + r),
-                                    buf.data() + rc->nb[1] * (size_t) r + hrs * (size_t) j, hrs);
+                                    buf.data() + rc->nb[1] * (size_t) r + ht->nb[1] * (size_t) j, ht->nb[1]);
                     }
                 }
             }
@@ -1204,7 +1271,7 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
                             gi_.push_back({ kv ? hv_[hi] : hk_[hi], (int) kr, kPage, sp_ws_, sp_nwin_ });
                             ggml_tensor * dep     = kv ? wv[(size_t) j] : wk[(size_t) j];
                             ggml_tensor * args[2] = { sl[(size_t) j] ? sl[(size_t) j] : dep, dep };
-                            ggml_tensor * t       = ggml_custom_4d(ctx, opt_.kv_type, hd, sp_nsel_, 1, 1, args, 2, gather_op,
+                            ggml_tensor * t       = ggml_custom_4d(ctx, kv ? opt_.kv_type_v : opt_.kv_type, hd, sp_nsel_, 1, 1, args, 2, gather_op,
                                                                    GGML_N_TASKS_MAX, &gi_.back());
                             ggml_build_forward_expand(gf, t);
                             (kv ? gv : gk)[(size_t) j] = t;

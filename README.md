@@ -117,6 +117,10 @@ eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key
   403 tok/s (~11 min), decode 18.2 tok/s at full context with long drafts (10.6 with drafts of at most 15, 3.3 with
   exact attention); needle at position 0 recalled. MTP drafting turns itself off when the KV does not fit in VRAM
   (its 0.4 GB would come out of the KV window).
+- RAM KV options: its pages take RAM only as positions are written (nothing is cleared up front); `--kv-lock` instead
+  locks all of it in physical memory so it is never paged out. `--kv-v q4_0` stores V at 4 bits (K stays `--kv`):
+  256K KV 9.13 -> 6.98 GB. Measured with q8_0 K: KLD 0.0016 vs q8_0 V over a 64K chunk (RAM KV, sparse), 0.0056 vs
+  llama.cpp Q8 at 512 (0.0021 with q8_0 V), 256K needle recalled. `--kv q4_0` (both): 0.0038 / 0.0083, needle recalled.
 - Flash-Next long prompts are processed layer by layer (65536-token chunks), so each layer's experts are read from
   disk once per chunk instead of once per 512 tokens: 6K-token prompt 110 tok/s (was 10.7); a 261,776-token prompt
   prefills at 95 tok/s (46 min) and then decodes at 9.0 tok/s, needle at position 0 recalled.
