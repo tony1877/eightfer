@@ -50,6 +50,8 @@ try {
         $r  = Invoke-RestMethod "$url/v1/chat/completions" -Method Post -Body $bodies[$i] -ContentType 'application/json' -TimeoutSec 3600
         $tsum += ((Get-Date) - $t1).TotalSeconds
         $same = [string]$r.choices[0].message.content -eq $runs[$i].text
+        Set-Content (Join-Path $env:TEMP "e8-conc-$($i + 1)-concurrent.txt") $runs[$i].text
+        Set-Content (Join-Path $env:TEMP "e8-conc-$($i + 1)-alone.txt") ([string]$r.choices[0].message.content)
         if (-not $same) {
             $x = [string]$r.choices[0].message.content; $y = $runs[$i].text; $d = 0
             while ($d -lt [math]::Min($x.Length, $y.Length) -and $x[$d] -eq $y[$d]) { $d++ }

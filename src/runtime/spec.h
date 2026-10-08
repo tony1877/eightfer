@@ -86,6 +86,20 @@ public:
 
     const SpecStats & stats() const { return st_; }
 
+    // Batched cycles (sequence slots, see Qwen35::eval_multi): draft_cycle() drafts on the active slot (its committed
+    // state unchanged); the caller verifies several decoders' cycle_tokens() in one eval_multi, each sequence's rows
+    // holding verify_topk() values (0: full logits), and hands each decoder its rows: finish_cycle() accepts, commits
+    // the kept tokens to `slot` (Qwen35::commit_seq) and appends the emitted tokens to `out`.
+    bool                         draft_cycle(std::string & err);
+    const std::vector<int32_t> & cycle_tokens() const { return ctoks_; }
+    int                          verify_topk() const { return sp_.temp > 0 ? gpu_topk() : (no_penalties() ? 1 : 0); }
+    bool finish_cycle(int slot, float * lg, const int32_t * vid, double verify_ms, std::vector<int32_t> & out,
+                      std::string & err);
+    // after draft_cycle(), when nothing else used the model since: verify the drafts alone (plain eval and rollback)
+    bool verify_alone(std::vector<int32_t> & out, std::string & err);
+    // most drafts per cycle (batched cycles: the sequences share the verify's capacity)
+    void set_max_k(int k) { max_k_ = std::max(1, std::min(k, kMaxK)); }
+
     static constexpr int kMaxK = 63;  // most drafts per cycle (the model needs max_record >= kMaxK + 1)
 
 private:
@@ -108,6 +122,16 @@ private:
     int     choose_mtp() const;
     double  verify_ms(int n) const;
     using Dist = std::vector<std::pair<float, int32_t>>;
+    // drafts k tokens (k may grow with a long copy) into toks (toks[0] = last_) and qd, from the committed state
+    bool    draft_part(int & k, std::vector<int32_t> & toks, std::vector<Dist> & qd, std::string & err);
+    // speculative sampling of the k drafts against the verify's rows (vk > 0: vk values and ids per row, else full
+    // logits): emits the accepted drafts and the next token, which is also returned in `next`
+    void    accept(const std::vector<int32_t> & toks, const std::vector<Dist> & qd, int k, float * lg,
+                   const int32_t * vid, int vk, std::vector<int32_t> & out, int & acc, int32_t & next);
+    std::vector<int32_t> ctoks_;  // batched cycle: last_ + the drafts
+    std::vector<Dist>    cqd_;
+    int                  ck_    = 0;
+    int                  max_k_ = kMaxK;
     // drafts toks[1..k] (toks[0] = last_) with echo / MTP rounds checked by the base; qd gets the base's
     // distribution at each draft when sampling
     bool    draft_rounds(int k, std::vector<int32_t> & toks, std::vector<Dist> & qd, TokenCounts & cur, std::string & err,

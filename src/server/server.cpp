@@ -18,7 +18,9 @@
 //
 // Sequence slots (--slots N, 27B with the KV in RAM): the model keeps N sequences, each with its own prompt-reuse state,
 // so N conversations (an agent and its subagents) run side by side without evicting each other's prompts. A slot
-// serves one request at a time; with more requests than slots the others wait for one. A request goes to the slot whose
+// serves one request at a time; with more requests than slots the others wait for one. Decoding requests run in
+// rounds: each drafts on its slot, then one joint verify (Qwen35::eval_multi) checks every request's drafts in one
+// pass over the weights, and each request's acceptance and commit follow (run_round). A request goes to the slot whose
 // state or checkpoint its prompt extends the furthest, else to an empty slot, else to the least recently used one.
 // Slots share one RAM KV budget (--kv-pool-gb, default the --ctx tokens' worth); a slot that needs more memory empties
 // the least recently used idle slots.
@@ -196,6 +198,16 @@ struct Server {
         bool                 busy = false;  // a request is using it
     };
     int                              streams = 0;  // requests holding a slot (the model must stay loaded)
+    // decode rounds (sequence slots): requests in their decode loop, and the drafted cycles waiting for the verify
+    struct Job {
+        runtime::SpecDecoder * dec = nullptr;
+        int                    slot = 0;
+        std::vector<int32_t> * out = nullptr;
+        bool                   done = false, ok = true;
+        std::string            err;
+    };
+    int                              n_dec = 0;
+    std::vector<Job *>               pending;
     std::vector<Slot>                slots;
     uint64_t                         slot_clock = 0;
     std::function<bool(int, std::string &)> load;  // loads entry i (lazy mode)
@@ -345,6 +357,59 @@ struct Result {
 // Runs one request: chat (body has "messages") or completion ("prompt"). `on_delta` (streaming) receives OpenAI delta
 // objects as the output grows (chat: {content, reasoning_content, tool_calls}; completion: {text}) and returns false
 // when the client is gone, which stops generation (as does `cancelled`).
+// One decode round, run by the request that completes it (holding the model): the pending requests' drafts verified
+// together, then each request's acceptance and commit. `fresh`: the caller's own job, drafted just now; when it is the
+// only one, it is verified alone (plain path, no joint overhead).
+void run_round(Server & S, Server::Job * fresh) {
+    std::vector<Server::Job *> jobs;
+    {
+        std::lock_guard<std::mutex> lk(S.mu);
+        jobs.swap(S.pending);
+    }
+    if (jobs.empty()) return;
+    if (jobs.size() == 1 && jobs[0] == fresh) {
+        fresh->ok = fresh->dec->verify_alone(*fresh->out, fresh->err);
+    } else {
+        int vk = jobs[0]->dec->verify_topk();  // one row width for all (full logits when they differ)
+        for (auto * j : jobs) {
+            if (j->dec->verify_topk() != vk) vk = 0;
+        }
+        const int64_t                nv = S.q35->n_vocab();
+        std::vector<model::MultiSeq> seqs;
+        int                          N = 0;
+        for (auto * j : jobs) {
+            const auto & t = j->dec->cycle_tokens();
+            seqs.push_back({ j->slot, t.data(), (int) t.size() });
+            N += (int) t.size();
+        }
+        std::vector<float>   lg((size_t) N * (size_t) (vk > 0 ? vk : nv));
+        std::vector<int32_t> ids(vk > 0 ? (size_t) N * (size_t) vk : 0);
+        std::string          e;
+        const auto           t0 = std::chrono::steady_clock::now();
+        const bool ok = S.q35->eval_multi(seqs, vk, lg.data(), vk > 0 ? ids.data() : nullptr, e);
+        const double tv = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        int off = 0;
+        for (auto * j : jobs) {
+            const int n = (int) j->dec->cycle_tokens().size();
+            if (!ok) {
+                j->ok  = false;
+                j->err = e;
+                continue;
+            }
+            j->ok = j->dec->finish_cycle(j->slot, lg.data() + (size_t) off * (size_t) (vk > 0 ? vk : nv),
+                                         vk > 0 ? ids.data() + (size_t) off * (size_t) vk : nullptr, tv / (double) jobs.size(),
+                                         *j->out, j->err);
+            if (!j->ok) S.q35->commit_seq(j->slot, 0, e);  // leave nothing uncommitted
+            off += n;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(S.mu);
+        for (auto * j : jobs) j->done = true;
+    }
+    S.cv.notify_all();
+}
+
 bool run_request(Server & S, Turn & turn, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
                  const std::function<bool()> & cancelled, std::string & err) {
     int idx = 0;  // the entry this request names (the main model when it names none of ours)
@@ -774,6 +839,27 @@ loaded:
         };
         int  next_loop_check = 512;
         auto dec_p = make_dec();
+        // decode rounds with the other requests (sequence slots); leaving runs a round that only waited for this one
+        const bool rounds = S.q35->n_slots() > 1;
+        struct Member {
+            Server & S;
+            bool     on;
+            Member(Server & s, bool r) : S(s), on(r) {
+                if (!on) return;
+                std::lock_guard<std::mutex> lk(S.mu);
+                S.n_dec++;
+            }
+            ~Member() {
+                if (!on) return;
+                bool lead;
+                {
+                    std::lock_guard<std::mutex> lk(S.mu);
+                    S.n_dec--;
+                    lead = !S.pending.empty() && (int) S.pending.size() >= S.n_dec;
+                }
+                if (lead) run_round(S, nullptr);  // (the caller still holds the model)
+            }
+        } member(S, rounds);
         dec_p->set_context(prompt);
         dec_p->begin(last.data(), out);
         consume();
@@ -811,7 +897,36 @@ loaded:
                     continue;
                 }
             }
-            if (!yield() || !dec_p->step(out, err)) return false;
+            if (rounds) {
+                if (!yield()) return false;  // requests waiting for the model (prompts, new ones) get their turn
+                int nd;
+                {
+                    std::lock_guard<std::mutex> lk(S.mu);
+                    nd = std::max(1, S.n_dec);
+                }
+                dec_p->set_max_k(S.q35->max_multi() / nd - 1);
+                if (!dec_p->draft_cycle(err)) return false;
+                Server::Job job;
+                job.dec  = dec_p.get();
+                job.slot = slot;
+                job.out  = &out;
+                bool lead;
+                {
+                    std::lock_guard<std::mutex> lk(S.mu);
+                    S.pending.push_back(&job);
+                    lead = (int) S.pending.size() >= S.n_dec;
+                }
+                if (lead) run_round(S, &job);
+                else turn.wait_for([&] { return job.done; });
+                if (!job.ok) {
+                    err = job.err;
+                    return false;
+                }
+                S.last_used = std::chrono::steady_clock::now();
+                if (!S.q35->select_slot(slot, err)) return false;
+            } else if (!yield() || !dec_p->step(out, err)) {
+                return false;
+            }
             consume();
         }
         const auto & st = dec_p->stats();
@@ -1068,7 +1183,7 @@ int serve(const std::vector<std::string> & args) {
     o.kv_pool_gb      = kv_pool_gb;
     o.residual_path   = res;
     o.expert_cache_gb = cache_gb;
-    o.max_record      = S->spec_k + 1;
+    o.max_record      = n_slots > 1 ? std::max(128, S->spec_k + 1) : S->spec_k + 1;  // slots: a round's sequences
     o.mtp             = S->mtp > 0;
     S->router_url = router_url;
     Server * sp = S.get();

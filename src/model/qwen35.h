@@ -96,6 +96,13 @@ struct EvalOpts {
     int  n_seqs    = 1;
 };
 
+// one sequence of a joint verify (Qwen35::eval_multi): `n` tokens continuing slot `slot`'s committed state
+struct MultiSeq {
+    int             slot   = 0;
+    const int32_t * tokens = nullptr;
+    int             n      = 0;
+};
+
 struct LoadOptions {
     int       n_gpu_layers = 0;     // trunk layers on the GPU, counted from the last layer (as llama.cpp does)
     bool      output_gpu   = true;  // output norm + LM head on the GPU (when a GPU exists)
@@ -181,6 +188,15 @@ public:
     // a pinned slot (a conversation in progress) is never emptied to make room in the KV pool
     void     pin_slot(int s, bool on) { if (!slots_.empty()) slots_[(size_t) s].pinned = on; }
 
+    // Joint verify (sequence slots): the sequences of several slots in one pass over the weights (base + residual), so
+    // they share the residual's trip over PCIe. Each sequence runs the recurrence from its slot's committed state and
+    // attends its slot's RAM KV (sparse, page summaries from RAM); nothing is committed: commit_seq() then keeps a
+    // prefix of each sequence (any order, without switching slots). Rows of `logits` (or with topk > 0, topk values
+    // and `ids` per row) follow the sequences in order. Up to max_multi() tokens in all, kSparseMaxN per sequence.
+    bool     eval_multi(const std::vector<MultiSeq> & seqs, int topk, float * logits, int32_t * ids, std::string & err);
+    bool     commit_seq(int slot, int keep, std::string & err);
+    int      max_multi() const { return opt_.max_record; }
+
     // Empties the active slot's KV cache (its RAM pages go back to the OS) and zeroes the recurrent state.
     void reset() override;
     bool eval_last(const int32_t * tokens, int n, float * logits, std::string & err) override {
@@ -228,12 +244,13 @@ private:
     // DeltaNet recurrence for layer il on pre-conv qkv [C, n, 1], g/beta [1, Hv, n, 1]: updates conv and ssm state,
     // returns the attention output [S, Hv, n, 1].
     ggml_tensor * gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il, ggml_tensor * qkv, ggml_tensor * g,
-                           ggml_tensor * beta, int n, int ns = 1);
+                           ggml_tensor * beta, int n, int ns = 1, ggml_tensor * cs_in = nullptr, ggml_tensor * ss_in = nullptr);
     // x*W^T, plus x*R^T when the residual is active and W has one
     ggml_tensor * mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x);
     bool load_residual(const std::string & path, std::string & err);
     bool compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err);
-    bool replay(int keep, std::string & err, int row0 = 0);  // the first keep recorded tokens through the DeltaNet recurrence
+    bool replay(int keep, std::string & err, int row0 = 0,   // the first keep recorded tokens through the DeltaNet recurrence
+                const std::vector<ggml_tensor *> * cs = nullptr, const std::vector<ggml_tensor *> * ss = nullptr);
     bool write_state_ = true;                  // while building: gdn_core updates the recurrent state
     ggml_tensor * out_ids_ = nullptr;          // while building: the top-k ids output (EvalOpts::topk)
     // MTP: the layer input from embeddings and hidden states [n_embd, n]
@@ -335,7 +352,24 @@ private:
         uint8_t *                  summ = nullptr;  // page summaries (RAM copy), per head n_ctx / kPage pages
         int                        sum_upto = 0, sum_saved = 0, far_rows = 0, far_ws = 0;
         std::vector<float>         hid;             // MTP: hidden state at n_past - 1 (empty = none)
+        std::vector<ggml_tensor *> sumt;            // per head: its page summaries in summ, as tensors (joint verify)
     };
+    // the joint verify waiting for commit_seq: per sequence its slot, first row, length and position
+    struct MultiEntry {
+        int  slot = 0, off = 0, n = 0, n_past = 0;
+        bool done = false;
+    };
+    std::vector<MultiEntry>    multi_;
+    std::vector<float>         multi_hid_;              // its MTP hidden rows
+    std::vector<ggml_tensor *> gpu_nodes_;              // while building: ops to run on the GPU whatever their inputs
+    void park_active();                                 // the active slot's state to RAM (it stays selected)
+    bool ensure_committed_slot(KvSlot & sl, int upto, std::string & err);
+    // page summaries [from, upto) of the keys `hk`: per head, (upto - from) * head_dim halves
+    std::vector<std::vector<ggml_fp16_t>> summarize(const std::vector<ggml_tensor *> & hk, int from, int upto) const;
+    // a sparse verify's selected pages (sel, per head, kp each) into the draft far area of the ring kc/vc
+    int  fill_far(const std::vector<ggml_tensor *> & kc, const std::vector<ggml_tensor *> & vc,
+                  const std::vector<ggml_tensor *> & hk, const std::vector<ggml_tensor *> & hv,
+                  const std::vector<ggml_tensor *> & sel, int kp);
     std::vector<KvSlot>        slots_;
     int                        cur_slot_ = 0;
     uint64_t                   use_clock_ = 0;
@@ -347,6 +381,7 @@ private:
     size_t                     slmem_bytes_ = 0;
     ggml_context *             rvctx_ = nullptr;       // the slots' ring views
     void *                     summem_ = nullptr;      // the slots' page summary copies
+    ggml_backend_buffer_t      slbuf2_ = nullptr;      // ... as a CPU buffer (their tensors: KvSlot::sumt)
     size_t                     summem_bytes_ = 0;
     int                        sum_low_ = 0;           // lowest sum_upto_ since the active slot was resumed
     bool ensure_committed(int upto, std::string & err);  // the active slot's RAM KV has memory for [0, upto)

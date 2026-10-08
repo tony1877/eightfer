@@ -65,6 +65,7 @@ add_executable(eightfer
     src/cli/pack.cpp
     src/cli/gen.cpp
     src/cli/dump.cpp
+    src/cli/multitest.cpp
     src/cli/decode.cpp
     src/server/server.cpp
     src/cli/ppl.cpp

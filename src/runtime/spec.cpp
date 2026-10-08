@@ -448,39 +448,20 @@ bool SpecDecoder::step(std::vector<int32_t> & out, std::string & err) {
     return step_plain(out, err);
 }
 
-bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
-    const int64_t nv = m_.hp().n_vocab;
-    int           k_ = adaptive_ ? choose_k() : this->k_;
+bool SpecDecoder::draft_part(int & k_, std::vector<int32_t> & toks, std::vector<Dist> & qd, std::string & err) {
+    const int64_t nv        = m_.hp().n_vocab;
     const int     base_past = m_.n_past();
-    if (m_.n_past() + k_ + 1 > m_.n_ctx()) {
-        err = "context full";
-        return false;
-    }
-    st_.cycles++;
-    st_.k_hist[k_]++;
-    if (k_ == 0) {
-        const double t0 = now();
-        if (!m_.eval(&last_, 1, model::EvalOpts{}, logits_.data(), nullptr, err)) return false;
-        st_.t_verify += now() - t0;
-        apply_penalties(logits_.data(), sp_, counts_);
-        last_ = sample(logits_.data(), -1);
-        emit(out, last_);
-        st_.emitted++;
-        return true;
-    }
-
     // draft k tokens with the base alone, from the committed state. Greedy: argmax on the GPU. Sampling: draw from the
     // base's own sampling distribution q and keep q for the acceptance test.
     double t0 = now();
     m_.save_state();
-    std::vector<int32_t> toks(1, last_);
+    toks.assign(1, last_);
     model::EvalOpts      dopt;
     dopt.residual          = false;
     dopt.window_ok         = true;
     const bool sampled     = sp_.temp > 0;
     dopt.argmax            = !sampled;
-    using Dist             = std::vector<std::pair<float, int32_t>>;
-    std::vector<Dist> qd(sampled ? (size_t) k_ : 0);
+    qd.assign(sampled ? (size_t) k_ : 0, Dist{});
     std::vector<float> dl(sampled ? (size_t) nv : 0);
     TokenCounts        cur = counts_;  // penalties at each position include the drafts before it
     const bool use_mtp = echo_ || (mtp_n_ > 0 && m_.has_mtp() && m_.hidden_row() >= 0);
@@ -491,7 +472,7 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
         if (!draft_rounds(k_, toks, qd, cur, err)) return false;
         // long copies: while the drafts end in a copy the base kept entirely, keep copying (one bigger verify
         // instead of several cycles)
-        const int big = std::min({ kBigK, m_.max_long_verify() - 1, m_.n_ctx() - base_past - 1 });
+        const int big = std::min({ kBigK, max_k_ < kMaxK ? max_k_ : kBigK, m_.max_long_verify() - 1, m_.n_ctx() - base_past - 1 });
         if (echo_ && last_echo_full_ && big > k_) {
             if (!draft_rounds(big, toks, qd, cur, err, true)) return false;
             st_.long_cycles += (int) toks.size() - 1 > k_;
@@ -524,36 +505,16 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
     draft_ms_ = 0.8 * draft_ms_ + 0.2 * (1e3 * td / k_);
     st_.drafted += k_;
 
-    {  // tree drafts: alternative branches at the least confident drafts, verified together (E8_TREE=0: off)
-        bool done = false;
-        if (!tree_cycle(toks, qd, out, err, done)) return false;
-        if (done) return true;
-    }
+    return true;
+}
 
-    // verify all k + 1 positions with base + residual
-    t0 = now();
-    // top-k on the GPU when the sampler needs no more (greedy: the top token only)
-    const int            vk = sampled ? gpu_topk() : (no_penalties() ? 1 : 0);
-    const int64_t        vr = vk > 0 ? vk : nv;
-    std::vector<float>   lg((size_t) ((k_ + 1) * vr));
-    std::vector<int32_t> vid(vk > 0 ? (size_t) ((k_ + 1) * vk) : 0);
-    model::EvalOpts      vopt;
-    vopt.record = true;
-    vopt.topk   = vk;
-    if (!m_.eval(toks.data(), k_ + 1, vopt, lg.data(), vk > 0 ? vid.data() : nullptr, err)) return false;
-    const double tv = 1e3 * (now() - t0);
-    st_.t_verify += tv / 1e3;
-    for (int n = 1; n <= kMaxK + 1; n++) {  // decayed verify ms per batch size
-        vt_[n] *= 0.9;
-        vn_[n] *= 0.9;
-    }
-    if (k_ + 1 <= kMaxK + 1) {
-        vt_[k_ + 1] += tv;
-        vn_[k_ + 1] += 1;
-    }
-
-    int                                    acc  = 0;
-    int32_t                                next = -1;
+void SpecDecoder::accept(const std::vector<int32_t> & toks, const std::vector<Dist> & qd, int k_, float * lgp,
+                         const int32_t * vidp, int vk, std::vector<int32_t> & out, int & acc, int32_t & next) {
+    const int64_t nv      = m_.hp().n_vocab;
+    const bool    sampled = sp_.temp > 0;
+    TokenCounts   cur;
+    acc = 0;
+    next = -1;
     std::uniform_real_distribution<double> u(0.0, 1.0);
     cur = counts_;
     for (; acc < k_; acc++) {
@@ -561,7 +522,7 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
         if (vk > 0) {
             cur[d]++;
             if (!sampled) {  // top-1 only: accept iff it is the draft, else it is the next token
-                const int32_t top = vid[(size_t) acc];
+                const int32_t top = vidp[(size_t) acc];
                 if (top == d) {
                     emit(out, d);
                     continue;
@@ -570,7 +531,7 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
                 break;
             }
             Dist pdist;
-            dist_topk(lg.data() + (size_t) acc * vk, vid.data() + (size_t) acc * vk, vk, pdist);
+            dist_topk(lgp + (size_t) acc * vk, vidp + (size_t) acc * vk, vk, pdist);
             const Dist & q  = qd[(size_t) acc];
             const double pd = at(pdist, d), qv = at(q, d);
             if (qv > 0 && u(rng_) * qv < pd) {
@@ -607,7 +568,7 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
             }
             break;
         }
-        float * L = lg.data() + (size_t) acc * nv;
+        float * L = lgp + (size_t) acc * nv;
         apply_penalties(L, sp_, cur);
         cur[d]++;
         if (!sampled) {
@@ -642,15 +603,15 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
     if (acc == k_) {  // all accepted: bonus token from the last position
         if (vk > 0) {
             if (!sampled) {
-                next = vid[(size_t) k_];
+                next = vidp[(size_t) k_];
             } else {
                 Dist pb;
-                dist_topk(lg.data() + (size_t) k_ * vk, vid.data() + (size_t) k_ * vk, vk, pb);
+                dist_topk(lgp + (size_t) k_ * vk, vidp + (size_t) k_ * vk, vk, pb);
                 next = draw(pb, rng_);
             }
         } else {
-            apply_penalties(lg.data() + (size_t) k_ * nv, sp_, cur);
-            next = sample(lg.data() + (size_t) k_ * nv, -1);
+            apply_penalties(lgp + (size_t) k_ * nv, sp_, cur);
+            next = sample(lgp + (size_t) k_ * nv, -1);
         }
     }
     emit(out, next);
@@ -662,6 +623,144 @@ bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
     }
     for (int j = 1; j <= std::min({ acc + 1, k_, kMaxK }); j++) seen_[j] += 1;
     if (acc < k_ && acc + 1 <= kMaxK) fail_[acc + 1] += 1;
+
+}
+
+bool SpecDecoder::draft_cycle(std::string & err) {
+    int k = std::max(1, std::min(adaptive_ ? choose_k() : k_, max_k_));
+    if (m_.n_past() + k + 1 > m_.n_ctx()) {
+        err = "context full";
+        return false;
+    }
+    st_.cycles++;
+    st_.k_hist[k]++;
+    if (!draft_part(k, ctoks_, cqd_, err)) return false;
+    ck_ = k;
+    return true;
+}
+
+bool SpecDecoder::finish_cycle(int slot, float * lg, const int32_t * vid, double verify_ms, std::vector<int32_t> & out,
+                               std::string & err) {
+    st_.t_verify += verify_ms / 1e3;
+    for (int n = 1; n <= kMaxK + 1; n++) {  // decayed verify ms per batch size (this sequence's share)
+        vt_[n] *= 0.9;
+        vn_[n] *= 0.9;
+    }
+    if (ck_ + 1 <= kMaxK + 1) {
+        vt_[ck_ + 1] += verify_ms;
+        vn_[ck_ + 1] += 1;
+    }
+    int     acc  = 0;
+    int32_t next = -1;
+    const int vk = verify_topk();
+    accept(ctoks_, cqd_, ck_, lg, vk > 0 ? vid : nullptr, vk, out, acc, next);
+    const double t0 = now();
+    if (!m_.commit_seq(slot, acc + 1, err)) return false;  // last_ and the accepted drafts
+    st_.t_rollback += now() - t0;
+    last_ = next;
+    return true;
+}
+
+bool SpecDecoder::verify_alone(std::vector<int32_t> & out, std::string & err) {
+    const int64_t        nv = m_.hp().n_vocab;
+    const int            k  = ck_;
+    double               t0 = now();
+    const int            vk = verify_topk();
+    const int64_t        vr = vk > 0 ? vk : nv;
+    std::vector<float>   lg((size_t) ((k + 1) * vr));
+    std::vector<int32_t> vid(vk > 0 ? (size_t) ((k + 1) * vk) : 0);
+    model::EvalOpts      vopt;
+    vopt.record = true;
+    vopt.topk   = vk;
+    if (!m_.eval(ctoks_.data(), k + 1, vopt, lg.data(), vk > 0 ? vid.data() : nullptr, err)) return false;
+    const double tv = 1e3 * (now() - t0);
+    st_.t_verify += tv / 1e3;
+    for (int n = 1; n <= kMaxK + 1; n++) {
+        vt_[n] *= 0.9;
+        vn_[n] *= 0.9;
+    }
+    if (k + 1 <= kMaxK + 1) {
+        vt_[k + 1] += tv;
+        vn_[k + 1] += 1;
+    }
+    int     acc  = 0;
+    int32_t next = -1;
+    accept(ctoks_, cqd_, k, lg.data(), vk > 0 ? vid.data() : nullptr, vk, out, acc, next);
+    t0 = now();
+    if (m_.can_rollback(acc + 1)) {
+        if (!m_.rollback(acc + 1, err)) return false;
+    } else {
+        std::string e2;
+        m_.rollback(k + 1, e2);
+        m_.restore_state();
+        if (!m_.eval(ctoks_.data(), acc + 1, model::EvalOpts{}, nullptr, nullptr, err)) return false;
+        st_.reruns++;
+    }
+    st_.t_rollback += now() - t0;
+    last_ = next;
+    return true;
+}
+
+bool SpecDecoder::step_plain(std::vector<int32_t> & out, std::string & err) {
+    const int64_t nv = m_.hp().n_vocab;
+    int           k_ = adaptive_ ? choose_k() : this->k_;
+    const int     base_past = m_.n_past();
+    if (m_.n_past() + k_ + 1 > m_.n_ctx()) {
+        err = "context full";
+        return false;
+    }
+    st_.cycles++;
+    st_.k_hist[k_]++;
+    if (k_ == 0) {
+        const double t0 = now();
+        if (!m_.eval(&last_, 1, model::EvalOpts{}, logits_.data(), nullptr, err)) return false;
+        st_.t_verify += now() - t0;
+        apply_penalties(logits_.data(), sp_, counts_);
+        last_ = sample(logits_.data(), -1);
+        emit(out, last_);
+        st_.emitted++;
+        return true;
+    }
+
+    using Dist = std::vector<std::pair<float, int32_t>>;
+    std::vector<int32_t> toks;
+    std::vector<Dist>    qd;
+    if (!draft_part(k_, toks, qd, err)) return false;
+    const bool sampled = sp_.temp > 0;
+    double     t0      = now();
+    (void) base_past;
+
+    {  // tree drafts: alternative branches at the least confident drafts, verified together (E8_TREE=0: off)
+        bool done = false;
+        if (!tree_cycle(toks, qd, out, err, done)) return false;
+        if (done) return true;
+    }
+
+    // verify all k + 1 positions with base + residual
+    t0 = now();
+    // top-k on the GPU when the sampler needs no more (greedy: the top token only)
+    const int            vk = sampled ? gpu_topk() : (no_penalties() ? 1 : 0);
+    const int64_t        vr = vk > 0 ? vk : nv;
+    std::vector<float>   lg((size_t) ((k_ + 1) * vr));
+    std::vector<int32_t> vid(vk > 0 ? (size_t) ((k_ + 1) * vk) : 0);
+    model::EvalOpts      vopt;
+    vopt.record = true;
+    vopt.topk   = vk;
+    if (!m_.eval(toks.data(), k_ + 1, vopt, lg.data(), vk > 0 ? vid.data() : nullptr, err)) return false;
+    const double tv = 1e3 * (now() - t0);
+    st_.t_verify += tv / 1e3;
+    for (int n = 1; n <= kMaxK + 1; n++) {  // decayed verify ms per batch size
+        vt_[n] *= 0.9;
+        vn_[n] *= 0.9;
+    }
+    if (k_ + 1 <= kMaxK + 1) {
+        vt_[k_ + 1] += tv;
+        vn_[k_ + 1] += 1;
+    }
+
+    int     acc  = 0;
+    int32_t next = -1;
+    accept(toks, qd, k_, lg.data(), vk > 0 ? vid.data() : nullptr, vk, out, acc, next);
 
     t0 = now();
     if (m_.can_rollback(acc + 1)) {

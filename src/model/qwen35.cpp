@@ -227,6 +227,7 @@ Qwen35::~Qwen35() {
     if (slbuf_) ggml_backend_buffer_free(slbuf_);
     if (slmem_) os_free(slmem_, slmem_bytes_);
     if (slctx_) ggml_free(slctx_);
+    if (slbuf2_) ggml_backend_buffer_free(slbuf2_);
     if (summem_) os_free(summem_, summem_bytes_);
     if (rvctx_) ggml_free(rvctx_);
     if (hctx_) ggml_free(hctx_);
@@ -661,7 +662,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
                       " tokens each; fewer --slots or a smaller --ctx)";
                 return false;
             }
-            ggml_init_params rp = { ggml_tensor_overhead() * (size_t) ((h.n_layer * 2 + 2) * ns + 8), nullptr, true };
+            ggml_init_params rp = { ggml_tensor_overhead() * (size_t) ((h.n_layer * 2 + 2 + h.n_layer * h.n_head_kv) * ns + 8), nullptr, true };
             rvctx_              = ggml_init(rp);
             auto view = [&](ggml_tensor * src, int rows, int s) {
                 ggml_tensor * t = ggml_new_tensor_2d(rvctx_, src->type, src->ne[0], rows);
@@ -677,6 +678,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
                 err = "not enough memory for the slots' page summaries";
                 return false;
             }
+            slbuf2_ = ggml_backend_cpu_buffer_from_ptr(summem_, summem_bytes_);
             for (int s = 0; s < ns; s++) {
                 KvSlot & sl = slots_[(size_t) s];
                 sl.kr.assign((size_t) h.n_layer, nullptr);
@@ -691,6 +693,14 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
                     sl.mv = view(mtp_v_, rms, s);
                 }
                 sl.summ = (uint8_t *) summem_ + sum_head * nsum * (size_t) s;
+                sl.sumt.assign(pmid_.size(), nullptr);
+                size_t hi = 0;
+                for (size_t i = 0; i < pmid_.size(); i++) {
+                    if (!pmid_[i]) continue;
+                    sl.sumt[i] = ggml_new_tensor_2d(rvctx_, GGML_TYPE_F16, h.head_dim, (int64_t) pages);
+                    ggml_backend_tensor_alloc(slbuf2_, sl.sumt[i], sl.summ + sum_head * hi);
+                    hi++;
+                }
             }
             k_cache_ = slots_[0].kr;
             v_cache_ = slots_[0].vr;
@@ -893,7 +903,10 @@ void Qwen35::drop_slot(KvSlot & s, bool forget) {
 
 bool Qwen35::ensure_committed(int upto, std::string & err) {
     if (slots_.empty()) return true;
-    KvSlot & sl = slots_[(size_t) cur_slot_];
+    return ensure_committed_slot(slots_[(size_t) cur_slot_], upto, err);
+}
+
+bool Qwen35::ensure_committed_slot(KvSlot & sl, int upto, std::string & err) {
     if (!sl.base || upto <= sl.committed) return true;
     constexpr int kChunk = 4096;  // positions committed at a time
     const int     to     = std::min(n_ctx_, (upto + kChunk - 1) / kChunk * kChunk);
@@ -908,7 +921,8 @@ bool Qwen35::ensure_committed(int upto, std::string & err) {
             err = "RAM KV pool full (" + std::to_string(pool_bytes_ / 1000000) + " MB, the other slots in use): lower the context or raise --kv-pool-gb";
             return false;
         }
-        fprintf(stderr, "KV pool: emptying slot %d (%d tokens) for slot %d\n", (int) (lru - slots_.data()), lru->n_past, cur_slot_);
+        fprintf(stderr, "KV pool: emptying slot %d (%d tokens) for slot %d\n", (int) (lru - slots_.data()), lru->n_past,
+                (int) (&sl - slots_.data()));
         drop_slot(*lru);
     }
     const size_t pg = 4096;
@@ -936,6 +950,46 @@ bool Qwen35::ensure_committed(int upto, std::string & err) {
     return true;
 }
 
+void Qwen35::park_active() {
+    // the active slot's sequence into its slot: the ring's exact positions flushed to its RAM KV (so a parked slot's
+    // RAM KV holds [0, n_past)), recurrent state, new page summaries and the MTP hidden row copied to RAM. The VRAM
+    // state stays as it is, so the slot can go on as the active one.
+    const auto & h     = hp_;
+    const size_t pages = (size_t) (n_ctx_ / kPage), row = (size_t) h.head_dim * sizeof(ggml_fp16_t);
+    KvSlot &     o     = slots_[(size_t) cur_slot_];
+    std::string  e;
+    const int    upto  = std::min(exact_upto_, n_past_);
+    if (host_valid_ < upto && !flush_ring(host_valid_, upto, e)) fprintf(stderr, "slot %d: %s\n", cur_slot_, e.c_str());
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        if (!conv_state_[il]) continue;
+        ggml_backend_tensor_copy(conv_state_[il], o.conv[il]);
+        ggml_backend_tensor_copy(ssm_state_[il], o.ssm[il]);
+    }
+    o.n_past     = n_past_;
+    o.host_valid = host_valid_;
+    o.exact_upto = exact_upto_;
+    o.ck_n_past  = ck_n_past_;
+    o.far_rows   = far_rows_;
+    o.far_ws     = far_ws_;
+    const int from = std::min(o.sum_saved, sum_low_);
+    if (sum_upto_ > from) {
+        size_t hi = 0;
+        for (ggml_tensor * t : pmid_) {
+            if (!t) continue;
+            ggml_backend_tensor_get(t, o.summ + (hi * pages + (size_t) from) * row, row * (size_t) from,
+                                    row * (size_t) (sum_upto_ - from));
+            hi++;
+        }
+    }
+    o.sum_upto = o.sum_saved = sum_upto_;
+    sum_low_   = sum_upto_;
+    o.hid.clear();
+    if (mtp_on_ && hid_row_ >= 0) {
+        o.hid.resize((size_t) h.n_embd);
+        ggml_backend_tensor_get(mtp_hid_, o.hid.data(), mtp_hid_->nb[1] * (size_t) hid_row_, o.hid.size() * sizeof(float));
+    }
+}
+
 bool Qwen35::select_slot(int s, std::string & err) {
     if (slots_.empty() && s == 0) return true;
     if (s < 0 || s >= (int) slots_.size()) {
@@ -952,38 +1006,10 @@ bool Qwen35::select_slot(int s, std::string & err) {
     }
     const auto & h     = hp_;
     const size_t pages = (size_t) (n_ctx_ / kPage), row = (size_t) h.head_dim * sizeof(ggml_fp16_t);
-    // park the active slot: recurrent state, new page summaries and the MTP hidden row to RAM (its ring parts and RAM
-    // KV stay where they are)
-    KvSlot & o = slots_[(size_t) cur_slot_];
-    for (size_t il = 0; il < conv_state_.size(); il++) {
-        if (!conv_state_[il]) continue;
-        ggml_backend_tensor_copy(conv_state_[il], o.conv[il]);
-        ggml_backend_tensor_copy(ssm_state_[il], o.ssm[il]);
-    }
-    o.n_past       = n_past_;
-    o.host_valid   = host_valid_;
-    o.exact_upto   = exact_upto_;
-    o.ck_n_past    = ck_n_past_;
+    park_active();
+    KvSlot & o    = slots_[(size_t) cur_slot_];
     o.slot_pos     = std::move(slot_pos_);
     o.mtp_slot_pos = std::move(mtp_slot_pos_);
-    const int from = std::min(o.sum_saved, sum_low_);
-    if (sum_upto_ > from) {
-        size_t hi = 0;
-        for (ggml_tensor * t : pmid_) {
-            if (!t) continue;
-            ggml_backend_tensor_get(t, o.summ + (hi * pages + (size_t) from) * row, row * (size_t) from,
-                                    row * (size_t) (sum_upto_ - from));
-            hi++;
-        }
-    }
-    o.sum_upto = o.sum_saved = sum_upto_;
-    o.far_rows = far_rows_;
-    o.far_ws   = far_ws_;
-    o.hid.clear();
-    if (mtp_on_ && hid_row_ >= 0) {
-        o.hid.resize((size_t) h.n_embd);
-        ggml_backend_tensor_get(mtp_hid_, o.hid.data(), mtp_hid_->nb[1] * (size_t) hid_row_, o.hid.size() * sizeof(float));
-    }
 
     // resume slot s
     KvSlot & t = slots_[(size_t) s];
@@ -1026,10 +1052,11 @@ bool Qwen35::select_slot(int s, std::string & err) {
             hi++;
         }
     }
+    // the hidden row goes to the last row of mtp_hid_: a joint verify's rows (from 0) stay intact for commit_seq
     hid_row_ = -1;
     if (mtp_on_ && !t.hid.empty()) {
-        ggml_backend_tensor_set(mtp_hid_, t.hid.data(), 0, t.hid.size() * sizeof(float));
-        hid_row_ = 0;
+        hid_row_ = opt_.n_ubatch - 1;
+        ggml_backend_tensor_set(mtp_hid_, t.hid.data(), mtp_hid_->nb[1] * (size_t) hid_row_, t.hid.size() * sizeof(float));
     }
     saved_n_past_ = saved_n_past1_ = 0;
     recorded_n_ = recorded_full_ = 0;
@@ -1038,27 +1065,27 @@ bool Qwen35::select_slot(int s, std::string & err) {
     return true;
 }
 
-void Qwen35::update_summaries(int upto) {
-    // element-wise min/max of each new page's keys (from the RAM KV), computed in parallel, uploaded in order
-    const auto & h = hp_;
-    if (upto <= sum_upto_) return;
-    const int64_t hd = h.head_dim, np = upto - sum_upto_;
+std::vector<std::vector<ggml_fp16_t>> Qwen35::summarize(const std::vector<ggml_tensor *> & hk, int from, int upto) const {
+    // element-wise min/max of each page's keys (from the RAM KV), midpoints as halves, heads in parallel
+    const auto &  h  = hp_;
+    const int64_t hd = h.head_dim, np = std::max(0, upto - from);
     const auto *  tt = ggml_get_type_traits(opt_.kv_type);
     std::vector<size_t> ids;
-    for (size_t i = 0; i < hk_.size(); i++) if (hk_[i]) ids.push_back(i);
+    for (size_t i = 0; i < hk.size(); i++) if (hk[i]) ids.push_back(i);
     std::vector<std::vector<ggml_fp16_t>> mid(ids.size());
+    if (np == 0) return mid;
     std::atomic<size_t> next{ 0 };
     auto work = [&]() {
         std::vector<float> row((size_t) hd), lo((size_t) hd), hi((size_t) hd);
         for (size_t t; (t = next++) < ids.size();) {
-            const ggml_tensor * hk = hk_[ids[t]];
+            const ggml_tensor * k = hk[ids[t]];
             mid[t].resize((size_t) (np * hd));
             for (int64_t p = 0; p < np; p++) {
                 std::fill(lo.begin(), lo.end(), INFINITY);
                 std::fill(hi.begin(), hi.end(), -INFINITY);
                 for (int r = 0; r < kPage; r++) {
-                    const char * src = (const char *) hk->data + hk->nb[1] * (size_t) ((sum_upto_ + p) * kPage + r);
-                    if (hk->type == GGML_TYPE_F32) std::memcpy(row.data(), src, sizeof(float) * hd);
+                    const char * src = (const char *) k->data + k->nb[1] * (size_t) ((from + p) * kPage + r);
+                    if (k->type == GGML_TYPE_F32) std::memcpy(row.data(), src, sizeof(float) * hd);
                     else tt->to_float(src, row.data(), hd);
                     for (int64_t d = 0; d < hd; d++) {
                         lo[(size_t) d] = std::min(lo[(size_t) d], row[(size_t) d]);
@@ -1075,30 +1102,42 @@ void Qwen35::update_summaries(int upto) {
     const int nt = std::max(1, std::min<int>((int) ids.size(), (int) std::thread::hardware_concurrency()));
     for (int i = 0; i < nt; i++) th.emplace_back(work);
     for (auto & x : th) x.join();
-    const size_t off = sizeof(ggml_fp16_t) * (size_t) (sum_upto_ * hd);
-    for (size_t t = 0; t < ids.size(); t++) {
-        ggml_backend_tensor_set(pmid_[ids[t]], mid[t].data(), off, mid[t].size() * sizeof(ggml_fp16_t));
+    return mid;
+}
+
+void Qwen35::update_summaries(int upto) {
+    // the active slot's new pages, uploaded to the VRAM summaries in order
+    if (upto <= sum_upto_) return;
+    const auto   mid = summarize(hk_, sum_upto_, upto);
+    const size_t off = sizeof(ggml_fp16_t) * (size_t) (sum_upto_ * hp_.head_dim);
+    size_t       t   = 0;
+    for (size_t i = 0; i < pmid_.size(); i++) {
+        if (!pmid_[i]) continue;
+        ggml_backend_tensor_set(pmid_[i], mid[t].data(), off, mid[t].size() * sizeof(ggml_fp16_t));
+        t++;
     }
     sum_upto_ = upto;
 }
 
-void Qwen35::fill_draft_far() {
-    // after a sparse verify: copy its best-scoring pages (per KV head) from RAM into each ring's draft far area
+int Qwen35::fill_far(const std::vector<ggml_tensor *> & kc, const std::vector<ggml_tensor *> & vc,
+                     const std::vector<ggml_tensor *> & hk, const std::vector<ggml_tensor *> & hv,
+                     const std::vector<ggml_tensor *> & sel_nodes, int kp) {
+    // after a sparse verify: copy its best-scoring pages (per KV head) from RAM into the ring's draft far area
     const auto &  h   = hp_;
     const int64_t nkv = h.n_head_kv;
-    const int     np  = std::min(Kd_ / kPage, sp_kp_);
-    if (np <= 0 || sel_nodes_.empty()) return;
-    std::vector<int32_t> sel((size_t) sp_kp_);
+    const int     np  = std::min(Kd_ / kPage, kp);
+    if (np <= 0 || sel_nodes.empty()) return 0;
+    std::vector<int32_t> sel((size_t) kp);
     std::vector<uint8_t> buf;
     for (int64_t il = 0; il < h.n_layer; il++) {
         if (h.is_recurrent(il)) continue;
         for (int kv = 0; kv < 2; kv++) {
-            ggml_tensor * rc = (kv ? v_cache_ : k_cache_)[(size_t) il];
+            ggml_tensor * rc = (kv ? vc : kc)[(size_t) il];
             buf.assign(rc->nb[1] * (size_t) Kd_, 0);
             for (int64_t j = 0; j < nkv; j++) {
                 const size_t hi = (size_t) (il * nkv + j);
-                ggml_backend_tensor_get(sel_nodes_[hi], sel.data(), 0, sel.size() * sizeof(int32_t));
-                const ggml_tensor * ht = (kv ? hv_ : hk_)[hi];
+                ggml_backend_tensor_get(sel_nodes[hi], sel.data(), 0, sel.size() * sizeof(int32_t));
+                const ggml_tensor * ht = (kv ? hv : hk)[hi];
                 for (int p = 0; p < np; p++) {
                     for (int r = 0; r < kPage; r++) {
                         std::memcpy(buf.data() + rc->nb[1] * (size_t) (p * kPage + r) + ht->nb[1] * (size_t) j,
@@ -1109,11 +1148,33 @@ void Qwen35::fill_draft_far() {
             ggml_backend_tensor_set(rc, buf.data(), 0, buf.size());
         }
     }
-    far_rows_ = np * kPage;
+    return np * kPage;
+}
+
+void Qwen35::fill_draft_far() {
+    const int rows = fill_far(k_cache_, v_cache_, hk_, hv_, sel_nodes_, sp_kp_);
+    if (rows <= 0) return;
+    far_rows_ = rows;
     far_ws_   = sp_ws_;
 }
 
 namespace {
+// the top k of each row of logits [n_vocab, rows], best first: values [1, k, rows], ids [k, rows]. In chunks of 32
+// rows: the full-vocabulary argsort takes VRAM per row (a joint verify of 126 rows ran out at 128K context)
+void rows_top_k(ggml_context * ctx, ggml_tensor * lg, int k, ggml_tensor *& vals, ggml_tensor *& ids) {
+    const int64_t     nv = lg->ne[0], rows = lg->ne[1];
+    constexpr int64_t kCh = 32;
+    vals = ids = nullptr;
+    for (int64_t r0 = 0; r0 < rows; r0 += kCh) {
+        const int64_t r   = std::min(kCh, rows - r0);
+        ggml_tensor * sub = ggml_view_2d(ctx, lg, nv, r, lg->nb[1], lg->nb[1] * (size_t) r0);
+        ggml_tensor * id  = ggml_cont(ctx, ggml_argsort_top_k(ctx, sub, k));
+        ggml_tensor * v   = ggml_get_rows(ctx, ggml_reshape_3d(ctx, sub, 1, nv, r), id);
+        ids  = ids ? ggml_concat(ctx, ids, id, 1) : id;
+        vals = vals ? ggml_concat(ctx, vals, v, 2) : v;
+    }
+}
+
 // rows of a sparse attention's K or V: the selected pages (src[0] = page ids), then the recent window, then zeros
 void gather_op(ggml_tensor * dst, int ith, int nth, void * ud) {
     const auto *  g    = (const Qwen35GatherInfo *) ud;
@@ -1325,6 +1386,10 @@ void Qwen35::restore_state(int slot) {
 bool Qwen35::compute(ggml_context * ctx, ggml_cgraph * gf, std::string & err) {
     (void) ctx;
     ggml_backend_sched_reset(sched_);
+    for (ggml_tensor * t : gpu_nodes_) {
+        if (gpu_) ggml_backend_sched_set_tensor_backend(sched_, t, gpu_);
+    }
+    gpu_nodes_.clear();
     if (!ggml_backend_sched_alloc_graph(sched_, gf)) {
         err = "cannot allocate the compute graph";
         return false;
@@ -1357,12 +1422,14 @@ bool Qwen35::rollback(int keep, std::string & err, int slot) {
     return true;
 }
 
-bool Qwen35::replay(int keep, std::string & err, int row0) {
+bool Qwen35::replay(int keep, std::string & err, int row0, const std::vector<ggml_tensor *> * cs,
+                    const std::vector<ggml_tensor *> * ss) {
     if (keep <= 0) return true;
     const auto &     h   = hp_;
     ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
     ggml_context *   ctx = ggml_init(ip);
     ggml_cgraph *    gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
+    gpu_nodes_.clear();
     for (int64_t il = 0; il < h.n_layer; il++) {
         if (!h.is_recurrent(il)) {
             continue;
@@ -1372,7 +1439,8 @@ bool Qwen35::replay(int keep, std::string & err, int row0) {
         ggml_tensor * g    = ggml_view_2d(ctx, rec_g_[l], h.ssm_n_v, keep, rec_g_[l]->nb[1], rec_g_[l]->nb[1] * (size_t) row0);
         ggml_tensor * beta = ggml_view_2d(ctx, rec_beta_[l], h.ssm_n_v, keep, rec_beta_[l]->nb[1], rec_beta_[l]->nb[1] * (size_t) row0);
         gdn_core(ctx, gf, il, ggml_reshape_3d(ctx, qkv, h.conv_channels(), keep, 1),
-                 ggml_reshape_4d(ctx, g, 1, h.ssm_n_v, keep, 1), ggml_reshape_4d(ctx, beta, 1, h.ssm_n_v, keep, 1), keep);
+                 ggml_reshape_4d(ctx, g, 1, h.ssm_n_v, keep, 1), ggml_reshape_4d(ctx, beta, 1, h.ssm_n_v, keep, 1), keep, 1,
+                 cs ? (*cs)[l] : nullptr, ss ? (*ss)[l] : nullptr);
     }
     const bool ok = compute(ctx, gf, err);
     ggml_free(ctx);
@@ -1413,8 +1481,10 @@ bool Qwen35::commit(int keep, std::string & err, int seq) {
 }
 
 ggml_tensor * Qwen35::gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il, ggml_tensor * qkv, ggml_tensor * g,
-                               ggml_tensor * beta, int n, int ns) {
+                               ggml_tensor * beta, int n, int ns, ggml_tensor * cs_in, ggml_tensor * ss_in) {
     // ns > 1: n tokens are ns sequences of n / ns, each from the same state (state not written)
+    // cs_in / ss_in: this state instead of the active one (a parked slot's, in RAM): the ops that read it are placed
+    // on the GPU (gpu_nodes_), the scheduler copies it there
     const int L = n / ns;
     const auto &        h   = hp_;
     const Qwen35Layer & Lw  = layers_[(size_t) il];
@@ -1422,13 +1492,14 @@ ggml_tensor * Qwen35::gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il,
     const int64_t       S = h.ssm_d_state, Hk = h.ssm_n_k, Hv = h.ssm_n_v, C = h.conv_channels();
 
     // causal conv over [previous d_conv-1 inputs | this batch], then keep the last d_conv-1 inputs
-    ggml_tensor * cs   = conv_state_[(size_t) il];
+    ggml_tensor * cs   = cs_in ? cs_in : conv_state_[(size_t) il];
     ggml_tensor * cst  = ggml_reshape_3d(ctx, cs, h.ssm_d_conv - 1, C, 1);
     if (ns > 1) {
         cst = ggml_repeat_4d(ctx, cst, h.ssm_d_conv - 1, C, ns, 1);
         qkv = ggml_reshape_3d(ctx, qkv, C, L, ns);
     }
     ggml_tensor * cin  = ggml_concat(ctx, cst, ggml_transpose(ctx, qkv), 0);  // [d_conv-1+L, C, ns]
+    if (cs_in) gpu_nodes_.push_back(cin);
     ggml_tensor * last = ggml_view_3d(ctx, cin, h.ssm_d_conv - 1, C, 1, cin->nb[1], cin->nb[2],
                                       ggml_row_size(cin->type, cin->ne[0] - (h.ssm_d_conv - 1)));
     if (write_state_ && ns == 1) ggml_build_forward_expand(gf, ggml_cpy(ctx, last, cs));
@@ -1444,7 +1515,7 @@ ggml_tensor * Qwen35::gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il,
     q = ggml_scale(ctx, ggml_rms_norm(ctx, q, eps / (float) S), 1.0f / sqrtf((float) S));
     k = ggml_scale(ctx, ggml_rms_norm(ctx, k, eps / (float) S), 1.0f / sqrtf((float) S));
 
-    ggml_tensor * ss    = ssm_state_[(size_t) il];
+    ggml_tensor * ss    = ss_in ? ss_in : ssm_state_[(size_t) il];
     ggml_tensor * state = ggml_reshape_4d(ctx, ss, S, S, Hv, 1);
     if (ns > 1) {
         state = ggml_repeat_4d(ctx, state, S, S, Hv, ns);
@@ -1452,6 +1523,7 @@ ggml_tensor * Qwen35::gdn_core(ggml_context * ctx, ggml_cgraph * gf, int64_t il,
         beta  = ggml_reshape_4d(ctx, beta, 1, Hv, L, ns);
     }
     ggml_tensor * res   = ggml_gated_delta_net(ctx, q, k, v, g, beta, state, 1);
+    if (ss_in) gpu_nodes_.push_back(res);
     ggml_tensor * out   = ggml_view_4d(ctx, res, S, Hv, L, ns, ggml_row_size(res->type, S),
                                        ggml_row_size(res->type, S * Hv), ggml_row_size(res->type, S * Hv * L), 0);
     if (ns > 1) return ggml_reshape_4d(ctx, out, S, Hv, n, 1);
@@ -1697,9 +1769,7 @@ ggml_cgraph * Qwen35::build_graph(ggml_context * ctx, int n, const EvalOpts & o,
     if (o.argmax) {
         out_logits = ggml_argmax(ctx, out_logits);
     } else if (o.topk > 0) {  // the top-k of each row on the GPU: k values + ids come back instead of the vocabulary
-        const int64_t rows = out_logits->ne[1];
-        out_ids_   = ggml_cont(ctx, ggml_argsort_top_k(ctx, out_logits, o.topk));  // [k, rows], best first
-        out_logits = ggml_get_rows(ctx, ggml_reshape_3d(ctx, out_logits, 1, out_logits->ne[0], rows), out_ids_);
+        rows_top_k(ctx, out_logits, o.topk, out_logits, out_ids_);  // [k, rows], best first
         ggml_set_output(out_ids_);
         ggml_build_forward_expand(gf, out_ids_);
     }
@@ -1837,6 +1907,10 @@ bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t
 
 bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * logits, int32_t * ids,
                   std::string & err) {
+    if (!multi_.empty()) {
+        err = "eval: a joint verify is not committed (commit_seq)";
+        return false;
+    }
     if (n <= 0 || n > opt_.n_ubatch) {
         err = "eval: batch size must be 1.." + std::to_string(opt_.n_ubatch);
         return false;
@@ -2055,6 +2129,376 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     if (!opts.window_ok) exact_upto_ = n_past_ + n;
     if (use_host) host_valid_ = n_past_ + n;
     if (!dry_pending_) n_past_ += n;  // a dry eval moves on in commit()
+    return true;
+}
+
+bool Qwen35::eval_multi(const std::vector<MultiSeq> & seqs, int topk, float * logits, int32_t * ids, std::string & err) {
+    const auto &  h   = hp_;
+    const int64_t hd  = h.head_dim, nkv = h.n_head_kv, g = h.n_head / h.n_head_kv;
+    const float   eps = h.rms_eps;
+    if (slots_.size() < 2 || seqs.empty()) {
+        err = "eval_multi: needs sequence slots";
+        return false;
+    }
+    if (dry_pending_ || !multi_.empty()) {
+        err = "eval_multi: an earlier eval is not committed";
+        return false;
+    }
+    // per sequence: its slot, rows, position and sparse attention shape (as eval() with the KV in RAM)
+    struct P {
+        KvSlot *      sl = nullptr;
+        int           slot = 0, off = 0, n = 0, p = 0, ws = 0, nfar = 0, kp = 0, nwin = 0, nsel = 0;
+        ggml_tensor * kvidx = nullptr, * hidx = nullptr, * smask = nullptr, * sbias = nullptr;
+        std::vector<ggml_tensor *> sel;
+    };
+    static const int win   = std::getenv("E8_SPARSE_WINDOW") ? std::atoi(std::getenv("E8_SPARSE_WINDOW")) : 4096;
+    static const int pages = std::getenv("E8_SPARSE_PAGES") ? std::atoi(std::getenv("E8_SPARSE_PAGES")) : 128;
+    std::vector<P> ps(seqs.size());
+    int            N = 0;
+    park_active();  // every sequence then reads its slot's state, KV and summaries the same way
+    for (size_t b = 0; b < seqs.size(); b++) {
+        const MultiSeq & q = seqs[b];
+        P &              x = ps[b];
+        if (q.slot < 0 || q.slot >= (int) slots_.size() || q.n < 1 || q.n > kSparseMaxN || !q.tokens) {
+            err = "eval_multi: bad sequence";
+            return false;
+        }
+        for (size_t c = 0; c < b; c++) {
+            if (ps[c].slot == q.slot) {
+                err = "eval_multi: a slot twice";
+                return false;
+            }
+        }
+        for (int i = 0; i < q.n; i++) {
+            if (q.tokens[i] < 0 || q.tokens[i] >= h.n_vocab) {
+                err = "eval_multi: token id out of range";
+                return false;
+            }
+        }
+        x.sl   = &slots_[(size_t) q.slot];
+        x.slot = q.slot;
+        x.off  = N;
+        x.n    = q.n;
+        x.p    = x.sl->n_past;
+        N += q.n;
+        if (x.p + x.n > n_ctx_ || x.sl->host_valid < x.p) {
+            err = "eval_multi: slot " + std::to_string(q.slot) + (x.p + x.n > n_ctx_ ? " is full" : ": its RAM KV is incomplete");
+            return false;
+        }
+        if (!ensure_committed_slot(*x.sl, x.p + x.n, err)) return false;
+        x.ws   = std::max(0, (x.p + x.n - (std::max(win, x.n) + std::max(0, x.n - kSparseMaxN))) / kPage * kPage);
+        x.nfar = x.ws / kPage;
+        x.kp   = std::min(pages, x.nfar);
+        x.nwin = x.p + x.n - x.ws;
+        x.nsel = (x.kp * kPage + x.nwin + kKvPad - 1) / kKvPad * kKvPad;
+        // page summaries [0, nfar) in the slot's RAM copy
+        KvSlot & sl = *x.sl;
+        sl.sum_upto = std::min(sl.sum_upto, std::min(x.p, sl.host_valid) / kPage);
+        sl.sum_saved = std::min(sl.sum_saved, sl.sum_upto);
+        if (x.nfar > sl.sum_upto) {
+            const size_t row = (size_t) hd * sizeof(ggml_fp16_t), npg = (size_t) (n_ctx_ / kPage);
+            const auto   mid = summarize(sl.hk, sl.sum_upto, x.nfar);
+            for (size_t t = 0; t < mid.size(); t++) {
+                std::memcpy(sl.summ + (t * npg + (size_t) sl.sum_upto) * row, mid[t].data(), mid[t].size() * sizeof(ggml_fp16_t));
+            }
+            sl.sum_upto = sl.sum_saved = x.nfar;
+        }
+        if (x.slot == cur_slot_) sum_low_ = std::min(sum_low_, sl.sum_upto);
+    }
+    if (N > opt_.max_record || N >= opt_.n_ubatch) {
+        err = "eval_multi: " + std::to_string(N) + " tokens, at most " + std::to_string(std::min(opt_.max_record, opt_.n_ubatch - 1));
+        return false;
+    }
+
+    // ---- graph: the weights once over all N rows; recurrence and attention per sequence
+    ggml_init_params ip  = { graph_meta_.size(), graph_meta_.data(), true };
+    ggml_context *   ctx = ggml_init(ip);
+    ggml_cgraph *    gf  = ggml_new_graph_custom(ctx, kGraphSize, false);
+    gpu_nodes_.clear();
+    res_on_gpu_.clear();
+    attn_nodes_.clear();
+    gi_.clear();
+    gi_.reserve((size_t) (h.n_layer * nkv * 2) * ps.size());  // stable addresses: the gather ops point at them
+    ggml_tensor * inp_tok = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, h.n_embd, N);
+    ggml_set_input(inp_tok);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, (int64_t) N * 4);
+    ggml_set_input(inp_pos);
+    for (P & x : ps) {
+        x.kvidx = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, x.n);
+        x.hidx  = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, x.n);
+        x.smask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, x.nsel, x.n);
+        for (ggml_tensor * t : { x.kvidx, x.hidx, x.smask }) ggml_set_input(t);
+        if (x.kp > 0) {
+            x.sbias = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, x.nfar, 1);
+            ggml_set_input(x.sbias);
+        }
+        x.sel.assign(hk_.size(), nullptr);
+    }
+    use_res_     = has_residual();
+    write_state_ = false;  // dry: commit_seq() advances the states
+    auto norm = [&](ggml_tensor * t, ggml_tensor * w) { return ggml_mul(ctx, ggml_rms_norm(ctx, t, eps), w); };
+    auto cols = [&](ggml_tensor * t, int64_t off, int64_t n) {  // rows [off, off + n) of a [.., N] tensor (contiguous)
+        return ggml_view_2d(ctx, t, t->ne[0], n, t->nb[1], t->nb[1] * (size_t) off);
+    };
+    ggml_tensor * inpL = inp_tok;
+    int sections[4] = { h.rope_sections[0], h.rope_sections[1], h.rope_sections[2], h.rope_sections[3] };
+    for (int64_t il = 0; il < h.n_layer; il++) {
+        const size_t        l   = (size_t) il;
+        const Qwen35Layer & Lw  = layers_[l];
+        ggml_tensor *       cur = norm(inpL, Lw.attn_norm);
+        if (h.is_recurrent(il)) {
+            const int64_t S = h.ssm_d_state, Hv = h.ssm_n_v, C = h.conv_channels();
+            ggml_tensor * qkv   = mm(ctx, Lw.wqkv, cur);  // [C, N]
+            ggml_tensor * z     = mm(ctx, Lw.wz, cur);
+            ggml_tensor * beta  = ggml_sigmoid(ctx, mm(ctx, Lw.w_beta, cur));  // [Hv, N]
+            ggml_tensor * alpha = mm(ctx, Lw.w_alpha, cur);
+            ggml_tensor * gg    = ggml_mul(ctx, ggml_softplus(ctx, ggml_add(ctx, alpha, Lw.dt_bias)), Lw.a);  // [Hv, N]
+            // record every row: commit_seq() replays a prefix of each sequence's rows
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, qkv, ggml_view_2d(ctx, rec_qkv_[l], C, N, rec_qkv_[l]->nb[1], 0)));
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, gg, ggml_view_2d(ctx, rec_g_[l], Hv, N, rec_g_[l]->nb[1], 0)));
+            ggml_build_forward_expand(gf, ggml_cpy(ctx, beta, ggml_view_2d(ctx, rec_beta_[l], Hv, N, rec_beta_[l]->nb[1], 0)));
+            ggml_tensor * out = nullptr;
+            for (P & x : ps) {
+                ggml_tensor * ob = gdn_core(ctx, gf, il, ggml_reshape_3d(ctx, cols(qkv, x.off, x.n), C, x.n, 1),
+                                            ggml_reshape_4d(ctx, cols(gg, x.off, x.n), 1, Hv, x.n, 1),
+                                            ggml_reshape_4d(ctx, cols(beta, x.off, x.n), 1, Hv, x.n, 1), x.n, 1,
+                                            x.sl->conv[l], x.sl->ssm[l]);
+                ob  = ggml_cont(ctx, ob);  // [S, Hv, n, 1]
+                out = out ? ggml_concat(ctx, out, ob, 2) : ob;
+            }
+            ggml_tensor * z4 = ggml_reshape_4d(ctx, z, S, Hv, N, 1);
+            ggml_tensor * on = ggml_mul(ctx, norm(out, Lw.ssm_norm), ggml_silu(ctx, z4));
+            cur              = mm(ctx, Lw.ssm_out, ggml_reshape_2d(ctx, on, S * Hv, N));
+        } else {
+            ggml_tensor * qg = ggml_reshape_3d(ctx, mm(ctx, Lw.wq, cur), hd * 2, h.n_head, N);
+            ggml_tensor * Kc = ggml_reshape_3d(ctx, mm(ctx, Lw.wk, cur), hd, nkv, N);
+            ggml_tensor * Vc = ggml_reshape_3d(ctx, mm(ctx, Lw.wv, cur), hd, nkv, N);
+            const size_t  es = ggml_element_size(qg);
+            ggml_tensor * Qc   = ggml_view_3d(ctx, qg, hd, h.n_head, N, es * hd * 2, es * hd * 2 * h.n_head, 0);
+            ggml_tensor * gate = ggml_cont_2d(ctx, ggml_view_3d(ctx, qg, hd, h.n_head, N, es * hd * 2, es * hd * 2 * h.n_head, es * hd),
+                                              hd * h.n_head, N);
+            Qc = ggml_rope_multi(ctx, norm(Qc, Lw.q_norm), inp_pos, nullptr, (int) h.n_rot, sections, GGML_ROPE_TYPE_IMROPE,
+                                 (int) h.n_ctx_train, h.rope_freq_base, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+            Kc = ggml_rope_multi(ctx, norm(Kc, Lw.k_norm), inp_pos, nullptr, (int) h.n_rot, sections, GGML_ROPE_TYPE_IMROPE,
+                                 (int) h.n_ctx_train, h.rope_freq_base, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+            Qc = ggml_cont(ctx, Qc);
+            Kc = ggml_cont(ctx, Kc);
+            // in phases over all sequences (K/V writes, page selections on the GPU, gathers on the CPU, attention on the
+            // GPU), so a layer switches between the GPU and the CPU a few times, not a few times per sequence
+            const int64_t row = hd * nkv;
+            const size_t  nb  = ps.size();
+            std::vector<ggml_tensor *> qs(nb);
+            std::vector<std::vector<ggml_tensor *>> wk(nb, std::vector<ggml_tensor *>((size_t) nkv)),
+                wv = wk, sl_(nb, std::vector<ggml_tensor *>((size_t) nkv, nullptr)), gk = wk, gv = wk, qc = wk;
+            for (size_t b = 0; b < nb; b++) {  // this batch's K/V: the slot's ring part (drafts), then its RAM KV
+                P &           x  = ps[b];
+                KvSlot &      sl = *x.sl;
+                ggml_tensor * Kb = ggml_view_3d(ctx, Kc, hd, nkv, x.n, Kc->nb[1], Kc->nb[2], Kc->nb[2] * (size_t) x.off);
+                ggml_tensor * Vb = ggml_view_3d(ctx, Vc, hd, nkv, x.n, Vc->nb[1], Vc->nb[2], Vc->nb[2] * (size_t) x.off);
+                ggml_tensor * Qb = ggml_view_3d(ctx, Qc, hd, h.n_head, x.n, Qc->nb[1], Qc->nb[2], Qc->nb[2] * (size_t) x.off);
+                ggml_build_forward_expand(gf, ggml_set_rows(ctx, sl.kr[l], ggml_reshape_2d(ctx, ggml_cont(ctx, Kb), row, x.n), x.kvidx));
+                ggml_build_forward_expand(gf, ggml_set_rows(ctx, sl.vr[l], ggml_reshape_2d(ctx, ggml_cont(ctx, Vb), row, x.n), x.kvidx));
+                qs[b] = ggml_permute(ctx, Qb, 0, 2, 1, 3);  // [hd, n, n_head]
+                for (int64_t j = 0; j < nkv; j++) {
+                    const size_t  hi = (size_t) (il * nkv + j);
+                    ggml_tensor * kj = ggml_cont(ctx, ggml_view_2d(ctx, Kb, hd, x.n, Kb->nb[2], Kb->nb[1] * (size_t) j));
+                    ggml_tensor * vj = ggml_cont(ctx, ggml_view_2d(ctx, Vb, hd, x.n, Vb->nb[2], Vb->nb[1] * (size_t) j));
+                    wk[b][(size_t) j] = ggml_set_rows(ctx, sl.hk[hi], kj, x.hidx);
+                    wv[b][(size_t) j] = ggml_set_rows(ctx, sl.hv[hi], vj, x.hidx);
+                    ggml_build_forward_expand(gf, wk[b][(size_t) j]);
+                    ggml_build_forward_expand(gf, wv[b][(size_t) j]);
+                }
+            }
+            for (size_t b = 0; b < nb; b++) {  // page selections over the slots' summaries (from RAM, on the GPU)
+                P & x = ps[b];
+                for (int64_t j = 0; j < nkv; j++) {
+                    const size_t hi = (size_t) (il * nkv + j);
+                    ggml_tensor * q = qs[b];
+                    qc[b][(size_t) j] = ggml_view_3d(ctx, q, hd, x.n, g, q->nb[1], q->nb[2], q->nb[2] * (size_t) (j * g));
+                    if (x.kp == 0) continue;
+                    ggml_tensor * q2 = ggml_reshape_2d(ctx, ggml_cont(ctx, qc[b][(size_t) j]), hd, x.n * g);
+                    ggml_tensor * md = ggml_view_2d(ctx, x.sl->sumt[hi], hd, x.nfar, x.sl->sumt[hi]->nb[1], 0);
+                    ggml_tensor * s  = ggml_mul_mat(ctx, md, q2);
+                    gpu_nodes_.push_back(s);
+                    s = ggml_soft_max_ext(ctx, s, nullptr, 1.0f / sqrtf((float) hd), 0.0f);
+                    s = ggml_sum_rows(ctx, ggml_cont(ctx, ggml_transpose(ctx, s)));
+                    s = ggml_add(ctx, ggml_reshape_2d(ctx, s, x.nfar, 1), x.sbias);
+                    ggml_tensor * t = ggml_cont(ctx, ggml_argsort_top_k(ctx, s, x.kp));
+                    ggml_set_output(t);
+                    ggml_build_forward_expand(gf, t);
+                    x.sel[hi]         = t;
+                    sl_[b][(size_t) j] = t;
+                }
+            }
+            for (size_t b = 0; b < nb; b++) {  // gather the selected pages and the window from RAM
+                P & x = ps[b];
+                for (int64_t j = 0; j < nkv; j++) {
+                    const size_t hi = (size_t) (il * nkv + j);
+                    for (int kv = 0; kv < 2; kv++) {
+                        gi_.push_back({ kv ? x.sl->hv[hi] : x.sl->hk[hi], x.kp * kPage, kPage, x.ws, x.nwin });
+                        ggml_tensor * dep     = kv ? wv[b][(size_t) j] : wk[b][(size_t) j];
+                        ggml_tensor * args[2] = { sl_[b][(size_t) j] ? sl_[b][(size_t) j] : dep, dep };
+                        ggml_tensor * t = ggml_custom_4d(ctx, kv ? opt_.kv_type_v : opt_.kv_type, hd, x.nsel, 1, 1, args, 2, gather_op,
+                                                         GGML_N_TASKS_MAX, &gi_.back());
+                        ggml_build_forward_expand(gf, t);
+                        (kv ? gv : gk)[b][(size_t) j] = t;
+                    }
+                }
+            }
+            ggml_tensor * a = nullptr;
+            for (size_t b = 0; b < nb; b++) {  // attention
+                P &           x  = ps[b];
+                ggml_tensor * ab = nullptr;
+                for (int64_t j = 0; j < nkv; j++) {
+                    ggml_tensor * aj = ggml_flash_attn_ext(ctx, qc[b][(size_t) j], gk[b][(size_t) j], gv[b][(size_t) j], x.smask,
+                                                           1.0f / sqrtf((float) hd), 0.0f, 0.0f);
+                    ggml_prec_set_acc(aj, GGML_PREC_F32);
+                    attn_nodes_.push_back(aj);
+                    ab = ab ? ggml_concat(ctx, ab, aj, 1) : aj;  // [hd, heads, n]
+                }
+                a = a ? ggml_concat(ctx, a, ab, 2) : ab;  // [hd, heads, N]
+            }
+            a   = ggml_reshape_2d(ctx, a, a->ne[0] * a->ne[1], a->ne[2] * a->ne[3]);
+            a   = ggml_mul(ctx, a, ggml_sigmoid(ctx, gate));
+            cur = mm(ctx, Lw.wo, a);
+        }
+        cur                 = ggml_add(ctx, cur, inpL);
+        ggml_tensor * resid = cur;
+        ggml_tensor * xx    = norm(cur, Lw.post_norm);
+        ggml_tensor * ff    = ggml_swiglu_split(ctx, mm(ctx, Lw.ffn_gate, xx), mm(ctx, Lw.ffn_up, xx));
+        inpL                = ggml_add(ctx, mm(ctx, Lw.ffn_down, ff), resid);
+    }
+    ggml_tensor * hall = norm(inpL, out_norm_);
+    if (mtp_on_) ggml_build_forward_expand(gf, ggml_cpy(ctx, hall, ggml_view_2d(ctx, mtp_hid_, h.n_embd, N, mtp_hid_->nb[1], 0)));
+    ggml_tensor * out  = mm(ctx, output_, hall);
+    ggml_tensor * oids = nullptr;
+    if (topk > 0) {
+        rows_top_k(ctx, out, topk, out, oids);
+        ggml_set_output(oids);
+        ggml_build_forward_expand(gf, oids);
+    }
+    ggml_set_output(out);
+    ggml_build_forward_expand(gf, out);
+    use_res_     = false;
+    write_state_ = true;
+
+    ggml_backend_sched_reset(sched_);
+    for (ggml_tensor * t : res_on_gpu_) ggml_backend_sched_set_tensor_backend(sched_, t, gpu_);
+    res_on_gpu_.clear();
+    for (ggml_tensor * t : gpu_nodes_) ggml_backend_sched_set_tensor_backend(sched_, t, gpu_);
+    gpu_nodes_.clear();
+    for (ggml_tensor * t : attn_nodes_) ggml_backend_sched_set_tensor_backend(sched_, t, gpu_);
+    if (!ggml_backend_sched_alloc_graph(sched_, gf)) {
+        ggml_free(ctx);
+        err = "eval_multi: cannot allocate the compute graph";
+        return false;
+    }
+    {
+        std::vector<int32_t> toks((size_t) N);
+        for (const P & x : ps) std::copy(seqs[(size_t) (&x - ps.data())].tokens, seqs[(size_t) (&x - ps.data())].tokens + x.n, toks.begin() + x.off);
+        std::vector<float> emb;
+        embed(toks.data(), N, emb);
+        ggml_backend_tensor_set(inp_tok, emb.data(), 0, emb.size() * sizeof(float));
+    }
+    std::vector<int32_t> pos((size_t) N * 4, 0);
+    const ggml_fp16_t    zero = ggml_fp32_to_fp16(0.0f), ninf = ggml_fp32_to_fp16(-INFINITY);
+    for (P & x : ps) {
+        std::vector<int64_t> kvr((size_t) x.n), hr((size_t) x.n);
+        for (int i = 0; i < x.n; i++) {
+            const int qp = x.p + i;
+            pos[(size_t) (x.off + i)] = pos[(size_t) (N + x.off + i)] = pos[(size_t) (2 * N + x.off + i)] = qp;
+            kvr[(size_t) i] = Kd_ + qp % W_;
+            hr[(size_t) i]  = qp;
+        }
+        ggml_backend_tensor_set(x.kvidx, kvr.data(), 0, kvr.size() * sizeof(int64_t));
+        ggml_backend_tensor_set(x.hidx, hr.data(), 0, hr.size() * sizeof(int64_t));
+        std::vector<ggml_fp16_t> sm((size_t) x.nsel * x.n, ninf);
+        const int                kr = x.kp * kPage;
+        for (int i = 0; i < x.n; i++) {
+            ggml_fp16_t * mr = sm.data() + (size_t) i * x.nsel;
+            std::fill(mr, mr + kr, zero);
+            std::fill(mr + kr, mr + kr + (x.p + i + 1 - x.ws), zero);
+        }
+        ggml_backend_tensor_set(x.smask, sm.data(), 0, sm.size() * sizeof(ggml_fp16_t));
+        if (x.sbias && x.sbias->buffer) {
+            std::vector<float> bb((size_t) x.nfar, 0.0f);
+            bb[0] = 1e30f;  // the first page (attention sink) is always kept
+            ggml_backend_tensor_set(x.sbias, bb.data(), 0, bb.size() * sizeof(float));
+        }
+    }
+    ggml_backend_tensor_set(inp_pos, pos.data(), 0, pos.size() * sizeof(int32_t));
+    if (ggml_backend_sched_graph_compute(sched_, gf) != GGML_STATUS_SUCCESS) {
+        ggml_free(ctx);
+        err = "eval_multi: graph compute failed";
+        return false;
+    }
+    if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
+    if (oids && ids) ggml_backend_tensor_get(oids, ids, 0, ggml_nbytes(oids));
+    if (mtp_on_) {
+        multi_hid_.resize((size_t) h.n_embd * N);
+        ggml_backend_tensor_get(mtp_hid_, multi_hid_.data(), 0, multi_hid_.size() * sizeof(float));
+    }
+    // bookkeeping per slot: far areas from this verify's page selections, ring positions, RAM KV written
+    multi_.clear();
+    bool active_in = false;
+    for (P & x : ps) {
+        KvSlot &   sl  = *x.sl;
+        const bool act = x.slot == cur_slot_;
+        active_in      = active_in || act;
+        if (x.kp > 0 && Kd_ > 0) {
+            const int rows = fill_far(sl.kr, sl.vr, sl.hk, sl.hv, x.sel, x.kp);
+            if (rows > 0) {
+                (act ? far_rows_ : sl.far_rows) = rows;
+                (act ? far_ws_ : sl.far_ws)     = x.ws;
+            }
+        }
+        std::vector<int> & sp = act ? slot_pos_ : sl.slot_pos;
+        if ((int) sp.size() != W_) sp.assign((size_t) W_, -1);
+        for (int i = 0; i < x.n; i++) sp[(size_t) ((x.p + i) % W_)] = x.p + i;
+        sl.host_valid = sl.exact_upto = x.p + x.n;
+        if (act) host_valid_ = exact_upto_ = x.p + x.n;
+        multi_.push_back({ x.slot, x.off, x.n, x.p, false });
+    }
+    if (mtp_on_ && !active_in) {  // the active slot sat out: its hidden row (overwritten above) back from its slot
+        KvSlot & o = slots_[(size_t) cur_slot_];
+        hid_row_   = -1;
+        if (!o.hid.empty()) {
+            hid_row_ = opt_.n_ubatch - 1;
+            ggml_backend_tensor_set(mtp_hid_, o.hid.data(), mtp_hid_->nb[1] * (size_t) hid_row_, o.hid.size() * sizeof(float));
+        }
+    }
+    gi_.clear();
+    attn_nodes_.clear();
+    ggml_free(ctx);
+    recorded_n_ = recorded_full_ = 0;
+    return true;
+}
+
+bool Qwen35::commit_seq(int slot, int keep, std::string & err) {
+    MultiEntry * e = nullptr;
+    for (MultiEntry & x : multi_) {
+        if (x.slot == slot && !x.done) e = &x;
+    }
+    if (!e || keep < 0 || keep > e->n) {
+        err = "commit_seq: no such sequence or keep out of range";
+        return false;
+    }
+    KvSlot &   sl  = slots_[(size_t) slot];
+    const bool act = slot == cur_slot_;
+    // the recurrence over the kept rows, from the slot's state (VRAM when active, else its RAM copy)
+    if (!replay(keep, err, e->off, act ? nullptr : &sl.conv, act ? nullptr : &sl.ssm)) return false;
+    (act ? n_past_ : sl.n_past) = e->n_past + keep;
+    if (mtp_on_ && keep > 0) {
+        const float * hr = multi_hid_.data() + (size_t) hp_.n_embd * (size_t) (e->off + keep - 1);
+        if (act) {
+            hid_row_ = opt_.n_ubatch - 1;
+            ggml_backend_tensor_set(mtp_hid_, hr, mtp_hid_->nb[1] * (size_t) hid_row_, (size_t) hp_.n_embd * sizeof(float));
+        } else {
+            sl.hid.assign(hr, hr + hp_.n_embd);
+        }
+    }
+    e->done = true;
+    if (std::all_of(multi_.begin(), multi_.end(), [](const MultiEntry & x) { return x.done; })) multi_.clear();
     return true;
 }
 

@@ -34,6 +34,19 @@ prompts collapse (17K tokens: 4.2 vs 21.6 tokens per cycle). `tests/concurrent_s
 all finish and overlap; with a fixed k (`--spec 16`) every output equals its run alone; per-cycle draft and verify
 times are unchanged. No throughput gain yet (cycles take turns): that is phase 3.
 
+Joint verify (2026-10-08): decoding requests run in rounds. Each drafts on its slot; the request that completes the
+round verifies every request's drafts in one pass over the weights (`Qwen35::eval_multi`: weight matmuls over all
+rows, the recurrence from each slot's parked state, sparse attention over each slot's RAM KV and page summaries,
+all read from RAM; dry), then runs each request's acceptance and `commit_seq` (replays the kept rows into that
+slot's state, active or parked, so no slot switch). A request alone in its round verifies alone (plain path).
+`eightfer multitest` (3 slots, 6.4-12.5K-token prompts, 4K VRAM window): joint rows vs alone KLD <= 0.0005, same
+top-1 everywhere; after commit_seq the next token vs a fresh prefill KLD <= 0.00003. Verify time: alone ~300 ms;
+jointly 1 / 2 / 3 sequences 327 / 413-430 / 480-498 ms (each extra sequence moves its own attended KV and state:
+~77 ms). Server, 3 requests at 15K tokens, `--spec 16`: verify 157-169 ms per cycle per request (300 alone); decode
+about 1.2x the requests one after another, now bounded by drafting (~170 ms per request per cycle, one request at a
+time): batched drafting is next. Row top-k runs in chunks of 32 rows (a full-vocabulary argsort of 126 rows ran out
+of VRAM).
+
 ## Phase 2: speculative full-model pass (single stream, exact)
 
 Cycle c: launch the verify of drafts d[1..k] async on stream A (slot 0). Meanwhile on stream B, copy the
