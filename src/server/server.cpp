@@ -640,12 +640,28 @@ loaded:
     stops.insert(stops.end(), cp.additional_stops.begin(), cp.additional_stops.end());
 
     // The checkpoint goes before the generation prompt ("<|im_start|>assistant\n<think>\n"): the next turn re-renders
-    // the assistant turn differently, but the conversation before it stays a prefix.
+    // the assistant turn differently, but the conversation before it stays a prefix. The conversation part is always
+    // rendered with thinking on: the template's system prompt differs with thinking off (its tool-call example has no
+    // <think> block), and thinking toggles between agent steps (think_after_tool), which voided the prefix cache 4K
+    // tokens in. Only the generation prompt follows this step's setting.
     std::string head = cp.prompt, tail;
-    if (!cp.generation_prompt.empty() && head.size() > cp.generation_prompt.size() &&
-        head.compare(head.size() - cp.generation_prompt.size(), std::string::npos, cp.generation_prompt) == 0) {
-        tail = cp.generation_prompt;
-        head.resize(head.size() - tail.size());
+    auto split = [](const common_chat_params & c, std::string & h, std::string & t) {
+        h = c.prompt;
+        t.clear();
+        if (!c.generation_prompt.empty() && h.size() > c.generation_prompt.size() &&
+            h.compare(h.size() - c.generation_prompt.size(), std::string::npos, c.generation_prompt) == 0) {
+            t = c.generation_prompt;
+            h.resize(h.size() - t.size());
+            return true;
+        }
+        return false;
+    };
+    if (split(cp, head, tail) && !in.enable_thinking) {
+        auto in_on                                = in;
+        in_on.enable_thinking                     = true;
+        in_on.chat_template_kwargs["enable_thinking"] = "true";
+        std::string h_on, t_on;
+        if (split(common_chat_templates_apply(S.tmpl, in_on), h_on, t_on)) head = h_on;
     }
     prompt = common_tokenize(S.vocab, head, /*add_special=*/m.add_bos(), /*parse_special=*/true);
     n_head = prompt.size();
