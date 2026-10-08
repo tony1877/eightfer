@@ -9,7 +9,7 @@
 namespace e8::bench {
 
 static void header(const sys::Info & si) {
-    printf("eightfer %s bench  (ggml %s @ %s)\n", EIGHTFER_VERSION, ggml_version(), ggml_commit());
+    printf("shoehorn %s bench  (ggml %s @ %s)\n", SHOEHORN_VERSION, ggml_version(), ggml_commit());
     printf("[system] %s | %s | %d cores / %d threads | RAM %.1f GiB (%.1f GiB free)\n", si.os.c_str(), si.cpu.c_str(),
            si.physical_cores, si.logical_cores, (double) si.ram_total / GiB, (double) si.ram_avail / GiB);
     printf("[cpu] AVX2 %d  AVX512 %d  AVX512_VNNI %d  AVX512_BF16 %d\n", ggml_cpu_has_avx2(), ggml_cpu_has_avx512(),

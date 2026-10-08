@@ -1,4 +1,4 @@
-// `eightfer gen <base.gguf> [--res r.gguf] --tokens prompt_ids.txt [-n 128] [--spec K] [--temp T] [--top-p P]
+// `shoehorn gen <base.gguf> [--res r.gguf] --tokens prompt_ids.txt [-n 128] [--spec K] [--temp T] [--top-p P]
 //               [--top-k K] [--min-p P] [--seed S] [--gpu-layers N] [--ctx N] [--compare]`
 //
 // Generates from a prompt of token ids with self-speculative decoding (K drafts per cycle from the base, verified by
@@ -140,7 +140,7 @@ int gen(const std::vector<std::string> & args) {
     }
     const std::vector<int32_t> prompt = read_token_ids(tokens_path);
     if (model.empty() || prompt.empty() || n_gen < 1 || k < 0 || k > runtime::SpecDecoder::kMaxK) {
-        fprintf(stderr, "usage: eightfer gen <base.gguf> [--res r.gguf] --tokens <ids.txt> [-n 128] [--spec K (0..63) | auto]\n"
+        fprintf(stderr, "usage: shoehorn gen <base.gguf> [--res r.gguf] --tokens <ids.txt> [-n 128] [--spec K (0..63) | auto]\n"
                         "                    [--temp T] [--top-p P] [--top-k K] [--min-p P] [--seed S] [--gpu-layers N]\n"
                         "                    [--ctx N] [--threads N] [--mtp N (MTP proposals per base pass, 0 = off)] [--compare]\n");
         return 1;

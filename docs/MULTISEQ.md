@@ -39,7 +39,7 @@ round verifies every request's drafts in one pass over the weights (`Qwen35::eva
 rows, the recurrence from each slot's parked state, sparse attention over each slot's RAM KV and page summaries,
 all read from RAM; dry), then runs each request's acceptance and `commit_seq` (replays the kept rows into that
 slot's state, active or parked, so no slot switch). A request alone in its round verifies alone (plain path).
-`eightfer multitest` (3 slots, 6.4-12.5K-token prompts, 4K VRAM window): joint rows vs alone KLD <= 0.0005, same
+`shoehorn multitest` (3 slots, 6.4-12.5K-token prompts, 4K VRAM window): joint rows vs alone KLD <= 0.0005, same
 top-1 everywhere; after commit_seq the next token vs a fresh prefill KLD <= 0.00003. Verify time: alone ~300 ms;
 jointly 1 / 2 / 3 sequences 327 / 413-430 / 480-498 ms (each extra sequence moves its own attended KV and state:
 ~77 ms). Server, 3 requests at 15K tokens, `--spec 16`: verify 157-169 ms per cycle per request (300 alone); decode
@@ -55,7 +55,7 @@ time) became the bound. Now:
 - Lockstep drafting (`SpecDecoder::draft_lockstep`): the drafter drafts up to `--draft-batch` requests together, each
   on a working recurrent state of its own: per round, one batched MTP pass per proposal step (`draft_mtp_multi`), one
   base check of every request's proposals (`draft_eval`, rows padded to 8 per request so the graph keeps its shape and
-  its CUDA graph is reused: 2 requests 40 -> 28 ms) and one commit replay (`draft_commit`). `eightfer drafttest`: greedy
+  its CUDA graph is reused: 2 requests 40 -> 28 ms) and one commit replay (`draft_commit`). `shoehorn drafttest`: greedy
   drafts identical to drafting alone; 3 requests drafted in 442 ms in lockstep vs 692 ms one after another.
 - Two groups: decoding requests are split into two groups that take turns (one group verified together while the other
   drafts together). Each lane waits (<= 250 ms) only for its group's requests that can arrive soon: the verify lane

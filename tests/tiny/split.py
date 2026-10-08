@@ -1,5 +1,5 @@
 """M3 check on the tiny model: logits of the packed base alone and base + residual against the F32 original.
-Run tests/tiny/run.py and `eightfer pack` on tests/tiny/out/hf first (see tests/tiny/README.md)."""
+Run tests/tiny/run.py and `shoehorn pack` on tests/tiny/out/hf first (see tests/tiny/README.md)."""
 import subprocess, sys
 from pathlib import Path
 
@@ -8,7 +8,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tests" / "tiny" / "out"
 BATCH = int(sys.argv[1]) if len(sys.argv) > 1 else 64
-E8 = str(ROOT / "build" / "bin" / "eightfer.exe")
+E8 = str(ROOT / "build" / "bin" / "shoehorn.exe")
 
 
 def logits(gguf, extra, tag):

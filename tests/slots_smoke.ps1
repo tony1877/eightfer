@@ -7,7 +7,7 @@ param([Parameter(Mandatory)][string]$Model, [string]$Res = '', [int]$Port = 8097
       [int]$Ctx = 65536, [int]$Slots = 3, [switch]$Fresh,
       [string]$Template = 'C:\models\templates\qwen-sharp-v22.5.0.jinja',
       [string]$Text = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build-ref\eval.txt'))
-$e8 = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\bin\eightfer.exe'
+$e8 = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\bin\shoehorn.exe'
 
 function Start-Server([int] $port, [int] $slots) {
     $a = @('serve', $Model, '--port', "$port", '--alias', 'test', '--ctx', "$Ctx", '--slots', "$slots", '--spec', 'auto')

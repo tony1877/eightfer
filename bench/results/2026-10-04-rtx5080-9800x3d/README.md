@@ -52,5 +52,5 @@ The repacked path, still the fastest, does not use VNNI in this ggml build, so t
 
 The first run aborted in `[pcie]`: after pinning 15 GiB, `cudaFreeHost` returned "out of memory" and ggml aborted
 (exit `0xC0000409`). It happened again without any refused allocation, so the trigger is freeing with ~15 GiB pinned,
-not probing past the limit. The capacity probe now runs in a child process (`eightfer pinned-probe <GiB>`) that
+not probing past the limit. The capacity probe now runs in a child process (`shoehorn pinned-probe <GiB>`) that
 reports and exits without freeing; the transfer tests use one 1 GiB chunk. The default run completes.

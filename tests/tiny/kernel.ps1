@@ -1,7 +1,7 @@
 # Small-batch Q4_K residual kernel vs ggml's mul_mat (E8_NO_SMALL_GEMM=1), tiny model on the CPU.
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $t    = Join-Path $root 'tests\tiny\out'
-$e8   = Join-Path $root 'build\bin\eightfer.exe'
+$e8   = Join-Path $root 'build\bin\shoehorn.exe'
 $py   = Join-Path $root '.venv\Scripts\python.exe'
 foreach ($b in 1, 5, 9, 16) {
     $env:E8_NO_SMALL_GEMM = '1'

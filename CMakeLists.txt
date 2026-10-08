@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(eightfer VERSION 0.1.0 LANGUAGES C CXX)
+project(shoehorn VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)  # llama.cpp's targets; ours switch to 20 below
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,7 +9,7 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-option(EIGHTFER_CUDA "Build ggml's CUDA backend" ON)
+option(SHOEHORN_CUDA "Build ggml's CUDA backend" ON)
 
 set(E8_LLAMA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp)
 if (NOT EXISTS ${E8_LLAMA_DIR}/ggml/CMakeLists.txt)
@@ -20,7 +20,7 @@ endif()
 # reasoning / tool-call parsing for the server) from the pinned llama.cpp submodule. Static; none of llama.cpp's
 # tools, tests or examples; only targets we link get built.
 set(BUILD_SHARED_LIBS OFF)
-set(GGML_CUDA ${EIGHTFER_CUDA} CACHE BOOL "" FORCE)
+set(GGML_CUDA ${SHOEHORN_CUDA} CACHE BOOL "" FORCE)
 # CUDA graphs: llama.cpp's top-level CMake defaults them ON, ggml alone defaults OFF. Without them every decode
 # step pays one launch per kernel (thousands per token on WDDM).
 set(GGML_CUDA_GRAPHS ON CACHE BOOL "" FORCE)
@@ -58,7 +58,7 @@ add_library(e8_model STATIC
 target_include_directories(e8_model PUBLIC src)
 target_link_libraries(e8_model PUBLIC ggml ggml-cpu)
 
-add_executable(eightfer
+add_executable(shoehorn
     src/main.cpp
     src/cli/info.cpp
     src/cli/logits.cpp
@@ -77,14 +77,14 @@ add_executable(eightfer
     src/bench/bench_disk.cpp
     src/sys/sysinfo.cpp
 )
-target_include_directories(eightfer PRIVATE src ${E8_LLAMA_DIR}/vendor/cpp-httplib ${E8_LLAMA_DIR}/vendor)
-target_compile_definitions(eightfer PRIVATE EIGHTFER_VERSION="${PROJECT_VERSION}")
-target_link_libraries(eightfer PRIVATE e8_io e8_model ggml llama-common llama cpp-httplib)
+target_include_directories(shoehorn PRIVATE src ${E8_LLAMA_DIR}/vendor/cpp-httplib ${E8_LLAMA_DIR}/vendor)
+target_compile_definitions(shoehorn PRIVATE SHOEHORN_VERSION="${PROJECT_VERSION}")
+target_link_libraries(shoehorn PRIVATE e8_io e8_model ggml llama-common llama cpp-httplib)
 if (WIN32)
-    target_link_libraries(eightfer PRIVATE shell32)  # CommandLineToArgvW
+    target_link_libraries(shoehorn PRIVATE shell32)  # CommandLineToArgvW
 endif()
 
-# eightfer serve /dashboard: the page is embedded in the binary (regenerated when the HTML changes)
+# shoehorn serve /dashboard: the page is embedded in the binary (regenerated when the HTML changes)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/server/dashboard.html E8_DASHBOARD_HTML)
 # MSVC caps one string literal at ~16 KB: adjacent raw literals of 8000 characters
 string(LENGTH "${E8_DASHBOARD_HTML}" E8_DASH_LEN)
@@ -97,4 +97,4 @@ while(E8_DASH_POS LESS E8_DASH_LEN)
 endwhile()
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/dashboard.inc "${E8_DASH_INC}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/server/dashboard.html)
-target_include_directories(eightfer PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_include_directories(shoehorn PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)

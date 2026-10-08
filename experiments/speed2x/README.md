@@ -1,7 +1,7 @@
 # Speed and memory models behind docs/SPEED2X.md
 
 Cycle-level models, not measurements. Every input is labelled in the scripts and in SPEED2X.md §10.2.
-All of them must be replaced by `eightfer bench` numbers from the target box.
+All of them must be replaced by `shoehorn bench` numbers from the target box.
 
 | Script | What it computes |
 |---|---|

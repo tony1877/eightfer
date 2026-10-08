@@ -1,4 +1,4 @@
-# eightfer: bit-level lossless inference
+# shoehorn: bit-level lossless inference
 
 Status: design plus experiments on real Qwen3.8-27B weights.
 
@@ -6,7 +6,7 @@ Status: design plus experiments on real Qwen3.8-27B weights.
 - **Review:** the panel's adversarial review was cut short by usage limits. Only these spot checks were done:
   - Exact-rebuild logs: 0 mismatches.
   - Statistical (χ²) test of the cascade.
-- **Labels:** [M] measured, [D] derived, [A] assumed. Speed figures are [D/A] until `eightfer bench` runs on the target box.
+- **Labels:** [M] measured, [D] derived, [A] assumed. Speed figures are [D/A] until `shoehorn bench` runs on the target box.
 
 ## 1. The idea in plain words
 

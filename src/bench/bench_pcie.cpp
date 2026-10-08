@@ -75,7 +75,7 @@ struct ProbeResult {
     int    status  = 0;
 };
 
-// Runs `eightfer pinned-probe <target>` and parses its PINNED line.
+// Runs `shoehorn pinned-probe <target>` and parses its PINNED line.
 ProbeResult run_probe(double target_gib) {
     ProbeResult       r;
     const std::string exe = self_exe();

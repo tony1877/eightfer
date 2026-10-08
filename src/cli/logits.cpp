@@ -1,4 +1,4 @@
-// `eightfer logits <model.gguf> --tokens ids.txt --out logits.f32 [--gpu-layers N] [--batch B] [--kv f16|f32]`: evaluates the token
+// `shoehorn logits <model.gguf> --tokens ids.txt --out logits.f32 [--gpu-layers N] [--batch B] [--kv f16|f32]`: evaluates the token
 // ids (whitespace/comma separated) from position 0 in batches of B and writes n_tokens * n_vocab float32 logits,
 // row-major. Used to compare against reference implementations (tests/tiny).
 
@@ -52,7 +52,7 @@ int logits(const std::vector<std::string> & args) {
     }
     const std::vector<int32_t> toks = read_token_ids(tokens_path);
     if (model.empty() || out_path.empty() || toks.empty() || batch < 1) {
-        fprintf(stderr, "usage: eightfer logits <model.gguf> --tokens <ids.txt> --out <file> [--gpu-layers N] [--batch B]\n"
+        fprintf(stderr, "usage: shoehorn logits <model.gguf> --tokens <ids.txt> --out <file> [--gpu-layers N] [--batch B]\n"
                         "                       [--kv f16|f32] [--res <pack .res.gguf>]\n");
         return 1;
     }

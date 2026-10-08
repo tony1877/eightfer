@@ -1,6 +1,6 @@
-// `eightfer serve`: OpenAI-compatible HTTP server (DESIGN.md M6).
+// `shoehorn serve`: OpenAI-compatible HTTP server (DESIGN.md M6).
 //
-//   eightfer serve <model.gguf> [--res r.gguf] [--host 127.0.0.1] [--port 8090] [--alias NAME]
+//   shoehorn serve <model.gguf> [--res r.gguf] [--host 127.0.0.1] [--port 8090] [--alias NAME]
 //                  [--api-key-file F] [--chat-template-file F] [--ctx N] [--kv f16|q8_0|q4_0] [--kv-v TYPE] [--kv-lock] [--slots N] [--kv-pool-gb G] [--spec auto|K]
 //                  [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N]
 //
@@ -486,12 +486,20 @@ void run_round(Server & S, int group = -1) {
     S.cv.notify_all();
 }
 
+// whether a request's model name names `alias`; names from before the rename (...-eightfer for ...-shoehorn) still do
+bool names_alias(const std::string & alias, const std::string & want) {
+    if (want == alias) return true;
+    const std::string old = "-eightfer", now = "-shoehorn";
+    return want.size() > old.size() && want.compare(want.size() - old.size(), old.size(), old) == 0 &&
+           want.substr(0, want.size() - old.size()) + now == alias;
+}
+
 bool run_request(Server & S, Turn & turn, const json & body, Result & R, const std::function<bool(const json &)> & on_delta,
                  const std::function<bool()> & cancelled, std::string & err) {
     int idx = 0;  // the entry this request names (the main model when it names none of ours)
     if (body.contains("model") && body["model"].is_string()) {
         for (size_t i = 0; i < S.entries.size(); i++) {
-            if (S.entries[i].alias == body["model"].get<std::string>()) idx = (int) i;
+            if (names_alias(S.entries[i].alias, body["model"].get<std::string>())) idx = (int) i;
         }
     }
     if (S.active != idx || !S.model) {
@@ -1371,7 +1379,7 @@ int serve(const std::vector<std::string> & args) {
         }
     }
     if (model_path.empty()) {
-        fprintf(stderr, "usage: eightfer serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
+        fprintf(stderr, "usage: shoehorn serve <model.gguf> [--res r.gguf] [--host H] [--port 8090] [--alias NAME]\n"
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0|q4_0] [--spec auto|K]\n"
                         "         [--kv-v TYPE (V cache type, default: --kv)] [--kv-lock (keep the RAM KV in physical memory)]\n"
                         "         [--slots N (sequences kept, one per conversation)] [--kv-pool-gb G (RAM KV of all slots)]\n"
@@ -1596,7 +1604,7 @@ int serve(const std::vector<std::string> & args) {
         if (!authorized(req, resp)) return;
         json data = json::array();
         for (size_t i = 0; i < S->entries.size(); i++) {
-            data.push_back(json{ { "id", S->entries[i].alias }, { "object", "model" }, { "owned_by", "eightfer" }, { "created", 0 },
+            data.push_back(json{ { "id", S->entries[i].alias }, { "object", "model" }, { "owned_by", "shoehorn" }, { "created", 0 },
                                  { "status", { { "value", S->model && S->active == (int) i ? "loaded" : "unloaded" } } } });
         }
         if (!S->router_url.empty()) {  // and the router's models
@@ -1640,7 +1648,7 @@ int serve(const std::vector<std::string> & args) {
                 return;
             }
             const std::string want = body.contains("model") && body["model"].is_string() ? body["model"].get<std::string>() : "";
-            const bool ours = std::any_of(S->entries.begin(), S->entries.end(), [&](const Entry & e) { return e.alias == want; });
+            const bool ours = std::any_of(S->entries.begin(), S->entries.end(), [&](const Entry & e) { return names_alias(e.alias, want); });
             if (!S->router_url.empty() && !want.empty() && !ours) {
                 // another model: free ours and let the router serve it (it loads the model on demand)
                 const std::string path = req.path, rbody = req.body, url = S->router_url;
@@ -1766,7 +1774,7 @@ int serve(const std::vector<std::string> & args) {
     http.Post("/v1/chat/completions", handler(true));
     http.Post("/v1/completions", handler(false));
 
-    printf("eightfer serve: %s on http://%s:%d (model id \"%s\", ctx %d, %s)\n", model_path.c_str(), host.c_str(), port,
+    printf("shoehorn serve: %s on http://%s:%d (model id \"%s\", ctx %d, %s)\n", model_path.c_str(), host.c_str(), port,
            S->alias.c_str(), n_ctx,
            idle_unload > 0 ? "loaded on demand" : S->q35 && S->q35->has_residual() ? "base + residual, speculative" : "plain decoding");
     fflush(stdout);
@@ -1777,7 +1785,7 @@ int serve(const std::vector<std::string> & args) {
     return 0;
 }
 
-// `eightfer parsetest <model.gguf> --raw raw.txt --meta tools.json [--template t.jinja]`: runs the server's chat
+// `shoehorn parsetest <model.gguf> --raw raw.txt --meta tools.json [--template t.jinja]`: runs the server's chat
 // output parser on a logged raw turn (E8_LOG_RAW) with the request's tool schemas, and prints what it extracted.
 int parsetest(const std::vector<std::string> & args) {
     std::string model, raw_path, meta_path, tmpl_file;

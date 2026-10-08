@@ -10,9 +10,9 @@
 #include <vector>
 
 // ggml logs every repacked tensor and device detail at DEBUG/INFO; keep warnings and errors
-// unless EIGHTFER_VERBOSE is set.
+// unless SHOEHORN_VERBOSE is set.
 static void log_filter(ggml_log_level level, const char * text, void *) {
-    static const bool verbose = std::getenv("EIGHTFER_VERBOSE") != nullptr;
+    static const bool verbose = std::getenv("SHOEHORN_VERBOSE") != nullptr;
     static int        last    = GGML_LOG_LEVEL_NONE;
     if (level != GGML_LOG_LEVEL_CONT) {
         last = level;
@@ -23,8 +23,8 @@ static void log_filter(ggml_log_level level, const char * text, void *) {
 }
 
 static void usage() {
-    printf("eightfer %s\n\n"
-           "usage: eightfer bench [options]\n"
+    printf("shoehorn %s\n\n"
+           "usage: shoehorn bench [options]\n"
            "  --only LIST     run only these sections, comma-separated: cpu,gpu,pcie,disk\n"
            "  --disk PATH     drive/folder (a temp file is written there) or existing big file; repeatable.\n"
            "                  Default on Windows: every fixed drive.\n"
@@ -33,7 +33,7 @@ static void usage() {
            "                  half of RAM minus 1 GiB, and always leaving 4 GiB of RAM free)\n"
            "  --threads N     CPU threads for GEMV (default: physical cores)\n"
            "  --seconds S     duration of each measurement (default 1.5)\n",
-           EIGHTFER_VERSION);
+           SHOEHORN_VERSION);
 }
 
 static bool parse_bench(const std::vector<std::string> & a, e8::bench::Options & o) {
@@ -101,7 +101,7 @@ int main(int argc, char ** argv) {
         return 0;
     }
     if (args[1] == "--version") {
-        printf("eightfer %s\n", EIGHTFER_VERSION);
+        printf("shoehorn %s\n", SHOEHORN_VERSION);
         return 0;
     }
     if (args[1] == "pinned-probe" && args.size() == 3) {  // internal: run by `bench` in a child process

@@ -1369,9 +1369,12 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     if (!rf.open(path, err)) {
         return false;
     }
-    const std::string id_b = file_.str("eightfer.pack.id", ""), id_r = rf.str("eightfer.pack.id", "");
-    if (rf.str("general.type", "") != "eightfer-residual" || id_r.empty()) {
-        err = path + " is not an eightfer residual file";
+    // (files packed before the rename carry eightfer.* keys)
+    const std::string id_b = file_.str("shoehorn.pack.id", file_.str("eightfer.pack.id", "")),
+                      id_r = rf.str("shoehorn.pack.id", rf.str("eightfer.pack.id", ""));
+    const std::string rtype = rf.str("general.type", "");
+    if ((rtype != "shoehorn-residual" && rtype != "eightfer-residual") || id_r.empty()) {
+        err = path + " is not a shoehorn residual file";
         return false;
     }
     if (id_b != id_r) {

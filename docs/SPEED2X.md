@@ -1,4 +1,4 @@
-# eightfer: 2x speed and 200k context (DESIGN §10)
+# shoehorn: 2x speed and 200k context (DESIGN §10)
 
 Status: design. Produced by 4 independent designs, each attacked by an adversarial reviewer, combined, then corrected by a final critic (all 16 critic corrections applied). Labels in this section: **[M]** measured, **[V]** verified in source or config, **[D]** derived arithmetic from labelled inputs, **[A]** assumed (each one has a bench line in 10.8). GB = 10^9 bytes. tok/s figures come from one cycle-level model per model: a Monte Carlo over verify cycles for the 27B and a closed form for Flash-Next. Monte Carlo noise is about ±0.4 tok/s. The model scripts are in [`experiments/speed2x/`](../experiments/speed2x/).
 
@@ -37,7 +37,7 @@ Hardware scenarios (all [A] until bench output exists):
 
 - CPU rate in R bytes: c(N) = TMAC × 562.5 / N GB/s (0.5625 B per Q4_K weight). Central at N=12: 24.6 GB/s [D]. The sandbox hint (8 MAC/cycle/core at N=9) scales to about 0.29 TMAC/s for stock ggml on 7 Zen5 cores, so the custom kernel is assumed to be ~1.8x stock [A].
 - Acceptance [A]. Per-position α = 0.90 at 4k, as a mix of 70% easy positions (α 0.98) and 30% hard positions (α 0.713). At ≥128k, the drafter's sparse attention costs 0.02. A confidence detector flags hard positions with 75% recall and 15% false positives. A hedge root matches the target's corrected token with probability 0.55 (hard) or 0.40 (easy). The pure-IQ4_XS B also has an IQ4_XS lm_head, which costs about −0.005 to −0.01 α [A]; measured at M3a.
-- **Sysmem fallback must be off.** NVIDIA Control Panel → Manage 3D settings → Program settings → eightfer.exe → CUDA - Sysmem Fallback Policy = **Prefer No Sysmem Fallback**. The plan runs at 99.5% of VRAM, and the default driver policy silently spills overflow into system RAM over PCIe instead of failing. eightfer compares cudaMemGetInfo with the plan after each allocation phase and refuses to run past it.
+- **Sysmem fallback must be off.** NVIDIA Control Panel → Manage 3D settings → Program settings → shoehorn.exe → CUDA - Sysmem Fallback Policy = **Prefer No Sysmem Fallback**. The plan runs at 99.5% of VRAM, and the default driver policy silently spills overflow into system RAM over PCIe instead of failing. shoehorn compares cudaMemGetInfo with the plan after each allocation phase and refuses to run past it.
 - Memory conventions. 15.5 GB VRAM includes a 0.35 GB reserve for the CUDA context, module images and pool slack. 22 GB RAM includes 0.40 GB of engine host overhead. The card is 16 GiB = 17.18 GB, so the measured free VRAM is probably larger than 15.5 GB; the surplus ladder in 10.3.4 uses it.
 - "Same-assumption baseline" means the current §4 design (serial drafting with B, then verify) run on the central hardware. The 250 ms CPU verify in §4 needs ≥420 token·GB/s of CPU compute, which the sandbox hint contradicts. The §8 fallback (R streamed over PCIe) gives 325 ms and the best k is 13, so that baseline is 13.6 tok/s [D].
 
@@ -60,7 +60,7 @@ Implementation constraints, all [V] at `836d571`:
 - `ggml_gated_delta_net` needs F32 q/k/v/g/β and a contiguous [S,S,H,n_seqs] state (no stride-0 broadcast), and every sequence must have the same n_tokens. Drafter hypotheses ("rootless replay") therefore copy the committed root state per hypothesis per layer (3.15 MB). Short hypotheses are left-padded with identity steps: g = 0, which is a log-decay so the state factor is 1, and β = 0. The CUDA kernel runs tokens sequentially (`TODO: Add chunked kernel`).
 - **The target's commit replay uses only the fp32 inputs recorded by the verify, never the drafter's.**
 - ggml-cuda flash attention converts quantized K/V to an f16 temporary when there are more than 2 queries (`fattn-common.cuh` `need_f16_K/V`), and `ggml_flash_attn_ext` has no LSE output. The custom kernel in L5 is therefore required.
-- `ggml_backend_sched` assigns whole ops to one backend, so L1 needs eightfer's own verify scheduler: 257 joins per verify, spin-polled flags in host-mapped memory, and bulk DMA cut into 2–4 MB chunks. Copy engines ignore stream priority, so small x and partial-sum copies would otherwise wait behind 64 MB transfers. GPU-side waits on host flags must be bounded, with a fallback to event sync: a wait that outlives the WDDM TDR timeout (2 s) resets the driver. Check stream memory operations (`cuStreamWaitValue32` on host memory) under WDDM; without them each join is a host event sync plus relaunch.
+- `ggml_backend_sched` assigns whole ops to one backend, so L1 needs shoehorn's own verify scheduler: 257 joins per verify, spin-polled flags in host-mapped memory, and bulk DMA cut into 2–4 MB chunks. Copy engines ignore stream priority, so small x and partial-sum copies would otherwise wait behind 64 MB transfers. GPU-side waits on host flags must be bounded, with a fallback to event sync: a wait that outlives the WDDM TDR timeout (2 s) resets the driver. Check stream memory operations (`cuStreamWaitValue32` on host memory) under WDDM; without them each join is a host event sync plus relaunch.
 - The R pack stays in native Q4_K layout and the custom CPU kernel reads it directly. The split moves freely only while all of R is pinned. Under the pinned-cap fallback, the CPU share is at least the unpinned rows (≥4.2–5.6 GB), so the 4k operating point (CPU 4.6 GB) and the 200k one (5.6 GB) share one boundary. Pinned need at 200k is ≈15.8 GB.
 
 #### 10.3.2 One decode cycle, every shared resource (central, α 0.90 / 0.88)
@@ -119,7 +119,7 @@ Single-input sensitivities at central, α 0.90, 4k (200k in parentheses):
 
 | VRAM (15.5 GB) | 4k | 200k |
 |---|---|---|
-| B: eightfer-built **pure** IQ4_XS incl. lm_head (`eightfer pack`, or llama-quantize with `--output-tensor-type iq4_xs --tensor-type attn_v=iq4_xs --tensor-type ffn_down=iq4_xs`); R is built against this B. A stock IQ4_XS GGUF is 13.99–14.10 GB for these tensors (output Q6_K, attn_v Q5_K, early ffn_down Q5_K) and does not fit at 200k or in prefill. | 13.61 | 13.61 |
+| B: shoehorn-built **pure** IQ4_XS incl. lm_head (`shoehorn pack`, or llama-quantize with `--output-tensor-type iq4_xs --tensor-type attn_v=iq4_xs --tensor-type ffn_down=iq4_xs`); R is built against this B. A stock IQ4_XS GGUF is 13.99–14.10 GB for these tensors (output Q6_K, attn_v Q5_K, early ffn_down Q5_K) and does not fit at 200k or in prefill. | 13.61 | 13.61 |
 | CUDA context / modules / pool reserve [A] | 0.35 | 0.35 |
 | GDN committed state fp32 (48×48×128×128×4) + conv | 0.157 | 0.157 |
 | MTP layer + 32k-row draft head + MTP KV (4k window) | 0.324 | 0.324 |
@@ -295,13 +295,13 @@ Dropped:
 | M5 expert streaming | Replicated store with least-loaded IOCP and demand priority; prompt-seeded residency; R hot-set planner; routing traces; F7 gate experiment | tok/s and h from traces; T2 ≥13 tok/s at 4k |
 | M6 server | Per-session prefix cache; 200k defaults; per-request speed and acceptance stats; lossy options behind explicit flags | OpenAI client with a 200k prompt; restore ≤2 s |
 
-### 10.8 What `eightfer bench` must add
+### 10.8 What `shoehorn bench` must add
 
 1. **Pinned memory.** `--pinned-gb 22` with cudaHostAlloc and with cudaHostRegister + VirtualLock: the WDDM ceiling and seconds per GB.
 2. **H1 combined DRAM.** 7 cores streaming AVX-512 reads (and later running the Q4_K GEMM) while H2D DMA reads another pinned buffer, at 2/4/32/64 MB chunk sizes. This decides cap 60 vs 68–75 GB/s.
 3. **Small copies behind bulk DMA.** Latency of 225 KB D2H/H2D copies while 64 MB vs 4 MB H2D chunks stream.
 4. **Handoff round trip under WDDM.** Event sync vs spin on a host-mapped flag vs `cuStreamWaitValue32` on host-mapped memory, with and without a low-priority kernel stream; HAGS on and off.
-5. **CPU Q4_K GEMM** for N = 1, 2, 4, 8, 12, 16, 20, 24 on 7 and 8 threads, sustained for 60 s. Stock repack now; eightfer VNNI kernel at M3b.
+5. **CPU Q4_K GEMM** for N = 1, 2, 4, 8, 12, 16, 20, 24 on 7 and 8 threads, sustained for 60 s. Stock repack now; shoehorn VNNI kernel at M3b.
 6. **GPU IQ4_XS / Q4_K matmul** for N up to 64 (add 24, 32, 48, 64), alone and while the copy engine writes about 46 GB/s into VRAM.
 7. **Free VRAM** after the CUDA context with ggml-cuda loaded (lazy module loading on/off), in decimal GB. Allocate up to free − 0.1 GB with the sysmem fallback policy on and off and confirm nothing is demoted to system memory.
 8. **Attention and prefill throughput.** Stock ggml FA with q8_0 KV at 12–24 queries and 32k–200k context as the reference; the split-KV kernel once it exists; 2048-query prefill attention TFLOPS; int8 MMQ TOPS at batch 2048.

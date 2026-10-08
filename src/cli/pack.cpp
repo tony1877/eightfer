@@ -1,10 +1,10 @@
-// `eightfer pack`: builds the split-precision pair for a qwen35 model from its Hugging Face BF16 safetensors.
+// `shoehorn pack`: builds the split-precision pair for a qwen35 model from its Hugging Face BF16 safetensors.
 //
-//   eightfer pack --src <hf dir> --template <any qwen35 GGUF of the same model> --out <prefix>
+//   shoehorn pack --src <hf dir> --template <any qwen35 GGUF of the same model> --out <prefix>
 //                 [--base iq4_xs] [--res q4_k|q3_k|q5_k|q6_k|none] [--threads N] [--check]
 //
 // Writes <prefix>.base.gguf (a complete, normal GGUF: every big matrix quantized to the base type, small tensors F32,
-// token embedding BF16; loadable by eightfer and llama.cpp) and <prefix>.res.gguf (for each big matrix, the residual
+// token embedding BF16; loadable by shoehorn and llama.cpp) and <prefix>.res.gguf (for each big matrix, the residual
 // W - deq(B) quantized to the residual type, same tensor names).
 //
 // The template GGUF supplies metadata (hyperparameters, tokenizer, chat template) and the tensor list, names and
@@ -236,7 +236,7 @@ int pack(const std::vector<std::string> & args) {
         }
     }
     if (src_dir.empty() || tmpl_path.empty() || (out.empty() && !check)) {
-        fprintf(stderr, "usage: eightfer pack --src <hf dir> --template <qwen35.gguf> --out <prefix>\n"
+        fprintf(stderr, "usage: shoehorn pack --src <hf dir> --template <qwen35.gguf> --out <prefix>\n"
                         "                     [--base iq4_xs] [--res q4_K|q3_K|q5_K|q6_K|none] [--threads N] [--check]\n"
                         "                     [--imatrix <llama-imatrix .gguf>]\n"
                         "  --check without --out only verifies the conversion against the template\n");
@@ -352,17 +352,17 @@ int pack(const std::vector<std::string> & args) {
         const auto        fn = fs::u8path(src_dir).filename().u8string();
         const std::string src_name(fn.begin(), fn.end());
         gguf_set_val_u32(gb, "general.file_type", base_t == GGML_TYPE_IQ4_XS ? 30u : 0u);
-        gguf_set_val_str(gb, "eightfer.pack.id", id);
-        gguf_set_val_str(gb, "eightfer.pack.base_type", ggml_type_name(base_t));
-        gguf_set_val_str(gb, "eightfer.pack.residual_type", has_res ? ggml_type_name(res_t) : "none");
-        gguf_set_val_str(gb, "eightfer.pack.source", src_name.c_str());
+        gguf_set_val_str(gb, "shoehorn.pack.id", id);
+        gguf_set_val_str(gb, "shoehorn.pack.base_type", ggml_type_name(base_t));
+        gguf_set_val_str(gb, "shoehorn.pack.residual_type", has_res ? ggml_type_name(res_t) : "none");
+        gguf_set_val_str(gb, "shoehorn.pack.source", src_name.c_str());
         if (has_res) {
             gr = gguf_init_empty();
             gguf_set_val_str(gr, "general.architecture", "qwen35");
-            gguf_set_val_str(gr, "general.type", "eightfer-residual");
-            gguf_set_val_str(gr, "eightfer.pack.id", id);
-            gguf_set_val_str(gr, "eightfer.pack.base_type", ggml_type_name(base_t));
-            gguf_set_val_str(gr, "eightfer.pack.residual_type", ggml_type_name(res_t));
+            gguf_set_val_str(gr, "general.type", "shoehorn-residual");
+            gguf_set_val_str(gr, "shoehorn.pack.id", id);
+            gguf_set_val_str(gr, "shoehorn.pack.base_type", ggml_type_name(base_t));
+            gguf_set_val_str(gr, "shoehorn.pack.residual_type", ggml_type_name(res_t));
         }
         for (const Plan & p : plans) {
             ggml_tensor * t = ggml_new_tensor(meta, p.base_type, p.n_dims, p.ne);

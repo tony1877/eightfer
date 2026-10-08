@@ -1,4 +1,4 @@
-// `eightfer selftest <model.gguf> --tokens ids.txt [--half H] [--gpu-layers N]`: state carry-over check. For a set of
+// `shoehorn selftest <model.gguf> --tokens ids.txt [--half H] [--gpu-layers N]`: state carry-over check. For a set of
 // layers, compares that layer's output for tokens [H, 2H) computed in one eval() of 2H tokens against two evals of H
 // tokens each. Any difference beyond rounding means state carried between eval() calls (KV cache, conv state,
 // delta-net state) is wrong; the first differing layer tells which kind.
@@ -196,7 +196,7 @@ int selftest(const std::vector<std::string> & args) {
         }
     }
     if (model.empty() || toks.size() < (size_t) half * 2 || half < 1) {
-        fprintf(stderr, "usage: eightfer selftest <model.gguf> --tokens <ids.txt> [--half 64] [--gpu-layers N]\n");
+        fprintf(stderr, "usage: shoehorn selftest <model.gguf> --tokens <ids.txt> [--half 64] [--gpu-layers N]\n");
         return 1;
     }
 

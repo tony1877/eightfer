@@ -1,4 +1,4 @@
-// `eightfer ppl`: perplexity over a pre-tokenized text, computed the way llama.cpp's llama-perplexity does it
+// `shoehorn ppl`: perplexity over a pre-tokenized text, computed the way llama.cpp's llama-perplexity does it
 // (tools/perplexity, default mode): the tokens are cut into n_ctx-sized chunks, each chunk starts from an empty
 // state (with BOS in front when the model adds one), and only the second half of each chunk is scored. The
 // output format matches, so the two can be compared chunk by chunk.
@@ -126,10 +126,10 @@ int ppl(const std::vector<std::string> & args) {
         }
     }
     if (model.empty() || (tokens_path.empty() && kld_path.empty()) || n_ctx < 16 || n_batch < 1) {
-        fprintf(stderr, "usage: eightfer ppl <model.gguf> --tokens <ids.txt> [--ctx 512] [--chunks N] [--gpu-layers N]\n"
+        fprintf(stderr, "usage: shoehorn ppl <model.gguf> --tokens <ids.txt> [--ctx 512] [--chunks N] [--gpu-layers N]\n"
                         "                    [--batch 512] [--kv f16|q8_0|q4_0] [--kv-v TYPE] [--threads N] [--res <pack .res.gguf>]\n"
                         "                    [--save-kld <file> (write this run's log-probs as a --kld-base reference)]\n"
-                        "       eightfer ppl <model.gguf> --kld-base <llama-perplexity logits file> [...]\n"
+                        "       shoehorn ppl <model.gguf> --kld-base <llama-perplexity logits file> [...]\n"
                         "                    (tokens and ctx from the file; adds KL divergence vs llama.cpp)\n");
         return 1;
     }

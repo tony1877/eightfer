@@ -1,8 +1,8 @@
-# Smoke test for `eightfer serve`: starts it on a model, sends a chat request, a streamed one and a follow-up turn
+# Smoke test for `shoehorn serve`: starts it on a model, sends a chat request, a streamed one and a follow-up turn
 # (prompt reuse), then stops it.  .\tests\server_smoke.ps1 -Model <gguf> [-Res <res.gguf>] [-Port 8095] [-Extra '...']
 param([Parameter(Mandatory)][string]$Model, [string]$Res = '', [int]$Port = 8095, [string]$Extra = '',
       [string]$Template = 'C:\models\templates\qwen-sharp-v22.5.0.jinja', [int]$MaxTokens = 48)
-$e8   = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\bin\eightfer.exe'
+$e8   = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\bin\shoehorn.exe'
 $args = @('serve', $Model, '--port', "$Port", '--alias', 'test', '--ctx', '4096')
 if ($Res) { $args += @('--res', $Res) }
 if ($Template -and (Test-Path $Template)) { $args += @('--chat-template-file', $Template) }

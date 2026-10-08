@@ -1,5 +1,5 @@
 """M4 check: a tiny random-weight Qwen4-Exp (Flash-Next architecture) run by HF transformers (float32, CPU, eager) and
-by eightfer (GGUF from llama.cpp's convert_hf_to_gguf.py, F32, CPU). Exercises hyper-connections, the n-gram (PLE)
+by shoehorn (GGUF from llama.cpp's convert_hf_to_gguf.py, F32, CPU). Exercises hyper-connections, the n-gram (PLE)
 embedding, MoE + shared expert, Gated DeltaNet with the sigmoid gate and QSA sparse attention (budget 16 tokens in
 blocks of 4, so a 256-token sequence uses the block selection).
 
@@ -61,7 +61,7 @@ def randomize(model, seed):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eightfer", default=str(ROOT / "build" / "bin" / "eightfer.exe"))
+    ap.add_argument("--shoehorn", default=str(ROOT / "build" / "bin" / "shoehorn.exe"))
     ap.add_argument("--batch", type=int, nargs="+", default=[64, 1, 7, 256])
     ap.add_argument("--n-tokens", type=int, default=256)
     ap.add_argument("--seed", type=int, default=1234)
@@ -101,7 +101,7 @@ def main():
     ok = True
     for b in a.batch:
         out = OUT / f"e8-b{b}.f32"
-        subprocess.run([a.eightfer, "logits", str(gguf_file), "--tokens", str(OUT / "tokens.txt"), "--out", str(out),
+        subprocess.run([a.shoehorn, "logits", str(gguf_file), "--tokens", str(OUT / "tokens.txt"), "--out", str(out),
                         "--batch", str(b), "--kv", "f32"], check=True, stdout=subprocess.DEVNULL)
         e8 = np.fromfile(out, dtype=np.float32).reshape(ref.shape)
         out.unlink()  # 250 MB per run

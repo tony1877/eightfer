@@ -1,4 +1,4 @@
-// `eightfer dump <base.gguf> --res <res.gguf> --tokens ids.txt --out file [-n 20480] [--chunk 256]`
+// `shoehorn dump <base.gguf> --res <res.gguf> --tokens ids.txt --out file [-n 20480] [--chunk 256]`
 //
 // Experiment data for a drafter correction: per position, the last layer's output (before the final norm) of the base
 // alone and of base + residual, both as f16 [n_embd], over chunks of `--chunk` tokens (each from an empty context).
@@ -36,7 +36,7 @@ int dump(const std::vector<std::string> & args) {
     }
     const std::vector<int32_t> toks = read_token_ids(tokens_path);
     if (model.empty() || res.empty() || out.empty() || toks.empty()) {
-        fprintf(stderr, "usage: eightfer dump <base.gguf> --res <res.gguf> --tokens ids.txt --out file [-n N] [--chunk C]\n");
+        fprintf(stderr, "usage: shoehorn dump <base.gguf> --res <res.gguf> --tokens ids.txt --out file [-n N] [--chunk C]\n");
         return 1;
     }
     n = std::min<int>(n, (int) toks.size() / chunk * chunk);

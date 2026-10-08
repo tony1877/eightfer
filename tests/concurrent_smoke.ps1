@@ -6,7 +6,7 @@ param([Parameter(Mandatory)][string]$Model, [string]$Res = '', [int]$Port = 8098
       [int]$Ctx = 131072, [int]$MaxTokens = 300, [string]$Extra = '--kv q8_0',
       [string]$Template = 'C:\models\templates\qwen-sharp-v22.5.0.jinja',
       [string]$Text = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build-ref\eval.txt'))
-$e8  = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\bin\eightfer.exe'
+$e8  = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\bin\shoehorn.exe'
 $a   = @('serve', $Model, '--port', "$Port", '--alias', 'test', '--ctx', "$Ctx", '--slots', "$Slots", '--spec', 'auto')
 if ($Res) { $a += @('--res', $Res) }
 if ($Template -and (Test-Path $Template)) { $a += @('--chat-template-file', $Template) }

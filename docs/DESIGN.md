@@ -1,4 +1,4 @@
-# eightfer — design v0
+# shoehorn — design v0
 
 Status: M1-M4 done; M5 and M6 usable, with open items listed below.
 
@@ -44,7 +44,7 @@ Why a custom engine at all:
   `ggml_gated_delta_net` (with K state snapshots), `ggml_lightning_indexer`, `ggml_dsv4_hc_pre_gated` /
   `ggml_dsv4_hc_post`, `ggml_ssm_conv`, `ggml_rope_multi`, `ggml_mul_mat_id`.
   The bottleneck is not kernels. It is where the bytes live and how often they move.
-  eightfer reuses ggml for kernels and owns everything above them.
+  shoehorn reuses ggml for kernels and owns everything above them.
 
 ## 3. Core idea: split-precision weights ("8 for 4")
 
@@ -169,7 +169,7 @@ experts. Whether it pays off under I/O load is an M5 measurement.
 ## 6. Engine layout (planned)
 
 ```
-eightfer/
+shoehorn/
   third_party/llama.cpp   pinned submodule; we build only its ggml targets (+ libllama vocab-only for tokenizer)
   src/core/       GGUF reader, split-precision tensor (B,R), memory tiers, pinned pools
   src/io/         IOCP unbuffered reader (Windows), pread fallback (Linux), drive probe
@@ -181,7 +181,7 @@ eightfer/
 
 Inputs:
 - A stock GGUF runs in B-only mode from day one (bartowski/unsloth files), at short context.
-- For B+R and for 200k context, `eightfer pack` builds a **pure** IQ4_XS base from the BF16 safetensors
+- For B+R and for 200k context, `shoehorn pack` builds a **pure** IQ4_XS base from the BF16 safetensors
   (13.61 GB; a stock IQ4_XS GGUF is 13.99–14.10 GB because llama.cpp upgrades output, attn_v and early
   ffn_down, and that doesn't fit at 200k) plus the residual pack against that exact base:
   `R = Q(W_bf16 − deq(B))`.
@@ -193,12 +193,12 @@ Build: CMake + MSVC 2022 + CUDA ≥ 12.8 (sm_120). Linux CPU build for CI and co
 | # | Deliverable | Done when |
 |---|---|---|
 | M0 | This design + nested-quant measurement | ✅ |
-| M1 | Skeleton + `eightfer bench` | ✅ Native Windows build and bench on the target box, 2026-10-04 ([results](../bench/results/2026-10-04-rtx5080-9800x3d/README.md)). |
+| M1 | Skeleton + `shoehorn bench` | ✅ Native Windows build and bench on the target box, 2026-10-04 ([results](../bench/results/2026-10-04-rtx5080-9800x3d/README.md)). |
 | M2 | qwen35 graph + GGUF loader (B-only) | ✅ 2026-10-04. Tiny random model (8 layers, F32, CPU) vs transformers 5.18 (`tests/tiny/run.py`): batch 1–2 with F32 KV rel.err 8e-7, KLD 1e-12; batch ≥32 rel.err 9e-4, KLD 4e-7 (ggml's tiled CPU kernels). 27B Q5_K_M vs llama.cpp (36 GPU layers, ctx 512): batch 512 exact (PPL 3.5378 both, KLD 0.000000); batch 128 identical to llama.cpp `-ub 128`; batch 1 KLD 0.0011 vs llama.cpp `-ub 1` (llama.cpp's own ub1-vs-ub512 KLD is 0.0067; not repack, not fused-GDN). |
-| M3 | `eightfer pack` + B+R verify + self-speculation | ✅ 2026-10-04 ([results](../bench/results/2026-10-04-m3-orca27b/README.md)): B+R KLD vs Q8_0 0.0020 (base alone 0.058), top-1 97.7%. 14-16 tok/s at temp 1.0 (sampled drafts, acceptance 0.80-0.94) and 11-14 greedy, vs 3.1 tok/s plain B+R (4-4.8x); greedy output identical to plain. 2026-10-05: long drafts (`--spec auto` up to 63; verify batches of 32+ stream R to the GPU, ~330 ms flat) and MTP-staged drafts (MTP → B → B+R, 13 vs 19 ms per draft token): 27.8 tok/s sampled / 27.9 greedy over the 4 prompts (16–47 by prompt). Greedy matches plain at k=6; bigger verify batches can flip near-ties (rounding). Drafting during the verify (a second instance with its own recurrent state drafting on another thread) was built and dropped: on 16 GB it fits only without MTP (the GPU verify's 0.77 GB compute buffer leaves 0.09 GB beside MTP), it slowed the verify 330 → 420 ms, and continuations were kept in 3–8 of ~19 cycles, so 16–17 tok/s vs 28 with MTP. |
+| M3 | `shoehorn pack` + B+R verify + self-speculation | ✅ 2026-10-04 ([results](../bench/results/2026-10-04-m3-orca27b/README.md)): B+R KLD vs Q8_0 0.0020 (base alone 0.058), top-1 97.7%. 14-16 tok/s at temp 1.0 (sampled drafts, acceptance 0.80-0.94) and 11-14 greedy, vs 3.1 tok/s plain B+R (4-4.8x); greedy output identical to plain. 2026-10-05: long drafts (`--spec auto` up to 63; verify batches of 32+ stream R to the GPU, ~330 ms flat) and MTP-staged drafts (MTP → B → B+R, 13 vs 19 ms per draft token): 27.8 tok/s sampled / 27.9 greedy over the 4 prompts (16–47 by prompt). Greedy matches plain at k=6; bigger verify batches can flip near-ties (rounding). Drafting during the verify (a second instance with its own recurrent state drafting on another thread) was built and dropped: on 16 GB it fits only without MTP (the GPU verify's 0.77 GB compute buffer leaves 0.09 GB beside MTP), it slowed the verify 330 → 420 ms, and continuations were kept in 3–8 of ~19 cycles, so 16–17 tok/s vs 28 with MTP. |
 | M4 | qwen4exp graph (B-only, mmap) | ✅ 2026-10-05 ([results](../bench/results/2026-10-05-m4-flashnext/README.md)): tiny random model vs transformers rel.err 3.4e-7 / KLD 1e-14 incl. QSA sparse selection, PLE n-gram hashing and hyper-connections. Real 85 GB IQ3_XXS: KLD 0.035 vs llama.cpp, within llama.cpp's own ub32-vs-ub512 KLD (0.032); same speed. |
 | M5 | Expert store, heat cache, IOCP streaming, prefetch | 🟡 2026-10-05 ([results](../bench/results/2026-10-05-m5-flashnext-decode/README.md)): GPU expert cache (heat-based, 77% hit rate with 9.8 GB), sparse CPU MoE kernel, background prefetch, CUDA graphs: Flash-Next IQ3_XXS decodes at 18.8 tok/s (24.3 warm) vs llama.cpp 9.5. Not yet: IOCP + pinned RAM tier (OS page cache now), striping, planner. |
-| M6 | OpenAI-compatible server, chat templates, vision | ✅ 2026-10-05 (vision dropped from scope): `eightfer serve` (/v1/chat/completions with streaming, /v1/models, API key; llama.cpp's common library for Jinja templates, reasoning_content and tool_calls; prompt reuse through a checkpoint before the generation prompt). Tested on the 27B (base + residual, speculative) and Flash-Next. Also /v1/completions, presence/frequency penalties (exact under speculation), concurrent requests queued first come first served with disconnect cancellation (`tests/server_smoke.ps1`). 256K context on both models (2026-10-05): 27B with the full KV in RAM and a VRAM window for drafts (261,776-token prompt: prefill 414 tok/s; decode 10.6 tok/s at full context with sparse page-selected attention, 3.3 exact; 18.2 with long drafts); Flash-Next with layer-major long-prompt prefill (95 tok/s, decode 9.0 tok/s at full context). |
+| M6 | OpenAI-compatible server, chat templates, vision | ✅ 2026-10-05 (vision dropped from scope): `shoehorn serve` (/v1/chat/completions with streaming, /v1/models, API key; llama.cpp's common library for Jinja templates, reasoning_content and tool_calls; prompt reuse through a checkpoint before the generation prompt). Tested on the 27B (base + residual, speculative) and Flash-Next. Also /v1/completions, presence/frequency penalties (exact under speculation), concurrent requests queued first come first served with disconnect cancellation (`tests/server_smoke.ps1`). 256K context on both models (2026-10-05): 27B with the full KV in RAM and a VRAM window for drafts (261,776-token prompt: prefill 414 tok/s; decode 10.6 tok/s at full context with sparse page-selected attention, 3.3 exact; 18.2 with long drafts); Flash-Next with layer-major long-prompt prefill (95 tok/s, decode 9.0 tok/s at full context). |
 
 ## 8. Unknowns to measure (not assume)
 

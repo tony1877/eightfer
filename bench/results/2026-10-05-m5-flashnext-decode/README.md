@@ -1,15 +1,15 @@
 # M5: Flash-Next decode with the GPU expert cache
 
 orcarouter Qwen3.8-Flash-Next-Uncensored IQ3_XXS (85 GB, 53.5 GB of experts), RTX 5080 16 GB, 32 GB RAM, model on the
-SN850X (C:). Greedy decode after the 81-token `bench/prompts/reasoning.txt` prompt, `eightfer decode`.
+SN850X (C:). Greedy decode after the 81-token `bench/prompts/reasoning.txt` prompt, `shoehorn decode`.
 
 | Configuration | decode tok/s (256 tokens) | warm (2nd half) |
 |---|---|---|
 | llama.cpp `llama-bench` tg128, `-ngl 99 -ncmoe 46` (the router's setting) | 9.5-9.7 | |
-| eightfer, experts mapped on the CPU, no cache, no CUDA graphs | 10.3-11.2 | 10.0-11.8 |
+| shoehorn, experts mapped on the CPU, no cache, no CUDA graphs | 10.3-11.2 | 10.0-11.8 |
 | + GPU expert cache (84 slots/layer, 9.8 GB), ggml mul_mat_id CPU half | 10.7-10.8 | 11.4-12.0 |
 | + sparse CPU MoE kernel (only the routed-to-CPU pairs) | 11.4 | 13.7 |
-| + CUDA graphs (were off in eightfer's ggml build) | 14.5 | 17.1 |
+| + CUDA graphs (were off in shoehorn's ggml build) | 14.5 | 17.1 |
 | + background prefetch thread, **lookahead off (default)** | **15.7** | **20.2** |
 | same, lookahead prefetch on (`E8_LOOKAHEAD=1`) | 15.2 | 15.5 |
 | + graph-stable KV/indexer writes (`set_rows` with row inputs, so CUDA graphs replay every token) | **18.8** | **24.3** |

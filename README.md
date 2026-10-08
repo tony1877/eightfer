@@ -1,4 +1,4 @@
-# eightfer
+# shoehorn
 
 An inference engine for **Qwen3.8-27B** and **Qwen3.8-Flash-Next** on one consumer PC:
 Windows 11, an RTX 5080 16 GB, a Ryzen 7 9800X3D and 32 GB DDR5, plus NVMe/SATA SSDs.
@@ -19,7 +19,7 @@ Its 51B n-gram table is read straight from disk at full BF16 precision.
 - [`experiments/nested_quant`](experiments/nested_quant) — first measurement on real Qwen3.8-27B weights.
   An IQ4_XS base plus a Q4_K residual has 0.89× the weight error of Q8_0.
 
-Status: **M1 done**. `eightfer bench` measures the numbers the design depends on; the target box's results are in
+Status: **M1 done**. `shoehorn bench` measures the numbers the design depends on; the target box's results are in
 [`bench/results/2026-10-04-rtx5080-9800x3d`](bench/results/2026-10-04-rtx5080-9800x3d/README.md). It doesn't run
 models yet (M2 next).
 
@@ -36,8 +36,8 @@ Clone to a short path and build. The first build compiles ggml's CUDA kernels an
 enables AVX-512 VNNI/BF16/VBMI for Zen 4/5 and Ice Lake or newer; on an older CPU use `.\scripts\build.ps1 -Portable`.
 
 ```powershell
-git clone --recurse-submodules --shallow-submodules -b claude/qwen-custom-inference-engine-jhydpg https://github.com/tony1877/eightfer C:\src\eightfer
-cd C:\src\eightfer
+git clone --recurse-submodules --shallow-submodules -b claude/qwen-custom-inference-engine-jhydpg https://github.com/tony1877/shoehorn C:\src\shoehorn
+cd C:\src\shoehorn
 .\scripts\build.ps1
 ```
 
@@ -46,29 +46,29 @@ cd C:\src\eightfer
 Close anything holding VRAM first; check with `nvidia-smi`. Then:
 
 ```powershell
-.\build\bin\eightfer.exe bench 2>&1 | Tee-Object bench.txt
+.\build\bin\shoehorn.exe bench 2>&1 | Tee-Object bench.txt
 ```
 
 What it does (about 3–5 minutes):
 
 - RAM read bandwidth, then ggml matrix-vector speed on the CPU and the GPU, 1 to 16 tokens per pass.
 - Pins up to 16 GiB of RAM, then measures GPU upload/download speed, alone and while the CPU is also reading RAM.
-- On every fixed drive, writes a 4 GiB temp file to `X:\eightfer_bench_tmp\`, measures unbuffered reads, and
+- On every fixed drive, writes a 4 GiB temp file to `X:\shoehorn_bench_tmp\`, measures unbuffered reads, and
   deletes the file.
 - `--disk D:\some\folder` limits the disk test to chosen drives.
-- `eightfer bench --help` lists all options.
+- `shoehorn bench --help` lists all options.
 
 Kernels come from [ggml](https://github.com/ggml-org/llama.cpp) (MIT), pinned as a submodule at `836d571`.
-The runtime, scheduling, storage tiers and split-precision format are eightfer's.
+The runtime, scheduling, storage tiers and split-precision format are shoehorn's.
 
 ## Serving (OpenAI-compatible)
 
 ```
-eightfer serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key-file KEYFILE \
+shoehorn serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key-file KEYFILE \
                --chat-template-file TEMPLATE.jinja --ctx 16384 --kv q8_0 --spec auto [--mtp 3]
 ```
 
-- Qwen3.8-27B: pack it first (`eightfer pack`), then serve the base with `--res`: base + residual quality,
+- Qwen3.8-27B: pack it first (`shoehorn pack`), then serve the base with `--res`: base + residual quality,
   self-speculative decoding. On an RTX 5080 + 9800X3D, short context, 4 benchmark prompts: 27.8 tok/s at temp 1.0
   and 27.9 greedy (16-47 by prompt), vs 3.1 tok/s for plain base + residual decoding. Two things make it fast:
   - Long drafts. `--spec auto` picks 1-63 drafts per cycle from the measured acceptance by draft position and the

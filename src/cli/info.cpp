@@ -1,4 +1,4 @@
-// `eightfer info <model.gguf>`: architecture metadata and a tensor summary, without loading weights.
+// `shoehorn info <model.gguf>`: architecture metadata and a tensor summary, without loading weights.
 
 #include "cli/commands.h"
 #include "model/gguf_file.h"
@@ -12,7 +12,7 @@ namespace e8::cli {
 
 int info(const std::vector<std::string> & args) {
     if (args.size() < 3) {
-        fprintf(stderr, "usage: eightfer info <model.gguf> [--tensors]\n");
+        fprintf(stderr, "usage: shoehorn info <model.gguf> [--tensors]\n");
         return 1;
     }
     const bool       all_tensors = args.size() > 3 && args[3] == "--tensors";

@@ -1,10 +1,10 @@
 # M3 on the target box: orcarouter/Qwen3.8-27B-Uncensored, 2026-10-04
 
-RTX 5080 16 GB (iGPU drives the displays), Ryzen 7 9800X3D, 32 GB DDR5-5600. eightfer at commit after `f50233e`.
+RTX 5080 16 GB (iGPU drives the displays), Ryzen 7 9800X3D, 32 GB DDR5-5600. shoehorn at commit after `f50233e`.
 
 ## Pack
 
-`eightfer pack` from the BF16 safetensors, imatrix from llama-imatrix on the Q8_0 (96 x 512 tokens of Python stdlib
+`shoehorn pack` from the BF16 safetensors, imatrix from llama-imatrix on the Q8_0 (96 x 512 tokens of Python stdlib
 source, `build-ref/calib.txt`). 12 min.
 
 | File | Size | Contents |
@@ -56,7 +56,7 @@ per pass), 16 CPU threads by default (SMT gains ~10% on the residual pass), host
 (`--spec auto`) and sampled drafts for temperature sampling (accept with min(1, p/q), resample from max(0, p - q)).
 
 Verify of 7 tokens: 577 ms -> 383 ms. The residual pass is now at the CPU's all-core AVX-512 ceiling
-(`eightfer selftest --kernel-bench`: ~30 GB/s at 9 columns on 8 threads, ~41 GB/s on 16; it scales linearly to 4
+(`shoehorn selftest --kernel-bench`: ~30 GB/s at 9 columns on 8 threads, ~41 GB/s on 16; it scales linearly to 4
 cores and then flattens, so it is power/clock limited rather than memory limited).
 
 | Prompt | greedy, auto k | temp 1.0 / top-p 0.95 / top-k 20, auto k | acceptance (sampled) | before (greedy, best k) |
@@ -77,7 +77,7 @@ accepted.
 
 ## CUDA graphs + graph-stable KV writes (2026-10-05)
 
-eightfer's ggml build had CUDA graphs off, and the KV write was a view at offset n_past, which changes the graph every
+shoehorn's ggml build had CUDA graphs off, and the KV write was a view at offset n_past, which changes the graph every
 token so graphs could not replay. With both fixed, drafting went from 24 to 19.4 ms/token:
 
 | Prompt (temp 1.0, top-p 0.95, top-k 20, `--spec auto`) | tok/s | acceptance |

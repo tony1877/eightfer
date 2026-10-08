@@ -1,5 +1,5 @@
 """Debug helper for M4: compares HF's QSA token selection at the first indexed layer with a numpy re-implementation
-of the algorithm eightfer uses (pooled block keys, relu-summed head scores, top budget/r blocks + own tail)."""
+of the algorithm shoehorn uses (pooled block keys, relu-summed head scores, top budget/r blocks + own tail)."""
 import sys
 from pathlib import Path
 
@@ -78,7 +78,7 @@ for p in range(T):
             print(f"   mine blocks {top}, hf positions {sorted(hf)}")
 print("numpy re-implementation vs HF selection:", "MATCH" if mism == 0 else f"{mism} positions differ")
 
-# per-position HF selection as block lists (for comparing with eightfer's E8_QSA_DUMP output)
+# per-position HF selection as block lists (for comparing with shoehorn's E8_QSA_DUMP output)
 if len(sys.argv) > 1 and sys.argv[1] == "--list":
     for p in range(16, T):
         hf = sorted(torch.nonzero(hf_sel[p]).flatten().tolist())

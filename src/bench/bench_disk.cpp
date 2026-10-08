@@ -318,7 +318,7 @@ void disk(const Options & opt) {
             continue;
         }
         // Drive roots (C:\ especially) let users create folders but not files, so always use a subfolder.
-        const std::string dir = sys::join_path(in, "eightfer_bench_tmp");
+        const std::string dir = sys::join_path(in, "shoehorn_bench_tmp");
         if (!sys::make_dir(dir)) {
             printf("  %s  skipped: cannot create %s\n", in.c_str(), dir.c_str());
             continue;
@@ -333,7 +333,7 @@ void disk(const Options & opt) {
             }
             continue;
         }
-        t.file = sys::join_path(dir, "eightfer_bench.tmp");
+        t.file = sys::join_path(dir, "shoehorn_bench.tmp");
         printf("  %s  writing %.1f GiB test file...\n", in.c_str(), (double) file_bytes / GiB);
         fflush(stdout);
         std::string err;

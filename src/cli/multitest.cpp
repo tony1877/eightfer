@@ -1,4 +1,4 @@
-// `eightfer multitest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--slots 3]`: checks the joint verify
+// `shoehorn multitest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--slots 3]`: checks the joint verify
 // (Qwen35::eval_multi) against single-sequence verifies. Three slots get prompts of different lengths (past the VRAM
 // window, so attention is the sparse RAM path in both); each slot's next tokens are verified alone (dry eval +
 // commit(0)), then all together; the rows are compared (KLD, top-1). Then commit_seq() keeps a prefix of each and the
@@ -60,7 +60,7 @@ int multitest(const std::vector<std::string> & args) {
         else if (base.empty()) base = a;
     }
     if (base.empty() || tokens.empty() || slots < 2) {
-        fprintf(stderr, "usage: eightfer multitest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--slots 3]\n");
+        fprintf(stderr, "usage: shoehorn multitest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--slots 3]\n");
         return 1;
     }
     const std::vector<int32_t> toks = read_token_ids(tokens);
@@ -225,7 +225,7 @@ int multitest(const std::vector<std::string> & args) {
 
 namespace e8::cli {
 
-// `eightfer drafttest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--k 24] [--temp 0]`: lockstep
+// `shoehorn drafttest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--k 24] [--temp 0]`: lockstep
 // drafting (SpecDecoder::draft_lockstep on a slot drafter) against drafting each slot alone. Greedy: the drafts must be
 // the same tokens (the base's own continuation, whatever the proposals). Prints both times.
 int drafttest(const std::vector<std::string> & args) {
@@ -245,7 +245,7 @@ int drafttest(const std::vector<std::string> & args) {
         else if (base.empty()) base = a;
     }
     if (base.empty() || tokens.empty()) {
-        fprintf(stderr, "usage: eightfer drafttest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--k 24] [--temp 0]\n");
+        fprintf(stderr, "usage: shoehorn drafttest <base.gguf> --res <res.gguf> --tokens ids.txt [--ctx 65536] [--k 24] [--temp 0]\n");
         return 1;
     }
     const std::vector<int32_t> toks = read_token_ids(tokens);

@@ -10,7 +10,7 @@
 // the token after it, chaining on its own output (as vLLM's Qwen3-Next MTP). Its KV is a ring of recent positions.
 //
 // Split precision (DESIGN.md section 3/4): with LoadOptions::residual_path set, every big matrix W of the base GGUF
-// gets a residual R from `eightfer pack`, kept in pinned host memory. eval() with EvalOpts::residual computes
+// gets a residual R from `shoehorn pack`, kept in pinned host memory. eval() with EvalOpts::residual computes
 // x*W^T + x*R^T for those matrices (R on the CPU for small batches; ggml's scheduler streams R to the GPU for big
 // ones). Without it the base alone runs (the draft model).
 //
@@ -117,7 +117,7 @@ struct LoadOptions {
     int       draft_batch  = 1;     // slots: requests drafted at once (VRAM for draft_batch - 1 more recurrent states)
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
     int       n_ubatch     = 1024;  // most tokens per eval() call (prefill batches; one pass over the weights each)
-    std::string residual_path;      // `eightfer pack` .res.gguf; empty = base only
+    std::string residual_path;      // `shoehorn pack` .res.gguf; empty = base only
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
     bool      mtp          = false; // load the MTP block for drafting (when the GGUF has one and a GPU exists)
     int       mtp_window   = 4096;  // MTP KV ring size

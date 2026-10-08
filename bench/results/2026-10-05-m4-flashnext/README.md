@@ -5,7 +5,7 @@
 8 layers (6 Gated DeltaNet + 2 QSA attention), 8 experts top-2 + shared expert, 4 hyper-connection streams, PLE
 n-gram embedding in layer 1, QSA budget 16 tokens in blocks of 4 (sparse from token 19 of 256), F32, CPU:
 
-| eightfer batch | rel. err | mean KLD | max KLD | same top-1 |
+| shoehorn batch | rel. err | mean KLD | max KLD | same top-1 |
 |---|---|---|---|---|
 | 1, 7 | 3.4e-7 | 1.3e-14 | 2.1e-13 | 100% |
 | 16 | 4.4e-5 | 2.1e-10 | 9.5e-10 | 99.6% |
@@ -22,8 +22,8 @@ llama.cpp docs:
 |---|---|---|---|---|
 | llama.cpp, ub 512 | 4.1164 | - | - | 37.4 |
 | llama.cpp, ub 32 | 4.1694 | 0.0319 | 95.1% | |
-| eightfer, batch 512 | 4.1445 | 0.0352 | 96.1% | 38.9 |
-| eightfer, batch 31 | 4.1209 | 0.0324 | 96.3% | |
+| shoehorn, batch 512 | 4.1445 | 0.0352 | 96.1% | 38.9 |
+| shoehorn, batch 31 | 4.1209 | 0.0324 | 96.3% | |
 
-eightfer is within llama.cpp's own batch-size noise on this model (top-10 routing over 512 experts on 3-bit weights
+shoehorn is within llama.cpp's own batch-size noise on this model (top-10 routing over 512 experts on 3-bit weights
 flips experts on tiny numeric differences), and runs at the same speed.

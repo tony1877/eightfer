@@ -1,4 +1,4 @@
-// `eightfer decode <model.gguf> [--tokens prompt_ids.txt] [-n 64] [--gpu-layers N] [--ctx N] [--expert-cache-gb G]`:
+// `shoehorn decode <model.gguf> [--tokens prompt_ids.txt] [-n 64] [--gpu-layers N] [--ctx N] [--expert-cache-gb G]`:
 // greedy decoding speed for any architecture (prefill the prompt, then one token per eval). Prints tok/s; with
 // a Flash-Next model also the expert cache hit rate.
 
@@ -39,7 +39,7 @@ int decode(const std::vector<std::string> & args) {
     }
     std::vector<int32_t> prompt = tokens_path.empty() ? std::vector<int32_t>{} : read_token_ids(tokens_path);
     if (model.empty() || n_gen < 1) {
-        fprintf(stderr, "usage: eightfer decode <model.gguf> [--tokens ids.txt] [-n 64] [--gpu-layers N] [--ctx N]\n"
+        fprintf(stderr, "usage: shoehorn decode <model.gguf> [--tokens ids.txt] [-n 64] [--gpu-layers N] [--ctx N]\n"
                         "                       [--threads N] [--expert-cache-gb G]\n");
         return 1;
     }

@@ -1,7 +1,7 @@
-"""M2 check: a tiny random-weight Qwen3.5 text model, run by HF transformers (float32, CPU) and by eightfer
+"""M2 check: a tiny random-weight Qwen3.5 text model, run by HF transformers (float32, CPU) and by shoehorn
 (GGUF made by llama.cpp's convert_hf_to_gguf.py, F32, CPU). Prints logit agreement.
 
-    .venv\Scripts\python tests\tiny\run.py [--eightfer build\bin\eightfer.exe] [--batch 64]
+    .venv\Scripts\python tests\tiny\run.py [--shoehorn build\bin\shoehorn.exe] [--batch 64]
 
 Needs: torch (CPU), transformers >= 5, numpy, safetensors, huggingface_hub (tokenizer files are fetched from the
 27B repo because the converter needs the real tokenizer; vocab is the real 248320).
@@ -56,7 +56,7 @@ def randomize(model, seed):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eightfer", default=str(ROOT / "build" / "bin" / "eightfer.exe"))
+    ap.add_argument("--shoehorn", default=str(ROOT / "build" / "bin" / "shoehorn.exe"))
     ap.add_argument("--batch", type=int, nargs="+", default=[64, 1, 256])
     ap.add_argument("--n-tokens", type=int, default=256)
     ap.add_argument("--seed", type=int, default=1234)
@@ -91,7 +91,7 @@ def main():
     ok = True
     for b in a.batch:
         out = OUT / f"e8-b{b}.f32"
-        subprocess.run([a.eightfer, "logits", str(gguf), "--tokens", str(OUT / "tokens.txt"), "--out", str(out),
+        subprocess.run([a.shoehorn, "logits", str(gguf), "--tokens", str(OUT / "tokens.txt"), "--out", str(out),
                         "--batch", str(b), "--kv", a.kv], check=True, stdout=subprocess.DEVNULL)
         e8 = np.fromfile(out, dtype=np.float32).reshape(ref.shape)
         out.unlink()  # 250 MB per run

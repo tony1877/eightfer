@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds eightfer on Windows: Visual Studio 2022 (MSVC) + CUDA + CMake/Ninja, Release.
+  Builds shoehorn on Windows: Visual Studio 2022 (MSVC) + CUDA + CMake/Ninja, Release.
 
 .EXAMPLE
   .\scripts\build.ps1            # build with CUDA for RTX 50xx (sm_120)
@@ -38,7 +38,7 @@ if (-not $vs) {
 $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
 
 # 2. Load the MSVC x64 environment into this session (via a temp .cmd to avoid cmd.exe quoting issues).
-$tmp = Join-Path $env:TEMP ("eightfer_vsenv_{0}.cmd" -f [guid]::NewGuid())
+$tmp = Join-Path $env:TEMP ("shoehorn_vsenv_{0}.cmd" -f [guid]::NewGuid())
 Set-Content -Path $tmp -Encoding ASCII -Value "@call `"$devcmd`" -arch=x64 -host_arch=x64 -no_logo`r`n@set"
 try {
     $envDump = & cmd.exe /d /c $tmp
@@ -73,7 +73,7 @@ if (-not (Test-Path (Join-Path $root 'third_party\llama.cpp\ggml\CMakeLists.txt'
     if ($LASTEXITCODE -ne 0) { Fail 'git submodule update failed' }
 }
 
-# 4b. eightfer's ggml patches (patches\ggml-*.patch), applied once: `git apply --check` fails when already applied.
+# 4b. shoehorn's ggml patches (patches\ggml-*.patch), applied once: `git apply --check` fails when already applied.
 foreach ($p in Get-ChildItem (Join-Path $root 'patches') -Filter 'ggml-*.patch' -ErrorAction SilentlyContinue | Sort-Object Name) {
     git -C (Join-Path $root 'third_party\llama.cpp') apply --check $p.FullName 2>$null
     if ($LASTEXITCODE -eq 0) {
@@ -94,9 +94,9 @@ $cuda = if ($NoCuda) { 'OFF' } else { 'ON' }
 $on  = if ($Portable) { 'OFF' } else { 'ON' }
 $isa = @("-DGGML_AVX512_VNNI=$on", "-DGGML_AVX512_BF16=$on", "-DGGML_AVX512_VBMI=$on")
 if (-not $Portable) { $isa += '-DGGML_AVX512=ON' }  # -Portable leaves AVX-512F to ggml's own detection
-cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DEIGHTFER_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch" @isa
+cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DSHOEHORN_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch" @isa
 if ($LASTEXITCODE -ne 0) { Fail 'cmake configure failed (see above)' }
 cmake --build $build --config Release
 if ($LASTEXITCODE -ne 0) { Fail 'build failed (see above)' }
 
-Write-Host "Built: $(Join-Path $build 'bin\eightfer.exe')" -ForegroundColor Green
+Write-Host "Built: $(Join-Path $build 'bin\shoehorn.exe')" -ForegroundColor Green
