@@ -50,6 +50,7 @@
 #include "model/qwen35.h"
 #include "model/qwen4exp.h"
 #include "runtime/spec.h"
+#include "sys/sysinfo.h"
 
 #include "chat.h"
 #include "ggml-backend.h"
@@ -1596,6 +1597,26 @@ int serve(const std::vector<std::string> & args) {
         out["models"] = models;
         out["loaded"] = S->model ? S->entries[(size_t) S->active].alias : "";
         out["config"] = S->config;
+        {  // where the model lives (the dashboard's memory view)
+            json   mem = json::object();
+            size_t fr = 0, tot = 0;
+            if (ggml_backend_dev_t g = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) ggml_backend_dev_memory(g, &fr, &tot);
+            const auto si = sys::query();
+            mem["vram_total"] = tot;
+            mem["vram_free"]  = fr;
+            mem["ram_total"]  = si.ram_total;
+            mem["ram_avail"]  = si.ram_avail;
+            if (S->model) {
+                mem["weights_gpu"] = S->model->gpu_weight_bytes();
+                mem["weights_cpu"] = S->model->cpu_weight_bytes();
+            }
+            if (S->q35) {
+                mem["residual"]   = S->q35->residual_bytes();
+                mem["kv_ram"]     = S->q35->kv_committed_bytes();
+                mem["side_parked"] = S->q35->has_side() ? S->q35->side_n_past() : 0;
+            }
+            out["mem"] = mem;
+        }
         if (S->q35) out["config"]["window"] = S->q35->gpu_kv();
         resp.set_header("Cache-Control", "no-store");
         resp.set_content(out.dump(), "application/json");

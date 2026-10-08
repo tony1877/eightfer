@@ -2,167 +2,265 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>shoehorn dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>shoehorn</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@112,500;112,700;112,800;100,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
+/* Layout: an instrument panel. Readout + "the fit" up top, then the session tape and its log, then the guessing gauges. */
 :root {
-  color-scheme: light;
-  --bg: #f6f5f2; --card: #fdfdfc; --ink: #151513; --ink2: #5b5a55; --muted: #8d8c86; --line: #e6e4de; --grid: #eeede8;
-  --accent: #2a78d6; --accent-soft: #d8e7fa; --prefill: #8a63d2; --good: #1d8a3a; --warn: #b77a00; --bad: #cc3d3d;
+  --bg: #eceeec; --panel: #f7f8f6; --ink: #15191a; --ink2: #4b5355; --muted: #838b8d; --line: #d6dbd9; --track: #e3e6e4;
+  --brass: #94650f; --brass-hi: #b98222; --brass-soft: #efe2c4; --steel: #2d6db0; --steel-soft: #d3e2f3;
+  --good: #23803e; --warn: #a86f00; --bad: #c23a3a; --hatch: #c9cecc;
+  --f-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #121211; --card: #1b1b1a; --ink: #f2f1ec; --ink2: #b9b8b0; --muted: #85847d; --line: #2c2c29; --grid: #242422;
-    --accent: #4b93ea; --accent-soft: #1d3554; --prefill: #a688e6; --good: #43b864; --warn: #d9a42b; --bad: #e66767;
+    --bg: #0e1011; --panel: #15181a; --ink: #e8eae7; --ink2: #a7aeaf; --muted: #6d7577; --line: #252a2d; --track: #1d2123;
+    --brass: #d5a447; --brass-hi: #f0c063; --brass-soft: #3a2e15; --steel: #5d9ee3; --steel-soft: #1b3047;
+    --good: #46b866; --warn: #d9a42b; --bad: #e86a6a; --hatch: #2c3235;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #121211; --card: #1b1b1a; --ink: #f2f1ec; --ink2: #b9b8b0; --muted: #85847d; --line: #2c2c29; --grid: #242422;
-  --accent: #4b93ea; --accent-soft: #1d3554; --prefill: #a688e6; --good: #43b864; --warn: #d9a42b; --bad: #e66767;
+  --bg: #0e1011; --panel: #15181a; --ink: #e8eae7; --ink2: #a7aeaf; --muted: #6d7577; --line: #252a2d; --track: #1d2123;
+  --brass: #d5a447; --brass-hi: #f0c063; --brass-soft: #3a2e15; --steel: #5d9ee3; --steel-soft: #1b3047;
+  --good: #46b866; --warn: #d9a42b; --bad: #e86a6a; --hatch: #2c3235;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-body { background: var(--bg); color: var(--ink); font: 15px/1.55 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
-.num { font-variant-numeric: tabular-nums; }
-main { max-width: 860px; margin: 0 auto; padding: 28px 20px 60px; display: grid; gap: 22px; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--f-body); padding: 0 20px; }
+.mono, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 18px 56px; display: grid; gap: 18px; }
+h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; }
+.eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-header { display: flex; align-items: center; gap: 10px; }
-header .name { font-weight: 700; font-size: 17px; letter-spacing: -.2px; }
-header .cfg { color: var(--muted); font-size: 13px; }
-header .sp { flex: 1; }
-.iconbtn { border: 1px solid var(--line); background: var(--card); color: var(--ink2); border-radius: 8px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+/* top bar */
+.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { width: 30px; height: 30px; }
+.brand h1 { font-size: 22px; font-weight: 800; font-stretch: 112%; letter-spacing: -.01em; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-family: var(--f-mono); font-size: 12px; color: var(--ink2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; background: var(--panel); white-space: nowrap; }
+.chip b { color: var(--ink); font-weight: 500; }
+.top .sp { flex: 1; }
+.state { display: inline-flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink2); }
+.led { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.led.on { background: var(--good); box-shadow: 0 0 0 0 var(--good); animation: led 1.3s ease-out infinite; }
+.led.off { background: var(--bad); }
+@keyframes led { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 50%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+.btn { font: 500 12px var(--f-mono); color: var(--ink2); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; cursor: pointer; }
+.btn:hover { color: var(--ink); border-color: var(--muted); }
 
-.now { display: flex; gap: 16px; align-items: center; padding: 20px 22px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }
-.pulse { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
-.pulse.on { background: var(--good); animation: pulse 1.4s ease-out infinite; }
-.pulse.off { background: var(--bad); }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 45%, transparent); } 100% { box-shadow: 0 0 0 12px transparent; } }
-.now .say { font-size: 18px; font-weight: 550; letter-spacing: -.2px; }
-.now .sub { color: var(--ink2); font-size: 14px; margin-top: 2px; }
-.now .speed { margin-left: auto; text-align: right; flex: 0 0 auto; }
-.now .speed b { font-size: 34px; font-weight: 700; letter-spacing: -1px; display: block; line-height: 1.1; }
-.now .speed span { color: var(--muted); font-size: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; min-width: 0; }
+.panel h2 { font-size: 15px; font-weight: 700; font-stretch: 112%; letter-spacing: .01em; }
+.panel .lede { color: var(--ink2); margin: 4px 0 0; max-width: 62ch; }
 
-.pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.pick h2 { margin: 0; font-size: 22px; letter-spacing: -.4px; }
-.pick select { font: inherit; font-size: 14px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; max-width: 100%; }
+/* hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 920px) { .hero { grid-template-columns: 1fr; } }
+.readout { display: grid; grid-template-rows: auto auto 1fr auto; gap: 6px; }
+.readout .big { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+.readout .big b { font-family: var(--f-display); font-weight: 800; font-stretch: 112%; font-size: clamp(64px, 9vw, 104px); line-height: .9; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.readout .big span { font-family: var(--f-mono); color: var(--ink2); font-size: 14px; }
+.readout .say { font-size: 15px; color: var(--ink); min-height: 22px; }
+.readout .say small { color: var(--ink2); font-size: 14px; }
+svg.trace { width: 100%; height: 120px; display: block; margin-top: 6px; align-self: end; }
 
-.story { font-size: 17px; line-height: 1.7; color: var(--ink); margin: 0; }
-.story b { font-weight: 650; }
-.story .hl { background: var(--accent-soft); border-radius: 4px; padding: 0 4px; }
+.fit .bars { display: grid; gap: 16px; margin-top: 16px; }
+.mbar .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.mbar .row1 b { font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 14px; letter-spacing: .02em; }
+.mbar .row1 span { font-family: var(--f-mono); font-size: 12px; color: var(--ink2); }
+.mbar .track { display: flex; height: 30px; border-radius: 5px; overflow: hidden; background: var(--track); }
+.mbar .seg { height: 100%; min-width: 2px; border-right: 2px solid var(--panel); transition: flex-grow .8s ease; position: relative; }
+.mbar .seg:last-child { border-right: 0; }
+.seg.w { background: var(--brass); } .seg.k { background: var(--steel); }
+.seg.o { background: repeating-linear-gradient(135deg, var(--hatch) 0 5px, transparent 5px 9px); }
+.seg.f { background: transparent; }
+.mbar .keys { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 7px; font-size: 12.5px; color: var(--ink2); }
+.mbar .keys i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.mbar .keys .mono { color: var(--ink); }
+.pcie { display: flex; align-items: center; gap: 10px; margin-top: 2px; font-size: 13px; color: var(--ink2); }
+.pcie svg { flex: 0 0 auto; width: 120px; height: 18px; }
+.flow { stroke: var(--brass); stroke-width: 2; stroke-dasharray: 4 6; animation: flow 1s linear infinite; }
+.flow.idle { animation-duration: 6s; opacity: .45; }
+@keyframes flow { to { stroke-dashoffset: -20; } }
 
-.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
-.fact { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
-.fact .v { font-size: 26px; font-weight: 700; letter-spacing: -.6px; }
-.fact .v small { font-size: 14px; font-weight: 500; color: var(--ink2); letter-spacing: 0; }
-.fact .l { font-size: 14px; color: var(--ink); font-weight: 550; }
-.fact .m { font-size: 13px; color: var(--muted); margin-top: 2px; }
+/* session */
+.sesshead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; max-width: 100%; }
+.tab { flex: 0 0 auto; font: 500 12.5px var(--f-mono); color: var(--ink2); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.tab:hover { color: var(--ink); border-color: var(--muted); }
+.tab[aria-pressed="true"] { color: var(--ink); background: var(--brass-soft); border-color: var(--brass); }
+.tab .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 6px; vertical-align: 1px; }
+.story { font-size: 16px; line-height: 1.65; max-width: 78ch; margin: 0; }
+.story b { font-weight: 600; }
+.story .hl { font-family: var(--f-mono); font-weight: 600; color: var(--brass); }
 
-.notes { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.notes li { display: flex; gap: 10px; align-items: baseline; font-size: 15px; }
-.notes .tag { flex: 0 0 auto; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; padding: 1px 7px; border-radius: 999px; border: 1px solid; }
-.tag.good { color: var(--good); } .tag.warn { color: var(--warn); } .tag.bad { color: var(--bad); } .tag.info { color: var(--muted); }
+.readings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); margin-top: 16px; }
+@media (max-width: 760px) { .readings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.reading { padding: 14px 16px 2px 0; }
+.reading + .reading { padding-left: 16px; border-left: 1px solid var(--line); }
+@media (max-width: 760px) { .reading:nth-child(3) { border-left: 0; padding-left: 0; } }
+.reading .v { font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 30px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.reading .v small { font-family: var(--f-mono); font-size: 12px; font-weight: 400; color: var(--ink2); letter-spacing: 0; margin-left: 4px; }
+.reading .l { font-size: 13px; color: var(--ink2); }
 
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; }
-.card h3 { margin: 0; font-size: 15px; }
-.card p.hint { margin: 2px 0 12px; font-size: 13px; color: var(--muted); }
-svg.chart { width: 100%; height: 210px; display: block; }
-.ax { fill: var(--muted); font-size: 11px; }
-.gl { stroke: var(--grid); }
-.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--ink2); margin-top: 8px; }
-.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.body2 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 920px) { .body2 { grid-template-columns: 1fr; } }
+svg.tape { width: 100%; height: 150px; display: block; margin-top: 14px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.ax { fill: var(--muted); font: 11px var(--f-mono); }
+.gl { stroke: var(--line); }
 
-details { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 20px; }
-details summary { cursor: pointer; font-weight: 600; font-size: 15px; }
-details summary span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
-details[open] summary { margin-bottom: 12px; }
-.tech { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 24px; font-size: 14px; }
-.tech div { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding: 6px 0; }
-.tech div span:first-child { color: var(--ink2); }
-.tablewrap { overflow-x: auto; max-height: 460px; overflow-y: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.log { list-style: none; margin: 12px 0 0; padding: 0; max-height: 360px; overflow-y: auto; }
+.log li { display: grid; grid-template-columns: 46px 14px minmax(0, 1fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.log li:last-child { border-bottom: 0; }
+.log time { font: 12px var(--f-mono); color: var(--muted); padding-top: 1px; }
+.log .mk { width: 8px; height: 8px; border-radius: 2px; margin-top: 6px; background: var(--muted); }
+.log .mk.good { background: var(--good); } .log .mk.warn { background: var(--warn); } .log .mk.bad { background: var(--bad); } .log .mk.brass { background: var(--brass); }
+.log .quiet { color: var(--ink2); }
+
+/* guessing */
+.gauges { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; margin-top: 16px; }
+@media (max-width: 860px) { .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.gauge .v { font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 26px; font-variant-numeric: tabular-nums; }
+.gauge .v small { font-family: var(--f-mono); font-size: 12px; font-weight: 400; color: var(--ink2); margin-left: 4px; }
+.gauge .l { font-size: 13px; font-weight: 500; }
+.gauge .m { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+.meter { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin-top: 8px; display: flex; }
+.meter i { display: block; height: 100%; background: var(--brass); transition: width .8s ease; }
+.meter i + i { background: var(--steel); }
+
+details.ledger summary { cursor: pointer; font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 15px; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+details.ledger summary::-webkit-details-marker { display: none; }
+details.ledger summary::after { content: "Show"; font: 500 12px var(--f-mono); color: var(--ink2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; }
+details.ledger[open] summary::after { content: "Hide"; }
+.tablewrap { overflow-x: auto; max-height: 460px; overflow-y: auto; margin-top: 14px; }
+table { width: 100%; border-collapse: collapse; font: 12.5px var(--f-mono); font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th:first-child, td:first-child, th:last-child, td:last-child { text-align: left; }
-th { position: sticky; top: 0; background: var(--card); color: var(--ink2); font-weight: 600; }
-.empty { color: var(--muted); text-align: center; padding: 24px 0; }
+th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+tbody tr:hover { background: var(--track); }
+.empty { color: var(--muted); padding: 22px 0; text-align: center; }
 
-#tip { position: fixed; pointer-events: none; z-index: 20; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-  padding: 8px 11px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.14); opacity: 0; transition: opacity .1s; max-width: 300px; line-height: 1.45; }
-#tip b { font-weight: 650; }
-@media (max-width: 560px) { .now { flex-wrap: wrap; } .now .speed { margin-left: 28px; text-align: left; } .story { font-size: 16px; } }
+#tip { position: fixed; pointer-events: none; z-index: 30; max-width: 300px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 11px; font-size: 13px; line-height: 1.45; box-shadow: 0 10px 30px rgba(0,0,0,.22); opacity: 0; transition: opacity .1s; }
+#tip time { display: block; font: 11px var(--f-mono); color: var(--muted); margin-bottom: 3px; }
+@media (max-width: 520px) { body { padding: 0 16px; } .panel { padding: 16px; } }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <span class="name">shoehorn</span><span class="cfg" id="cfg"></span><span class="sp"></span>
-    <button class="iconbtn" id="theme" title="switch light / dark">◐</button>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="7" fill="var(--ink)"/><path d="M10 7c0 0 1 13 1 16s2 4 5 4 5-1 5-4 1-16 1-16" fill="none" stroke="var(--brass-hi)" stroke-width="2.6" stroke-linecap="round"/><path d="M12.5 7h7" stroke="var(--brass-hi)" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <h1>shoehorn</h1>
+    </div>
+    <div class="chips" id="chips"></div>
+    <span class="sp"></span>
+    <span class="state"><span class="led" id="led"></span><span id="stateText">connecting</span></span>
+    <button class="btn" id="theme" type="button" aria-label="Switch light or dark theme">Theme</button>
   </header>
 
-  <section class="now">
-    <span class="pulse" id="pulse"></span>
-    <div><div class="say" id="nowSay">Connecting…</div><div class="sub" id="nowSub"></div></div>
-    <div class="speed" id="nowSpeed"></div>
+  <section class="hero">
+    <div class="panel readout">
+      <span class="eyebrow" id="roLabel">Writing speed</span>
+      <div class="big"><b id="roNum">–</b><span>tokens / s</span></div>
+      <svg class="trace" id="trace" role="img" aria-label="Writing speed over the last two minutes"></svg>
+      <div class="say" id="roSay">Connecting to the server…</div>
+    </div>
+    <div class="panel fit">
+      <span class="eyebrow">The fit</span>
+      <h2 style="margin-top:6px" id="fitTitle">The model and where it lives</h2>
+      <p class="lede" id="fitSay">Reading memory…</p>
+      <div class="bars" id="bars"></div>
+    </div>
   </section>
 
-  <section class="pick">
-    <h2 id="title">Session</h2>
-    <select id="sel"></select>
+  <section class="panel">
+    <div class="sesshead">
+      <span class="eyebrow">Session</span>
+      <div class="tabs" id="tabs" role="group" aria-label="Pick a session"></div>
+    </div>
+    <p class="story" id="story" style="margin-top:12px"></p>
+    <div class="readings" id="readings"></div>
   </section>
 
-  <p class="story" id="story"></p>
-
-  <section class="facts" id="facts"></section>
-
-  <ul class="notes" id="notes"></ul>
-
-  <section class="card">
-    <h3>Each request in this session</h3>
-    <p class="hint">Bar height is how long it took. Hover a bar for details.</p>
-    <svg class="chart" id="chart"></svg>
-    <div class="legend"><span><i style="background:var(--prefill)"></i>reading the prompt</span><span><i style="background:var(--accent)"></i>writing the answer</span><span><i style="background:var(--bad)"></i>reading it all again (cache miss)</span></div>
+  <section class="body2">
+    <div class="panel">
+      <h2>Session tape</h2>
+      <p class="lede">Every request on the clock. The gaps are time spent on your side: reading, typing, running tools.</p>
+      <svg class="tape" id="tape" role="img" aria-label="Requests over the session's time"></svg>
+      <div class="legend"><span><i style="background:var(--steel)"></i>reading the prompt</span><span><i style="background:var(--brass)"></i>writing</span><span><i style="background:var(--bad)"></i>re-reading after a cache miss</span></div>
+    </div>
+    <div class="panel">
+      <h2>What happened</h2>
+      <ul class="log" id="log"></ul>
+    </div>
   </section>
 
-  <details id="hood">
-    <summary>Under the hood <span>speculative decoding, cache, raw requests</span></summary>
-    <div class="tech" id="tech"></div>
-    <div class="tablewrap" style="margin-top:16px"><table>
-      <thead><tr><th>time</th><th>prompt</th><th>from cache</th><th>read in</th><th>written</th><th>speed</th><th>tok / check</th><th>notes</th></tr></thead>
+  <section class="panel">
+    <span class="eyebrow">Guessing ahead</span>
+    <h2 style="margin-top:6px">How the speculation went</h2>
+    <p class="lede">Shoehorn drafts several tokens with cheap guesses, then checks them all in one pass of the full model. Every check costs the same trip across PCIe, so the more guesses it keeps, the faster it writes.</p>
+    <div class="gauges" id="gauges"></div>
+  </section>
+
+  <details class="panel ledger" id="ledger">
+    <summary>Request ledger</summary>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Time</th><th>Prompt</th><th>Cached</th><th>Read in</th><th>Wrote</th><th>tok/s</th><th>tok/check</th><th>Notes</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
   </details>
-</main>
-<div id="tip"></div>
+</div>
+<div id="tip" role="tooltip"></div>
 <script>
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const k = v => v == null ? "–" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
+const GiB = 1073741824, gb = b => b == null ? "–" : fmt(b / GiB, 1);  // the GB Windows shows
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const dur = s => s == null || !isFinite(s) ? "–" : s < 1 ? fmt(s * 1000) + " ms" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s"
   : s < 3600 ? Math.floor(s / 60) + " min" + (s < 600 && Math.round(s % 60) ? " " + Math.round(s % 60) + " s" : "") : fmt(s / 3600, 1) + " h";
-const ago = s => s < 60 ? "just now" : dur(s) + " ago";
 const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const day = t => { const d = new Date(t * 1000), n = new Date(), y = new Date(Date.now() - 864e5);
-  return d.toDateString() === n.toDateString() ? "Today" : d.toDateString() === y.toDateString() ? "Yesterday" : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); };
+  return d.toDateString() === n.toDateString() ? "Today" : d.toDateString() === y.toDateString() ? "Yesterday" : d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }); };
 const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
 const pct = (a, b) => b > 0 ? 100 * a / b : null;
-const plural = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : ws || w + "s"}`;
+const n_ = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : ws || w + "s"}`;
 const speed = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
 const GAP = 300;  // a session ends after 5 minutes without requests
 
-let ALL = [], newest = -1, sel = "latest", live = {}, cfg = {}, prevGen = null, prevT = null, inst = null, lastSig = "";
+let ALL = [], newest = -1, sel = "latest", live = {}, cfg = {}, mem = {}, loaded = "", prevGen = null, prevT = null, inst = null, trace = [], lastSig = "";
 try { const t = localStorage.getItem("sh.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 $("theme").onclick = () => {
   const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   document.documentElement.dataset.theme = dark ? "light" : "dark";
   try { localStorage.setItem("sh.theme", document.documentElement.dataset.theme); } catch (e) {}
-  lastSig = ""; render();
+  lastSig = ""; drawTrace(); render();
 };
-$("sel").onchange = () => { sel = $("sel").value; lastSig = ""; render(); };
 
-// ---- requests: start time, side requests (titles), cache misses
+// ---- tooltip
+const tip = $("tip");
+function showTip(e, html) {
+  tip.innerHTML = html; tip.style.opacity = 1;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + 14, y = e.clientY + 14;
+  if (x + w > innerWidth - 8) x = e.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = e.clientY - h - 14;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => { tip.style.opacity = 0; };
+
+// ---- requests
 function annotate(R) {
   let main = null;
   for (const r of R) {
@@ -186,185 +284,263 @@ function sessions(R) {
   S.forEach(s => s.id = "s" + Math.round(s.start));
   return S;
 }
+function describe(r) {
+  const fresh = r.prompt_tokens - r.reused_tokens;
+  let s = `<time>${clock(r.t)}${r.isSide ? " · side request" : ""}</time>`;
+  s += r.reused_tokens > 0 ? `Read ${k(fresh)} new tokens in ${dur(r.prefill_s)}; ${k(r.reused_tokens)} came from cache.` : `Read ${k(r.prompt_tokens)} tokens in ${dur(r.prefill_s)}.`;
+  s += ` Wrote ${fmt(r.gen_tokens)} tokens in ${dur(r.decode_s)}${r.gen_tokens >= 16 ? `, ${fmt(r.gen_tokens / r.decode_s, 0)} per second` : ""}.`;
+  if (r.tool_calls) s += ` Ended with ${n_(r.tool_calls, "tool call")}.`;
+  if (r.miss) s += ` <b>Cache miss:</b> the conversation had to be read again.`;
+  if (r.side === "parked") s += ` The conversation was set aside while this ran.`;
+  if (r.side === "resumed") s += ` Picked the conversation back up from where it was set aside.`;
+  if (r.loop) s += ` <b>Repetition</b> showed up in this answer.`;
+  if (r.finish === "length") s += ` <b>Cut off</b> at the token limit.`;
+  return s;
+}
 
-// ---- now
-function renderNow() {
+// ---- hero: readout + trace
+function drawTrace() {
+  const svg = $("trace"), W = Math.max(260, svg.getBoundingClientRect().width || svg.parentElement.clientWidth - 40), H = 120, n = 120;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const v = trace.filter(x => x != null);
+  if (!v.length) return drawRecent(svg, W, H);
+  const max = Math.max(40, ...v) * 1.15;
+  const X = i => W * (i + n - trace.length) / (n - 1), Y = x => H - 4 - (H - 14) * x / max;
+  let g = "";
+  for (const q of [0.5, 1]) { const y = Y(max / 1.15 * q); g += `<line class="gl" x1="0" x2="${W}" y1="${y}" y2="${y}" stroke-dasharray="2 4"/>`; }
+  let d = "", area = "", pen = false, first = 0, last = null;
+  trace.forEach((x, i) => {
+    if (x == null) { if (pen) area += `L${last[0]},${H}L${first},${H}Z`; pen = false; return; }
+    const p = [X(i).toFixed(1), Y(x).toFixed(1)];
+    if (!pen) { first = p[0]; d += `M${p[0]},${p[1]}`; area += `M${p[0]},${H}L${p[0]},${p[1]}`; } else { d += `L${p[0]},${p[1]}`; area += `L${p[0]},${p[1]}`; }
+    pen = true; last = p;
+  });
+  if (pen) area += `L${last[0]},${H}L${first},${H}Z`;
+  if (d) g += `<path d="${area}" fill="${css("--brass")}" opacity=".14"/><path d="${d}" fill="none" stroke="${css("--brass")}" stroke-width="2" stroke-linejoin="round"/>`;
+  if (pen && trace[trace.length - 1] != null) g += `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="${css("--brass")}" stroke="${css("--panel")}" stroke-width="2"/>`;
+  if (!v.length) g += `<text class="ax" x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle">the trace runs while shoehorn is writing</text>`;
+  g += `<text class="ax" x="0" y="11">${fmt(max / 1.15, 0)}</text><text class="ax" x="${W}" y="${H - 2}" text-anchor="end">now</text><text class="ax" x="0" y="${H - 2}">2 min ago</text>`;
+  svg.innerHTML = g;
+}
+function drawRecent(svg, W, H) {  // idle: the speed of the latest answers
+  const R = ALL.filter(r => r.gen_tokens >= 16).slice(-40);
+  if (R.length < 2) { svg.innerHTML = `<text class="ax" x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle">the trace runs while shoehorn is writing</text>`; svg.onmousemove = null; return; }
+  const v = R.map(r => r.gen_tokens / r.decode_s), max = Math.max(...v) * 1.15, n = v.length;
+  const X = i => 6 + (W - 12) * i / (n - 1), Y = x => H - 18 - (H - 30) * x / max;
+  let d = v.map((x, i) => (i ? "L" : "M") + X(i).toFixed(1) + "," + Y(x).toFixed(1)).join("");
+  let g = `<line class="gl" x1="0" x2="${W}" y1="${H - 18}" y2="${H - 18}"/><path d="${d}" fill="none" stroke="${css("--brass")}" stroke-width="2" stroke-linejoin="round" opacity=".9"/>`;
+  v.forEach((x, i) => g += `<circle cx="${X(i)}" cy="${Y(x)}" r="${i === n - 1 ? 4 : 2.5}" fill="${i === n - 1 ? css("--brass") : css("--panel")}" stroke="${css("--brass")}" stroke-width="1.5"/>`);
+  g += `<text class="ax" x="0" y="${H - 3}">last ${n} answers, oldest first</text><text class="ax" x="${W}" y="${H - 3}" text-anchor="end">peak ${fmt(Math.max(...v), 0)} tok/s</text>`;
+  svg.innerHTML = g;
+  svg.onmousemove = e => { const bb = svg.getBoundingClientRect(), x = (e.clientX - bb.left) * W / bb.width, i = Math.max(0, Math.min(n - 1, Math.round((x - 6) / ((W - 12) / (n - 1))))); showTip(e, describe(R[i])); };
+  svg.onmouseleave = hideTip;
+}
+function renderReadout() {
   const L = live, last = [...ALL].reverse().find(r => r.gen_tokens >= 16);
-  $("pulse").className = "pulse" + (L.busy ? " on" : L.down ? " off" : "");
-  if (L.down) { $("nowSay").textContent = "Can't reach shoehorn."; $("nowSub").textContent = "The server isn't answering. Is it running?"; $("nowSpeed").innerHTML = ""; return; }
+  $("led").className = "led" + (L.busy ? " on" : L.down ? " off" : "");
+  $("stateText").textContent = L.down ? "offline" : L.busy ? (L.gen > 0 ? "writing" : "reading") : "idle";
+  if (L.down) { $("roLabel").textContent = "Offline"; $("roNum").textContent = "–"; $("roSay").innerHTML = "The server isn't answering. Start it with <span class=\"mono\">start-detached.ps1</span>."; return; }
   if (L.busy) {
     const avg = L.elapsed_s > 0 ? L.gen / L.elapsed_s : 0;
-    $("nowSay").textContent = L.gen > 0 ? `Writing an answer: ${fmt(L.gen)} tokens so far.` : `Reading a ${k(L.prompt)}-token prompt…`;
-    $("nowSub").textContent = `Started ${dur(L.elapsed_s)} ago on ${L.model}.`;
-    $("nowSpeed").innerHTML = L.gen > 0 ? `<b class="num">${fmt(inst ?? avg, 0)}</b><span>tokens / second</span>` : "";
+    $("roLabel").textContent = L.gen > 0 ? "Writing now" : "Reading the prompt";
+    $("roNum").textContent = L.gen > 0 ? fmt(inst ?? avg, 0) : "…";
+    $("roSay").innerHTML = L.gen > 0 ? `${fmt(L.gen)} tokens so far, ${dur(L.elapsed_s)} in. <small>Prompt: ${k(L.prompt)} tokens.</small>` : `Taking in a ${k(L.prompt)}-token prompt.`;
   } else {
-    $("nowSay").textContent = !last ? "Ready. Nothing has run yet." : `Idle. Last answer finished ${ago(Date.now() / 1e3 - last.t)}.`;
-    $("nowSub").textContent = last ? `It wrote ${fmt(last.gen_tokens)} tokens at ${fmt(last.gen_tokens / last.decode_s, 0)} tokens/s after reading a ${k(last.prompt_tokens)}-token prompt.` : "";
-    $("nowSpeed").innerHTML = "";
+    $("roLabel").textContent = "Last answer";
+    $("roNum").textContent = last ? fmt(last.gen_tokens / last.decode_s, 0) : "–";
+    $("roSay").innerHTML = last ? `${fmt(last.gen_tokens)} tokens, finished ${dur(Date.now() / 1e3 - last.t)} ago. <small>It read a ${k(last.prompt_tokens)}-token prompt first.</small>` : "Nothing has run yet. Start a chat in dsh.";
   }
 }
 
-// ---- story of a session, in words
-function story(R, s) {
-  if (!R.length) return "No requests yet. Start a chat in dsh and this page will tell you how it went.";
-  const wall = s.end - s.start, pre = sum(R, r => r.prefill_s), dec = sum(R, r => r.decode_s), busy = pre + dec;
+// ---- the fit
+function renderFit() {
+  const m = mem;
+  if (!m.vram_total) { $("fitSay").textContent = "Memory figures appear once the server reports them."; $("bars").innerHTML = ""; return; }
+  const vUsed = m.vram_total - m.vram_free, wG = m.weights_gpu || 0, wC = (m.residual || 0) + (m.weights_cpu || 0), kv = m.kv_ram || 0;
+  const vOther = Math.max(0, vUsed - wG), rUsed = m.ram_total - m.ram_avail, rOther = Math.max(0, rUsed - wC - kv);
+  const total = wG + wC;
+  if (wG) $("fitTitle").textContent = `A ${fmt(total / GiB, 0)} GB model on a ${fmt(m.vram_total / GiB, 0)} GB graphics card`;
+  $("fitSay").innerHTML = wG
+    ? `Of the model's <b class="mono">${gb(total)} GB</b>, <b class="mono">${gb(wG)} GB</b> sit on the graphics card. The other <b class="mono">${gb(wC)} GB</b> of precision live in system memory and cross PCIe on every check, so the card never has to hold it all.`
+    : `No model is loaded right now. It loads on the next request, in about 40 seconds.`;
+  const bar = (name, totalB, segs) => {
+    const free = Math.max(0, totalB - segs.reduce((s, x) => s + x.b, 0));
+    const all = [...segs, { c: "f", b: free, l: "free" }];
+    return `<div class="mbar"><div class="row1"><b>${name}</b><span>${gb(totalB - free)} of ${gb(totalB)} GB in use</span></div>
+      <div class="track">${all.map(x => x.b > 0 ? `<div class="seg ${x.c}" style="flex-grow:${x.b}" data-t="${x.l}: ${gb(x.b)} GB"></div>` : "").join("")}</div>
+      <div class="keys">${segs.filter(x => x.b > 0).map(x => `<span><i class="seg ${x.c}" style="display:inline-block;width:9px;height:9px;border:0"></i>${x.l} <span class="mono">${gb(x.b)} GB</span></span>`).join("")}</div></div>`;
+  };
+  const busy = !!live.busy;
+  $("bars").innerHTML =
+    bar("Graphics card", m.vram_total, [{ c: "w", b: wG, l: "base weights" }, { c: "k", b: vOther, l: "recent context + working memory" }]) +
+    `<div class="pcie"><svg viewBox="0 0 120 18" aria-hidden="true"><line class="flow${busy ? "" : " idle"}" x1="2" y1="9" x2="118" y2="9"/></svg><span>${busy ? "Residual weights streaming across PCIe" : "PCIe link, quiet until the next request"}</span></div>` +
+    bar("System memory", m.ram_total, [{ c: "w", b: wC, l: "residual + embedding weights" }, { c: "k", b: kv, l: "conversation memory" }, { c: "o", b: rOther, l: "everything else on this PC" }]);
+  $("bars").querySelectorAll(".seg[data-t]").forEach(el => { el.onmousemove = e => showTip(e, el.dataset.t); el.onmouseleave = hideTip; });
+}
+
+// ---- session
+function story(R, s, all, nS) {
+  if (!R.length) return "No requests yet. When you chat through dsh, this panel tells the story of each session.";
   const gen = sum(R, r => r.gen_tokens), tools = sum(R, r => r.tool_calls), prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens);
-  const sp = speed(R), peak = Math.max(...R.map(r => r.prompt_tokens + r.gen_tokens));
-  const misses = R.filter(r => r.miss), lost = sum(misses, r => r.prefill_s);
+  const sp = speed(R), misses = R.filter(r => r.miss);
+  if (all) return `Across <b>${n_(nS, "session")}</b>, shoehorn answered <b>${n_(R.length, "request")}</b> and wrote <b>${k(gen)} tokens</b> at <span class="hl">${fmt(sp, 0)} tok/s</span>. <b>${fmt(pct(reused, prompt), 0)}%</b> of everything it read came from cache.`;
+  const wall = s.end - s.start, busy = sum(R, r => r.prefill_s + r.decode_s), peak = Math.max(...R.map(r => r.prompt_tokens + r.gen_tokens));
   const isLive = live.busy || Date.now() / 1e3 - s.end < GAP;
-  const when = day(s.start) === "Today" ? "at " + clock(s.start) : day(s.start).toLowerCase() + " at " + clock(s.start);
-  let t = `${isLive ? "This session started" : "This session started"} <b>${when}</b>`;
-  t += isLive ? ` and has been going for <b>${dur(wall)}</b>. ` : ` and lasted <b>${dur(wall)}</b>. `;
-  t += `Shoehorn answered <b>${plural(R.length, "request")}</b>${tools ? `, made <b>${plural(tools, "tool call")}</b>,` : ""} and wrote <b>${k(gen)} tokens</b>`;
-  t += sp ? ` at about <span class="hl num">${fmt(sp, 0)} tokens per second</span>. ` : ". ";
-  if (wall > 5) t += `It was busy for ${dur(busy)} of that (${fmt(Math.min(100, pct(busy, wall)), 0)}%); the rest was waiting on you or on tools. `;
-  if (prompt > 0) t += `The conversation grew to <b>${k(peak)} tokens</b>, and <b>${fmt(pct(reused, prompt), 0)}%</b> of everything it read came straight from cache`;
-  t += misses.length ? `, except <b>${plural(misses.length, "time")}</b> it had to read everything again, which cost <b>${dur(lost)}</b>.` : (prompt > 0 ? ", with no full re-reads." : "");
+  const when = day(s.start) === "Today" ? `at ${clock(s.start)}` : `${day(s.start).toLowerCase()} at ${clock(s.start)}`;
+  let t = `Started <b>${when}</b>, ${isLive ? "running for" : "lasted"} <b>${dur(wall)}</b>. `;
+  t += `Shoehorn answered <b>${n_(R.length, "request")}</b>${tools ? ` with <b>${n_(tools, "tool call")}</b>` : ""} and wrote <b>${k(gen)} tokens</b>${sp ? ` at <span class="hl">${fmt(sp, 0)} tok/s</span>` : ""}. `;
+  if (wall > 5) t += `It was busy ${fmt(Math.min(100, pct(busy, wall)), 0)}% of the time. `;
+  t += `The conversation reached <b>${k(peak)} tokens</b>; <b>${fmt(pct(reused, prompt), 0)}%</b> of what it read came from cache`;
+  t += misses.length ? `, and <b>${n_(misses.length, "cache miss", "cache misses")}</b> cost <b>${dur(sum(misses, r => r.prefill_s))}</b>.` : ", with no cache misses.";
   return t;
 }
-
-function facts(R) {
+function readings(R) {
   const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), pre = sum(R, r => r.prefill_s);
-  const fresh = prompt - reused, sp = speed(R);
   const peak = R.length ? Math.max(...R.map(r => r.prompt_tokens + r.gen_tokens)) : 0;
-  const f = (l, v, u, m) => `<div class="fact"><div class="l">${l}</div><div class="v num">${v}${u ? ` <small>${u}</small>` : ""}</div><div class="m">${m}</div></div>`;
-  return f("Writing speed", fmt(sp, 0), "tok/s", "how fast answers come out") +
-    f("Reading speed", fmt(pre > 0 ? fresh / pre : null, 0), "tok/s", "for prompt text not in cache") +
-    f("From cache", fmt(pct(reused, prompt), 0), "%", "of prompt text, no re-reading needed") +
-    f("Context used", k(peak), "tokens", cfg.ctx ? `of ${k(cfg.ctx)} (${fmt(pct(peak, cfg.ctx), 0)}%)` : "largest prompt + answer");
+  const x = (v, u, l) => `<div class="reading"><div class="v">${v}<small>${u}</small></div><div class="l">${l}</div></div>`;
+  return x(fmt(speed(R), 0), "tok/s", "writing speed") +
+    x(fmt(pre > 0 ? (prompt - reused) / pre : null, 0), "tok/s", "reading speed, new text") +
+    x(fmt(pct(reused, prompt), 0), "%", "of prompts served from cache") +
+    x(k(peak), cfg.ctx ? `/ ${k(cfg.ctx)}` : "tok", "largest context");
 }
-
-function notes(R) {
-  const out = [], add = (lvl, tag, html) => out.push(`<li><span class="tag ${lvl}">${tag}</span><span>${html}</span></li>`);
-  if (!R.length) return "";
-  const kept = R.filter(r => r.side === "resumed"), side = R.filter(r => r.isSide), misses = R.filter(r => r.miss);
-  if (kept.length) add("good", "saved", `A title or side request came in ${plural(kept.length, "time")}; the conversation was set aside and picked back up, so nothing had to be re-read.`);
-  else if (side.length) add("info", "side", `${plural(side.length, "short side request")} (like session titles) ran next to the conversation.`);
-  if (misses.length) add("bad", "slow", `${plural(misses.length, "request")} had to re-read ${k(sum(misses, r => r.prompt_tokens - r.reused_tokens))} tokens of conversation (${dur(sum(misses, r => r.prefill_s))} lost).`);
-  const loops = R.filter(r => r.loop);
-  if (loops.length) add("warn", "loop", `The model started repeating itself in ${plural(loops.length, "answer")} (last at ${clock(loops[loops.length - 1].t)}).`);
-  const cut = R.filter(r => r.finish === "length");
-  if (cut.length) add("warn", "cut off", `${plural(cut.length, "answer")} hit the token limit and stopped early.`);
-  const bad = R.filter(r => r.finish && !["stop", "length", "tool_calls"].includes(r.finish));
-  if (bad.length) add("bad", "error", `${plural(bad.length, "request")} ended abnormally (${[...new Set(bad.map(r => r.finish))].join(", ")}).`);
-  const rc = sum(R, r => r.reasoning_chars), cc = sum(R, r => r.content_chars);
-  if (rc + cc > 2000) add("info", "thinking", `About ${fmt(pct(rc, rc + cc), 0)}% of what it wrote was thinking; the rest was answers and tool calls.`);
-  return out.join("");
-}
-
-// ---- chart: each request's time, split into reading and writing
-const tip = $("tip");
-function showTip(e, html) { tip.innerHTML = html; tip.style.opacity = 1; const w = tip.offsetWidth, h = tip.offsetHeight;
-  let x = e.clientX + 14, y = e.clientY + 14; if (x + w > innerWidth - 8) x = e.clientX - w - 14; if (y + h > innerHeight - 8) y = e.clientY - h - 14;
-  tip.style.left = x + "px"; tip.style.top = y + "px"; }
-function describe(r) {
-  const fresh = r.prompt_tokens - r.reused_tokens;
-  let s = `<b>${clock(r.t)}</b>${r.isSide ? " · side request (e.g. a title)" : ""}<br>`;
-  s += r.reused_tokens > 0 ? `Read ${k(fresh)} new tokens (${k(r.reused_tokens)} were cached) in ${dur(r.prefill_s)}.<br>` : `Read ${k(r.prompt_tokens)} tokens in ${dur(r.prefill_s)}.<br>`;
-  s += `Wrote ${fmt(r.gen_tokens)} tokens in ${dur(r.decode_s)}${r.gen_tokens >= 16 ? ` (${fmt(r.gen_tokens / r.decode_s, 0)} tok/s)` : ""}.`;
-  if (r.tool_calls) s += `<br>Ended with ${plural(r.tool_calls, "tool call")}.`;
-  if (r.miss) s += `<br><b>Cache miss:</b> it had to re-read the conversation.`;
-  if (r.loop) s += `<br><b>Repetition</b> detected in this answer.`;
-  if (r.finish === "length") s += `<br><b>Cut off</b> at the token limit.`;
-  return s;
-}
-function chart(R) {
-  const svg = $("chart"), W = Math.max(300, svg.clientWidth || 700), H = 210, l = 48, r = 6, t = 8, b = 22;
+function drawTape(R, s) {
+  const svg = $("tape"), W = Math.max(300, svg.getBoundingClientRect().width || svg.parentElement.clientWidth - 40), H = 150, l = 4, r = 4, top = 10, lane = 92, bot = H - 22;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  if (!R.length) { svg.innerHTML = `<text class="ax" x="${W / 2}" y="${H / 2}" text-anchor="middle">nothing to show yet</text>`; svg.onmousemove = null; return; }
-  const V = R.slice(-120), n = V.length, pw = W - l - r, ph = H - t - b, bw = pw / n;
-  const max = Math.max(1, ...V.map(x => (x.prefill_s || 0) + (x.decode_s || 0))) * 1.08;
-  let g = "";
-  for (let i = 0; i <= 3; i++) { const y = H - b - ph * i / 3; g += `<line class="gl" x1="${l}" x2="${W - r}" y1="${y}" y2="${y}"/><text class="ax num" x="${l - 6}" y="${y + 4}" text-anchor="end">${i ? dur(max * i / 3) : "0"}</text>`; }
-  g += `<rect id="cur" y="${t}" height="${ph}" fill="${css("--grid")}" opacity="0"/>`;
-  V.forEach((x, i) => {
-    const X = l + i * bw + (bw > 6 ? 1 : 0), w = Math.max(1, bw - (bw > 6 ? 2 : .5));
-    const hp = ph * (x.prefill_s || 0) / max, hd = ph * (x.decode_s || 0) / max, y0 = H - b;
-    g += `<rect x="${X}" y="${y0 - hp}" width="${w}" height="${Math.max(0, hp - (hd > 1 ? 1 : 0))}" fill="${x.miss ? css("--bad") : css("--prefill")}"/>`;
-    if (hd > 0) g += `<rect x="${X}" y="${y0 - hp - hd}" width="${w}" height="${hd}" rx="${w > 6 ? Math.min(3, hd / 2) : 0}" fill="${css("--accent")}"/>`;
+  if (!R.length) { svg.innerHTML = `<text class="ax" x="${W / 2}" y="${H / 2}" text-anchor="middle">no requests in this session yet</text>`; svg.onmousemove = null; return; }
+  const t0 = R[0].start, t1 = Math.max(R[R.length - 1].t, t0 + 1), span = t1 - t0, pw = W - l - r;
+  const X = t => l + pw * (t - t0) / span;
+  // bar height = how much it wrote (log scale), so long answers stand taller
+  const maxGen = Math.max(...R.map(x => x.gen_tokens || 1));
+  const hOf = g => 18 + (lane - 18) * Math.log1p(g) / Math.log1p(maxGen);
+  let g = `<line class="gl" x1="${l}" x2="${W - r}" y1="${bot}" y2="${bot}"/>`;
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) { const t = t0 + span * i / ticks, x = X(t); g += `<line class="gl" x1="${x}" x2="${x}" y1="${top}" y2="${bot}" stroke-dasharray="2 4"/><text class="ax" x="${x}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === ticks ? "end" : "middle"}">${span < 600 ? new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : clock(t)}</text>`; }
+  const hits = [];
+  R.forEach((q, i) => {
+    const xs = X(q.start), xm = X(q.start + (q.prefill_s || 0)), xe = X(q.t), h = hOf(q.gen_tokens || 1), y = bot - h;
+    const wP = Math.max(xm - xs, 0), wD = Math.max(xe - xm, 0);
+    const minW = 2.5;
+    if (wP + wD < minW) { g += `<rect x="${xs}" y="${y}" width="${minW}" height="${h}" rx="1" fill="${q.miss ? css("--bad") : css("--brass")}"/>`; }
+    else {
+      if (wP > 0) g += `<rect x="${xs}" y="${y}" width="${Math.max(1, wP - (wD > 1 ? 1 : 0))}" height="${h}" fill="${q.miss ? css("--bad") : css("--steel")}"/>`;
+      if (wD > 0) g += `<rect x="${xm}" y="${y}" width="${wD}" height="${h}" rx="2" fill="${css("--brass")}"/>`;
+    }
+    if (q.isSide) g += `<circle cx="${xs + 1}" cy="${y - 7}" r="3" fill="none" stroke="${css("--ink2")}" stroke-width="1.5"/>`;
+    hits.push({ x0: xs - 3, x1: Math.max(xe, xs + minW) + 3, q });
   });
-  const lab = n < 3 ? [0] : [0, n >> 1, n - 1];
-  lab.forEach((i, j) => g += `<text class="ax" x="${l + i * bw + bw / 2}" y="${H - 5}" text-anchor="${j === 0 ? "start" : j === lab.length - 1 ? "end" : "middle"}">${clock(V[i].t)}</text>`);
   svg.innerHTML = g;
   svg.onmousemove = e => {
-    const bb = svg.getBoundingClientRect(), x = (e.clientX - bb.left) * W / bb.width, i = Math.floor((x - l) / bw), cur = $("cur");
-    if (i < 0 || i >= n) { tip.style.opacity = 0; cur.setAttribute("opacity", 0); return; }
-    cur.setAttribute("x", l + i * bw); cur.setAttribute("width", bw); cur.setAttribute("opacity", 1);
-    showTip(e, describe(V[i]));
+    const bb = svg.getBoundingClientRect(), x = (e.clientX - bb.left) * W / bb.width;
+    const h = hits.filter(o => x >= o.x0 && x <= o.x1).sort((a, b) => Math.abs((a.x0 + a.x1) / 2 - x) - Math.abs((b.x0 + b.x1) / 2 - x))[0];
+    if (h) showTip(e, describe(h.q)); else hideTip();
   };
-  svg.onmouseleave = () => { tip.style.opacity = 0; $("cur").setAttribute("opacity", 0); };
+  svg.onmouseleave = hideTip;
 }
-
-function tech(R) {
+function log(R) {
+  if (!R.length) return `<li><time></time><span></span><span class="quiet">Nothing yet.</span></li>`;
+  const ev = [];
+  const add = (t, kind, html) => ev.push({ t, kind, html });
+  add(R[0].start, "brass", `Session started with a ${k(R[0].prompt_tokens)}-token prompt.`);
+  R.forEach(r => {
+    if (r.miss) add(r.t, "bad", `Re-read ${k(r.prompt_tokens - r.reused_tokens)} tokens of conversation after a cache miss (${dur(r.prefill_s)}).`);
+    if (r.side === "parked") add(r.t, "good", `A side request (likely a title) ran on its own; the conversation was set aside, not lost.`);
+    else if (r.isSide) add(r.t, "", `Short side request, ${k(r.prompt_tokens)} tokens.`);
+    if (r.side === "resumed") add(r.t, "good", `Conversation picked back up: ${k(r.reused_tokens)} tokens reused.`);
+    if (r.loop) add(r.t, "warn", `The answer started repeating itself.`);
+    if (r.finish === "length") add(r.t, "warn", `An answer hit the token limit and stopped early.`);
+    if (r.finish && !["stop", "length", "tool_calls"].includes(r.finish)) add(r.t, "bad", `A request ended abnormally (${r.finish}).`);
+    if (!r.miss && !r.isSide && r.side !== "resumed" && !r.loop && r.gen_tokens >= 16)
+      add(r.t, "", `<span class="quiet">Wrote ${fmt(r.gen_tokens)} tokens at ${fmt(r.gen_tokens / r.decode_s, 0)} tok/s${r.tool_calls ? `, then ${n_(r.tool_calls, "tool call")}` : ""}.</span>`);
+  });
+  return ev.slice(-60).reverse().map(e => `<li><time>${clock(e.t)}</time><span class="mk ${e.kind}"></span><span>${e.html}</span></li>`).join("");
+}
+function gauges(R) {
   const sp = R.filter(r => r.spec && r.spec.cycles), cyc = sum(sp, r => r.spec.cycles), g = sum(sp, r => r.gen_tokens);
   const mp = sum(sp, r => r.spec.mtp_proposed), mk = sum(sp, r => r.spec.mtp_kept), ep = sum(sp, r => r.spec.echo_proposed), ek = sum(sp, r => r.spec.echo_kept);
   const ds = sum(sp, r => r.spec.draft_s), vs = sum(sp, r => r.spec.verify_s);
-  const row = (a, b) => `<div><span>${a}</span><span class="num">${b}</span></div>`;
-  $("tech").innerHTML =
-    row("Tokens accepted per check", fmt(cyc ? g / cyc : null, 1)) +
-    row("Time per check (verify)", cyc ? dur(vs / cyc) : "–") +
-    row("Guesses kept: MTP head", mp ? `${fmt(pct(mk, mp), 0)}% of ${k(mp)}` : "–") +
-    row("Guesses kept: copied from context", ep ? `${fmt(pct(ek, ep), 0)}% of ${k(ep)}` : "–") +
-    row("Writing time guessing / checking", ds + vs > 0 ? `${fmt(pct(ds, ds + vs), 0)}% / ${fmt(pct(vs, ds + vs), 0)}%` : "–") +
-    row("KV cache", cfg.kv ? `K ${cfg.kv}, V ${cfg.kv_v || cfg.kv}` : "–") +
-    row("Context limit", cfg.ctx ? k(cfg.ctx) + " tokens" : "–") +
-    row("Recent tokens kept in VRAM", cfg.window ? k(cfg.window) : "–");
+  const m1 = (p) => `<div class="meter"><i style="width:${Math.max(0, Math.min(100, p || 0))}%"></i></div>`;
+  return `<div class="gauge"><div class="l">Tokens per check</div><div class="v">${fmt(cyc ? g / cyc : null, 1)}<small>tok</small></div>
+      <div class="m">One pass of the full model confirms this many tokens on average. Plain decoding would give one.</div></div>` +
+    `<div class="gauge"><div class="l">Predictor guesses kept</div><div class="v">${fmt(pct(mk, mp), 0)}<small>%</small></div>${m1(pct(mk, mp))}
+      <div class="m">The model's built-in next-token predictor (MTP). ${mp ? k(mp) + " guesses." : ""}</div></div>` +
+    `<div class="gauge"><div class="l">Copied guesses kept</div><div class="v">${fmt(pct(ek, ep), 0)}<small>%</small></div>${m1(pct(ek, ep))}
+      <div class="m">Guesses copied from earlier text, great for code edits and quotes. ${ep ? k(ep) + " guesses." : ""}</div></div>` +
+    `<div class="gauge"><div class="l">Guessing vs checking</div><div class="v">${fmt(cyc ? 1000 * vs / cyc : null, 0)}<small>ms per check</small></div>
+      <div class="meter"><i style="width:${pct(ds, ds + vs) || 0}%"></i><i style="width:${pct(vs, ds + vs) || 0}%"></i></div>
+      <div class="m">${ds + vs > 0 ? `${fmt(pct(ds, ds + vs), 0)}% of writing time goes to guessing, ${fmt(pct(vs, ds + vs), 0)}% to checking.` : "No speculative writing yet."}</div></div>`;
+}
+function ledger(R) {
   $("rows").innerHTML = R.slice(-200).reverse().map(r => {
     const n = [];
     if (r.miss) n.push("cache miss");
-    if (r.side === "parked") n.push("side, conversation parked"); else if (r.isSide) n.push("side");
+    if (r.side === "parked") n.push("side, conversation set aside"); else if (r.isSide) n.push("side");
     if (r.side === "resumed") n.push("conversation resumed");
-    if (r.tool_calls) n.push(plural(r.tool_calls, "tool call"));
+    if (r.tool_calls) n.push(n_(r.tool_calls, "tool call"));
     if (r.loop) n.push("repetition");
     if (r.finish === "length") n.push("cut off");
-    return `<tr class="num"><td>${clock(r.t)}</td><td>${k(r.prompt_tokens)}</td><td>${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</td><td>${dur(r.prefill_s)}</td>
-      <td>${fmt(r.gen_tokens)}</td><td>${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</td><td>${r.spec && r.spec.cycles && r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.spec.cycles, 1) : "–"}</td><td>${n.join(", ")}</td></tr>`;
-  }).join("") || `<tr><td colspan="8" class="empty">no requests</td></tr>`;
+    return `<tr><td>${clock(r.t)}</td><td>${k(r.prompt_tokens)}</td><td>${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</td><td>${dur(r.prefill_s)}</td><td>${fmt(r.gen_tokens)}</td>
+      <td>${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</td><td>${r.spec && r.spec.cycles && r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.spec.cycles, 1) : "–"}</td><td>${n.join(", ")}</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">No requests yet.</td></tr>`;
 }
 
 function render() {
-  renderNow();
+  renderReadout();
+  renderFit();
   annotate(ALL);
   const S = sessions(ALL);
-  const opts = S.slice().reverse().map((s, i) => {
-    const label = `${day(s.start)} ${clock(s.start)} · ${dur(s.end - s.start)} · ${plural(s.R.length, "request")}${i === 0 && (live.busy || Date.now() / 1e3 - s.end < GAP) ? " · now" : ""}`;
-    return `<option value="${s.id}">${label}</option>`;
-  });
   const want = sel === "latest" ? (S.length ? S[S.length - 1].id : "all") : sel;
-  const html = opts.join("") + `<option value="all">All sessions (${S.length})</option>`;
-  if ($("sel").dataset.html !== html) { $("sel").innerHTML = html; $("sel").dataset.html = html; }
-  $("sel").value = want;
-  let s = S.find(x => x.id === want), R;
-  if (want === "all" || !s) { R = S.flatMap(x => x.R); s = null; $("title").textContent = "All sessions"; }
-  else { R = s.R; $("title").textContent = S.indexOf(s) === S.length - 1 ? "Latest session" : "Session"; }
-  const sig = [want, R.length, R.length ? R[R.length - 1].t : 0, document.documentElement.dataset.theme || "", live.busy, Math.floor(Date.now() / 30000)].join("|");
+  const tabs = S.slice(-12).reverse().map((s, i) => {
+    const isLive = i === 0 && (live.busy || Date.now() / 1e3 - s.end < GAP);
+    return `<button class="tab" type="button" data-id="${s.id}" aria-pressed="${want === s.id}">${isLive ? '<span class="dot"></span>' : ""}${day(s.start) === "Today" ? "" : day(s.start) + " "}${clock(s.start)} · ${n_(s.R.length, "req")}</button>`;
+  }).join("") + `<button class="tab" type="button" data-id="all" aria-pressed="${want === "all"}">All · ${S.length}</button>`;
+  if ($("tabs").dataset.h !== tabs) {
+    $("tabs").innerHTML = tabs; $("tabs").dataset.h = tabs;
+    $("tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => { sel = b.dataset.id === (S.length ? S[S.length - 1].id : "") ? "latest" : b.dataset.id; lastSig = ""; render(); });
+  }
+  const s = S.find(x => x.id === want), all = !s, R = all ? S.flatMap(x => x.R) : s.R;
+  const sig = [want, R.length, R.length ? R[R.length - 1].t : 0, document.documentElement.dataset.theme || "", !!live.busy, Math.floor(Date.now() / 30000)].join("|");
   if (sig === lastSig) return;
   lastSig = sig;
-  $("story").innerHTML = !s
-    ? (R.length ? `Across <b>${plural(S.length, "session")}</b>, shoehorn answered <b>${plural(R.length, "request")}</b> and wrote <b>${k(sum(R, r => r.gen_tokens))} tokens</b> at about <span class="hl num">${fmt(speed(R), 0)} tokens per second</span>. <b>${fmt(pct(sum(R, r => r.reused_tokens), sum(R, r => r.prompt_tokens)), 0)}%</b> of everything it read came from cache.` : story([], null))
-    : story(R, s);
-  $("facts").innerHTML = R.length ? facts(R) : "";
-  $("notes").innerHTML = notes(R);
-  chart(R);
-  tech(R);
+  $("story").innerHTML = story(R, s, all, S.length);
+  $("readings").innerHTML = R.length ? readings(R) : "";
+  drawTape(all ? R.slice(-200) : R, s);
+  $("log").innerHTML = log(R);
+  $("gauges").innerHTML = gauges(R);
+  ledger(R);
+}
+
+function chips(d) {
+  const c = [];
+  if (d.loaded) c.push(`<span class="chip"><b>${d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")}</b></span>`);
+  if (cfg.ctx) c.push(`<span class="chip">context <b>${k(cfg.ctx)}</b></span>`);
+  if (cfg.kv) c.push(`<span class="chip">KV <b>${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</b></span>`);
+  if (cfg.window) c.push(`<span class="chip">VRAM window <b>${k(cfg.window)}</b></span>`);
+  const h = c.join("");
+  if ($("chips").dataset.h !== h) { $("chips").innerHTML = h; $("chips").dataset.h = h; }
 }
 
 async function tick() {
   let d;
   try { d = await (await fetch("/stats?since=" + newest, { cache: "no-store" })).json(); }
-  catch (e) { live = { down: true }; renderNow(); return; }
+  catch (e) { live = { down: true }; trace.push(null); if (trace.length > 120) trace.shift(); renderReadout(); drawTrace(); return; }
   for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; }
   const now = Date.now() / 1e3;
   live = d.live || {};
-  if (live.busy) { if (prevGen != null && live.gen >= prevGen && now > prevT) inst = (live.gen - prevGen) / (now - prevT); prevGen = live.gen; prevT = now; }
+  if (live.busy && live.gen > 0) { if (prevGen != null && live.gen >= prevGen && now > prevT) inst = (live.gen - prevGen) / (now - prevT); prevGen = live.gen; prevT = now; }
   else { prevGen = null; inst = null; }
-  cfg = d.config || {};
-  $("cfg").textContent = d.loaded ? `· ${d.loaded}` : "";
+  trace.push(live.busy && inst != null ? inst : null); if (trace.length > 120) trace.shift();
+  cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || "";
+  chips(d);
+  drawTrace();
   render();
 }
-let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { lastSig = ""; render(); }, 150); });
+let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { lastSig = ""; drawTrace(); render(); }, 150); });
 tick();
 setInterval(tick, 1000);
+// redraw once fonts and layout settle (the charts are sized from their boxes)
+const redraw = () => { lastSig = ""; drawTrace(); render(); };
+addEventListener("load", redraw);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw);
 </script>
 </body>
 </html>
