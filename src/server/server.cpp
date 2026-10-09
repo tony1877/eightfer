@@ -192,7 +192,8 @@ struct Server {
     common_chat_templates *          tmpl   = nullptr;
     std::string                      alias, api_key;
     int                              spec_k = 12;
-    float                            tool_temp = 0.6f;  // sampling temperature inside <tool_call> blocks (0 = as the request)
+    float                            tool_temp = 0.6f;
+    int                              fast_prefill = 0;  // --fast-prefill N (see Qwen35::set_fast_prefill)  // sampling temperature inside <tool_call> blocks (0 = as the request)
     bool                             spec_auto = true;
     int                              mtp = 6;  // most MTP proposals per base pass while drafting (adaptive; 0 = off)
     bool                             echo = true;  // echo drafting (copies from the context)
@@ -1371,6 +1372,8 @@ int serve(const std::vector<std::string> & args) {
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
     bool kv_lock = false, side = true;
+    int  ubatch = 0;  // prompt batch size (0 = the model's default)
+    int  fast_prefill = 0;  // > 0: read all but the last N prompt tokens without the residual
     int n_slots = 1, draft_batch = 0;
     double kv_pool_gb = 0;
     std::string router_url;
@@ -1404,6 +1407,8 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--kv") kv = val();
         else if (a == "--kv-v") kv_v = val();
         else if (a == "--kv-lock") kv_lock = true;
+        else if (a == "--ubatch") ubatch = std::atoi(val().c_str());
+        else if (a == "--fast-prefill") fast_prefill = std::atoi(val().c_str());
         else if (a == "--no-side") side = false;
         else if (a == "--slots") n_slots = std::max(1, std::atoi(val().c_str()));
         else if (a == "--kv-pool-gb") kv_pool_gb = std::atof(val().c_str());
@@ -1445,6 +1450,7 @@ int serve(const std::vector<std::string> & args) {
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
+                        "         [--fast-prefill N (read all but the last N prompt tokens without the residual: ~2x prefill)]\n"
                         "         [--tool-temp 0.6 (temperature inside <tool_call> blocks; 0 = the request's)]\n"
                         "         [--timing-log FILE (JSON lines of per-request timings, no content)]\n");
         return 1;
@@ -1500,6 +1506,8 @@ int serve(const std::vector<std::string> & args) {
     }
     S->config = { { "ctx", n_ctx }, { "kv", kv }, { "kv_v", kv_v.empty() ? kv : kv_v }, { "slots", n_slots } };
     o.kv_lock         = kv_lock;
+    S->fast_prefill   = fast_prefill;
+    if (ubatch > 0) o.n_ubatch = ubatch;
     o.side_seq        = side && n_slots == 1;
     o.n_slots         = n_slots;
     o.kv_pool_gb      = kv_pool_gb;
@@ -1564,6 +1572,7 @@ int serve(const std::vector<std::string> & args) {
             return false;
         }
         sp->q35 = dynamic_cast<model::Qwen35 *>(sp->model.get());
+        if (sp->q35 && sp->q35->has_residual()) sp->q35->set_fast_prefill(sp->fast_prefill);
         sp->slots.clear();
         sp->drafter.reset();
         if (sp->q35 && sp->q35->n_slots() > 1 && sp->q35->has_residual()) {

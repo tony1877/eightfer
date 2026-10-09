@@ -224,6 +224,18 @@ int ppl(const std::vector<std::string> & args) {
         m.reset();
         for (int b = 0; b < n_ctx; b += o.n_ubatch) {
             const int n = std::min(o.n_ubatch, n_ctx - b);
+            // E8_PPL_BASE_PREFIX: the unscored first half without the residual (measures a base-only prompt prefill)
+            static const bool base_prefix = std::getenv("E8_PPL_BASE_PREFIX") != nullptr;
+            auto * q = dynamic_cast<model::Qwen35 *>(&m);
+            if (base_prefix && q && b + n <= first) {
+                model::EvalOpts eo;
+                eo.residual = false;
+                if (!q->eval(batch.data() + b, n, eo, nullptr, nullptr, err)) {
+                    fprintf(stderr, "\n%s\n", err.c_str());
+                    return 1;
+                }
+                continue;
+            }
             if (!m.eval(batch.data() + b, n, b + n > first ? logits.data() : nullptr, err)) {
                 fprintf(stderr, "\n%s\n", err.c_str());
                 return 1;
