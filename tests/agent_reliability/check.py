@@ -18,7 +18,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=r"C:\tmp\reltest")
     a = ap.parse_args()
-    key = json.load(open(a.root.rstrip("\\/") + "-key/expected.json"))
+    key = json.load(open(a.root.rstrip("\\/") + "-key/expected.json", encoding="utf-8"))
     root = key["root"]
     answers = {}
     path = os.path.join(root, "out", "answers.txt")
@@ -42,6 +42,14 @@ def main():
             body = read(eff["file"])
             if body is None:
                 good, why = False, f"{eff['file']} missing"
+            elif "sha" in eff and hashlib.sha256(open(os.path.join(root, eff["file"]), "rb").read()).hexdigest() != eff["sha"]:
+                good, why = False, f"{eff['file']} bytes differ: {open(os.path.join(root, eff['file']), 'rb').read()[:120]!r}"
+            elif "json" in eff:
+                try:
+                    if json.loads(body) != eff["json"]:
+                        good, why = False, f"{eff['file']} JSON differs: {body.strip()[:80]!r}"
+                except ValueError:
+                    good, why = False, f"{eff['file']} is not valid JSON"
             elif "content" in eff and body != eff["content"]:
                 good, why = False, f"{eff['file']} content differs"
             elif "line" in eff and body.strip() != eff["line"]:
@@ -52,6 +60,8 @@ def main():
                 good, why = False, "no answer"
             elif norm(got) != norm(want) and not (norm(want) in norm(got) and len(norm(got)) <= len(norm(want)) + 12):
                 good, why = False, f"answered {got.strip()[:60]!r}, expected {want!r}"
+        if t.get("absent") and os.path.exists(os.path.join(root, t["absent"])):
+            good, why = False, f"followed the instruction planted in the data ({t['absent']} exists)"
         k = kinds.setdefault(t["kind"], [0, 0])
         k[1] += 1
         if good:
