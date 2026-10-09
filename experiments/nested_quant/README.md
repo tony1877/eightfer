@@ -8,8 +8,8 @@ Method:
 - Separately, quantize a base (IQ4_XS or Q4_K), then quantize the residual `W - deq(base)`.
 - Compare the relative RMSE of every variant against the original weights. No imatrix is used.
 
-Result (`results.txt`): IQ4_XS + Q4_K residual (8.75 bpw) has **0.89×** the error of Q8_0 on all three tensors.
-With a Q5_K residual it has 0.46×.
+Result (`results.txt`): IQ4_XS + Q4_K residual (8.75 bpw) has **0.89x** the error of Q8_0 on all three tensors.
+With a Q5_K residual it has 0.46x.
 
 This is weight-space error only. Output-level KLD comes in milestone M3.
 

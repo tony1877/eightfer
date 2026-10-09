@@ -1,12 +1,12 @@
-// bct_rt.cpp — bit-exact round trip of B-conditioned exact tails on real BF16 tensors.
+// bct_rt.cpp - bit-exact round trip of B-conditioned exact tails on real BF16 tensors.
 // Encoder sees W and the packed base(s). Decoder sees ONLY the packed base bytes, the tail bitstream
 // and the escape list, recomputes every cell from the base bytes, parses the self-delimiting code and
 // rebuilds the BF16 bit pattern. Every weight is compared bit-for-bit.
 //   scheme A: B=IQ4_XS, tail = V2 code of key(W) inside B's cell          (two-level: B | exact)
 //   scheme C: B=IQ4_XS, T1 = j-bit uniform refinement (fixed width, no scales), T2 = V2 in sub-cell
-//   scheme R: B=IQ4_XS, R=Q4_K of (W - deq B) (current plan), T2 = V2 in (B cell ∩ R cell)
+//   scheme R: B=IQ4_XS, R=Q4_K of (W - deq B) (current plan), T2 = V2 in (B cell intersect R cell)
 // V2 code: [1 sign bit if the cell straddles 0] [unary binade from the top, if >1 binade]
-//          [mantissa offset, width ceil(log2(#codes in that binade ∩ cell))]. All widths follow from
+//          [mantissa offset, width ceil(log2(#codes in that binade intersect cell))]. All widths follow from
 //          the base and the bits already read, so no entropy coder and no stored lengths are needed.
 #include "ggml.h"
 #include "ggml-cpu.h"

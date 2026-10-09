@@ -18,7 +18,7 @@ Results (`results.txt`, all three tensors agree):
 | k=1 | 4.50 bpw | 0.104 | 6 bits |
 | k=2 | 5.49 bpw | 0.053 | 5 bits |
 | k=3 | 6.49 bpw | 0.027 | 4 bits |
-| for comparison: IQ4_XS / Q4_K / Q6_K / Q8_0 | 4.25 / 4.5 / 6.56 / 8.5 | 0.077 / 0.072 / 0.018 / 0.0054 | — |
+| for comparison: IQ4_XS / Q4_K / Q6_K / Q8_0 | 4.25 / 4.5 / 6.56 / 8.5 | 0.077 / 0.072 / 0.018 / 0.0054 | - |
 
 So exact BF16 can be stored in ~10.5 bits instead of 16, and the bits removed from a truncated weight are pure noise
 (full entropy), which must be stored as-is for exactness.

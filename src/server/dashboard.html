@@ -114,12 +114,12 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
     <div class="now">
       <div>
         <div class="cap" id="nowCap">Writing speed</div>
-        <div class="big" id="big">–<small>tok/s</small></div>
+        <div class="big" id="big">-<small>tok/s</small></div>
       </div>
       <dl class="kv" id="nowKv"></dl>
     </div>
     <div class="chartbox">
-      <div class="row"><span class="cap">Tokens per second · last 2 minutes</span><span class="mono" id="peak"></span></div>
+      <div class="row"><span class="cap">Tokens per second, last 2 minutes</span><span class="mono" id="peak"></span></div>
       <canvas id="speed" aria-label="Tokens per second over the last two minutes"></canvas>
     </div>
   </section>
@@ -142,14 +142,14 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
       <div id="rows"></div>
     </div>
   </section>
-  <footer><span id="foot"></span><span>live · 4 updates a second</span></footer>
+  <footer><span id="foot"></span><span>live, 4 updates a second</span></footer>
 </div>
 <script>
 const $ = id => document.getElementById(id);
-const fmt = (v, d = 0) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
-const k = v => v == null ? "–" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
-const GiB = 1073741824, gb = b => b == null ? "–" : fmt(b / GiB, 1);
-const dur = s => s == null || !isFinite(s) ? "–" : s < 1 ? fmt(s * 1000) + " ms" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s" : s < 3600 ? Math.floor(s / 60) + " min" : fmt(s / 3600, 1) + " h";
+const fmt = (v, d = 0) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const k = v => v == null ? "-" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
+const GiB = 1073741824, gb = b => b == null ? "-" : fmt(b / GiB, 1);
+const dur = s => s == null || !isFinite(s) ? "-" : s < 1 ? fmt(s * 1000) + " ms" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s" : s < 3600 ? Math.floor(s / 60) + " min" : fmt(s / 3600, 1) + " h";
 const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
 const pct = (a, b) => b > 0 ? 100 * a / b : null;
@@ -186,7 +186,7 @@ function drawSpeed(nowS) {
     g.fillText(fmt(v), padL - 8, y + 3.5);
   }
   g.setLineDash([]); g.textAlign = "center";
-  for (const s of [120, 90, 60, 30]) g.fillText(s === 120 ? "−2 min" : `−${s}s`, X(nowS - s), H - 3);
+  for (const s of [120, 90, 60, 30]) g.fillText(s === 120 ? "-2 min" : `-${s}s`, X(nowS - s), H - 3);
   // segments where the model was writing
   let seg = [];
   const segs = [];
@@ -222,7 +222,7 @@ function drawChecks(nowS) {
     g.fillRect(Math.round(x) - 1, H - 1 - h, 2, h);
   }
   g.globalAlpha = 1;
-  if (!recent.length) { g.fillStyle = C.muted; g.font = "12px Geist, sans-serif"; g.textAlign = "left"; g.fillText(live.busy ? "reading the prompt…" : "Each bar is one pass of the full model; its height is how many drafted tokens it confirmed.", 0, H / 2 + 4); }
+  if (!recent.length) { g.fillStyle = C.muted; g.font = "12px Geist, sans-serif"; g.textAlign = "left"; g.fillText(live.busy ? "reading the prompt..." : "Each bar is one pass of the full model; its height is how many drafted tokens it confirmed.", 0, H / 2 + 4); }
 }
 // ---- PCIe link: a hairline with a light running along it while the residual streams
 function drawLink(nowS) {
@@ -264,8 +264,8 @@ const speedOf = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r
 // prompt reading: the new (uncached) tokens and how fast they were read; a speed only when there were enough of them
 const readText = r => {
   const fresh = r.prompt_tokens - r.reused_tokens;
-  if (!(r.prefill_s > 0)) return "–";
-  return fresh >= 256 ? `${dur(r.prefill_s)} · ${k(fresh / r.prefill_s)}/s` : dur(r.prefill_s);
+  if (!(r.prefill_s > 0)) return "-";
+  return fresh >= 256 ? `${dur(r.prefill_s)}, ${k(fresh / r.prefill_s)}/s` : dur(r.prefill_s);
 };
 const readSpeed = R => { const B = R.filter(r => r.prompt_tokens - r.reused_tokens >= 256 && r.prefill_s > 0);
   const s = sum(B, r => r.prefill_s); return s > 0 ? sum(B, r => r.prompt_tokens - r.reused_tokens) / s : null; };
@@ -281,7 +281,7 @@ function renderHeader(d) {
   const h = c.join(""); if ($("crumbs").dataset.h !== h) { $("crumbs").innerHTML = h; $("crumbs").dataset.h = h; }
   const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
   $("status").className = "status" + (writing ? " writing" : reading ? " reading" : live.down ? " off" : "");
-  $("statusText").textContent = live.down ? "offline" : writing ? "writing" : reading ? "reading prompt" : loaded ? "idle" : "idle · model unloaded";
+  $("statusText").textContent = live.down ? "offline" : writing ? "writing" : reading ? "reading prompt" : loaded ? "idle" : "idle, model unloaded";
 }
 function renderNow() {
   const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
@@ -295,15 +295,15 @@ function renderNow() {
     rows = [["Prompt", k(live.prompt) + " tok"], ["Elapsed", dur(live.elapsed_s)], ["", ""]];
   } else {
     cap = last ? "Last answer" : "Writing speed"; target = last ? last.gen_tokens / last.decode_s : null;
-    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"], ["Prompt", `${k(last.prompt_tokens)} · ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`], ["Read", readText(last)]] : [["", ""]];
+    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"], ["Prompt", `${k(last.prompt_tokens)}, ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`], ["Read", readText(last)]] : [["", ""]];
   }
   $("nowCap").textContent = cap;
   const h = rows.filter(r => r[0]).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join("");
   if ($("nowKv").dataset.h !== h) { $("nowKv").innerHTML = h; $("nowKv").dataset.h = h; }
-  $("perCheck").textContent = ls ? `last answer: ${fmt(ls.gen_tokens / ls.spec.cycles, 1)} tok per check · ${fmt(1000 * ls.spec.verify_s / ls.spec.cycles, 0)} ms each` : "";
+  $("perCheck").textContent = ls ? `last answer: ${fmt(ls.gen_tokens / ls.spec.cycles, 1)} tok per check, ${fmt(1000 * ls.spec.verify_s / ls.spec.cycles, 0)} ms each` : "";
 }
 function tweenBig() {  // the number eases toward its target instead of jumping
-  if (target == null) { $("big").innerHTML = `${live.busy ? "…" : "–"}<small>tok/s</small>`; shown = null; return; }
+  if (target == null) { $("big").innerHTML = `${live.busy ? "..." : "-"}<small>tok/s</small>`; shown = null; return; }
   shown = shown == null ? target : shown + (target - shown) * .12;
   $("big").innerHTML = `${fmt(shown, 0)}<small>tok/s</small>`;
 }
@@ -330,10 +330,10 @@ function renderMem() {
   const perCheckS = ls ? ls.spec.verify_s / ls.spec.cycles : null, bw = perCheckS && res ? res / perCheckS : null;
   const writing = live.busy && live.gen > 0;
   const p = `<div class="mhead"><b>PCIe link</b><span class="mono">${writing ? "streaming" : live.busy ? "prompt" : "quiet"}</span></div>
-    <div class="mval">${bw ? fmt(bw / 1e9, 0) : "–"}<small>GB/s during a check</small></div>
+    <div class="mval">${bw ? fmt(bw / 1e9, 0) : "-"}<small>GB/s during a check</small></div>
     <canvas id="link"></canvas>
-    <div class="legend"><div><span>Residual sent per check</span><span class="mono">${res ? gb(res) + " GB" : "–"}</span></div>
-      <div><span>Check takes</span><span class="mono">${perCheckS ? fmt(perCheckS * 1000, 0) + " ms" : "–"}</span></div></div>`;
+    <div class="legend"><div><span>Residual sent per check</span><span class="mono">${res ? gb(res) + " GB" : "-"}</span></div>
+      <div><span>Check takes</span><span class="mono">${perCheckS ? fmt(perCheckS * 1000, 0) + " ms" : "-"}</span></div></div>`;
   if ($("pcie").dataset.h !== p) { $("pcie").innerHTML = p; $("pcie").dataset.h = p; }
 }
 function renderList() {
@@ -342,10 +342,10 @@ function renderList() {
   const R = s ? s.R : [];
   const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), misses = R.filter(r => r.miss).length;
   const isLive = s && (live.busy || Date.now() / 1e3 - s.end < GAP);
-  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session · started ${clock(s.start).slice(0, 5)} · <b>${plural(R.length, "request")}</b> · <b>${k(sum(R, r => r.gen_tokens))}</b> tokens · <b>${fmt(speedOf(R), 0)}</b> tok/s writing${readSpeed(R) ? ` · <b>${k(readSpeed(R))}</b>/s reading` : ""} · <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? ` · <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
+  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session, started ${clock(s.start).slice(0, 5)}, <b>${plural(R.length, "request")}</b>, <b>${k(sum(R, r => r.gen_tokens))}</b> tokens, <b>${fmt(speedOf(R), 0)}</b> tok/s writing${readSpeed(R) ? `, <b>${k(readSpeed(R))}</b>/s reading` : ""}, <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? `, <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
   let html = "";
   if (live.busy) {
-    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">–</span><span class="mono">${live.gen > 0 ? "done" : "reading…"}</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) : "…"}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
+    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">-</span><span class="mono">${live.gen > 0 ? "done" : "reading..."}</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) : "..."}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
   }
   const rows = R.slice(-14).reverse();
   for (const r of rows) {
@@ -357,7 +357,7 @@ function renderList() {
     if (r.tool_calls) tg.push(`<span class="tg">${plural(r.tool_calls, "tool call")}</span>`);
     if (r.loop) tg.push(`<span class="tg warn">repetition</span>`);
     if (r.finish === "length") tg.push(`<span class="tg warn">cut off</span>`);
-    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${readText(r)}</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</span><span class="tagz">${tg.join("")}</span></div>`;
+    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${readText(r)}</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "-"}</span><span class="tagz">${tg.join("")}</span></div>`;
   }
   if (!html) html = `<div class="empty">Requests show up here as dsh sends them.</div>`;
   if ($("rows").dataset.h !== html) { $("rows").innerHTML = html; $("rows").dataset.h = html; }

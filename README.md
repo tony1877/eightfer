@@ -8,16 +8,16 @@ The idea is **8-bit quality at 4-bit residency**. Each weight is stored as a 4-b
 - The base lives in VRAM. It drafts tokens at full GPU speed.
 - The residual lives in system RAM or on NVMe. Base + residual verify the drafts.
 
-Speculative sampling makes the result lossless relative to the ≈Q8 model.
+Speculative sampling makes the result lossless relative to the ~Q8 model.
 For the 176B Flash-Next, experts stream from NVMe through a VRAM/RAM heat cache.
 Its 51B n-gram table is read straight from disk at full BF16 precision.
 
-- [`docs/DESIGN.md`](docs/DESIGN.md) — design, memory budgets, estimates, milestones.
-- [`docs/SPEED2X.md`](docs/SPEED2X.md) — plan for ~2x decode speed (lossless) and 200k context on both models.
-- [`docs/BITLEVEL.md`](docs/BITLEVEL.md) — bit-level lossless mode: exact BF16 rebuilt from the 4-bit draft's own bits.
-- [`experiments/exact_tail`](experiments/exact_tail) — the bit-exact rebuild (0 mismatches over 204.5M real weights).
-- [`experiments/nested_quant`](experiments/nested_quant) — first measurement on real Qwen3.8-27B weights.
-  An IQ4_XS base plus a Q4_K residual has 0.89× the weight error of Q8_0.
+- [`docs/DESIGN.md`](docs/DESIGN.md) - design, memory budgets, estimates, milestones.
+- [`docs/SPEED2X.md`](docs/SPEED2X.md) - plan for ~2x decode speed (lossless) and 200k context on both models.
+- [`docs/BITLEVEL.md`](docs/BITLEVEL.md) - bit-level lossless mode: exact BF16 rebuilt from the 4-bit draft's own bits.
+- [`experiments/exact_tail`](experiments/exact_tail) - the bit-exact rebuild (0 mismatches over 204.5M real weights).
+- [`experiments/nested_quant`](experiments/nested_quant) - first measurement on real Qwen3.8-27B weights.
+  An IQ4_XS base plus a Q4_K residual has 0.89x the weight error of Q8_0.
 
 Status: **M1 done**. `shoehorn bench` measures the numbers the design depends on; the target box's results are in
 [`bench/results/2026-10-04-rtx5080-9800x3d`](bench/results/2026-10-04-rtx5080-9800x3d/README.md). It doesn't run
@@ -25,7 +25,7 @@ models yet (M2 next).
 
 ## Build (Windows)
 
-Needs Git, the CUDA Toolkit ≥ 12.8, and **Visual Studio 2022** Build Tools with the C++ workload.
+Needs Git, the CUDA Toolkit >= 12.8, and **Visual Studio 2022** Build Tools with the C++ workload.
 CUDA 13.0 does not accept VS 2026 as host compiler. Install the Build Tools if `build.ps1` says they're missing:
 
 ```powershell
@@ -49,7 +49,7 @@ Close anything holding VRAM first; check with `nvidia-smi`. Then:
 .\build\bin\shoehorn.exe bench 2>&1 | Tee-Object bench.txt
 ```
 
-What it does (about 3–5 minutes):
+What it does (about 3-5 minutes):
 
 - RAM read bandwidth, then ggml matrix-vector speed on the CPU and the GPU, 1 to 16 tokens per pass.
 - Pins up to 16 GiB of RAM, then measures GPU upload/download speed, alone and while the CPU is also reading RAM.
