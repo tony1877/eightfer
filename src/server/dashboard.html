@@ -5,268 +5,241 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>shoehorn</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@112,500;112,700;112,800;100,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;500;700;900&family=Chivo+Mono:wght@400;500;700&display=swap">
 <style>
-/* Layout: an instrument panel. Readout + "the fit" up top, then the session tape and its log, then the guessing gauges. */
+/* Layout: a single-screen cockpit. Live speed and the token belt fill the left, the memory column (RAM -> PCIe -> GPU) stands on the right, the session strip runs along the bottom. Dark only, by choice. */
 :root {
-  --bg: #eceeec; --panel: #f7f8f6; --ink: #15191a; --ink2: #4b5355; --muted: #838b8d; --line: #d6dbd9; --track: #e3e6e4;
-  --brass: #94650f; --brass-hi: #b98222; --brass-soft: #efe2c4; --steel: #2d6db0; --steel-soft: #d3e2f3;
-  --good: #23803e; --warn: #a86f00; --bad: #c23a3a; --hatch: #c9cecc;
-  --f-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
-  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg: #0e1011; --panel: #15181a; --ink: #e8eae7; --ink2: #a7aeaf; --muted: #6d7577; --line: #252a2d; --track: #1d2123;
-    --brass: #d5a447; --brass-hi: #f0c063; --brass-soft: #3a2e15; --steel: #5d9ee3; --steel-soft: #1b3047;
-    --good: #46b866; --warn: #d9a42b; --bad: #e86a6a; --hatch: #2c3235;
-  }
-}
-:root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0e1011; --panel: #15181a; --ink: #e8eae7; --ink2: #a7aeaf; --muted: #6d7577; --line: #252a2d; --track: #1d2123;
-  --brass: #d5a447; --brass-hi: #f0c063; --brass-soft: #3a2e15; --steel: #5d9ee3; --steel-soft: #1b3047;
-  --good: #46b866; --warn: #d9a42b; --bad: #e86a6a; --hatch: #2c3235;
+  --bg: #090b0e; --deck: #10141a; --deck2: #151a21; --ink: #e9ecef; --ink2: #9aa4ae; --muted: #5d6874; --line: #1f2630;
+  --brass: #e4ac4c; --brass-dim: #6b5224; --cyan: #5cc0e6; --cyan-dim: #1f4d61; --good: #4fca72; --warn: #e8b13a; --bad: #f06a6a;
+  --f-ui: "Chivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-num: "Chivo Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; }
-body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--f-body); padding: 0 20px; }
-.mono, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
-.wrap { max-width: 1240px; margin: 0 auto; padding-block: 18px 56px; display: grid; gap: 18px; }
-h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; }
-.eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--f-ui); padding: 0 18px; overflow-x: hidden; }
+.num { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
+.cockpit { max-width: 1500px; margin: 0 auto; min-height: 100%; padding-block: 14px 16px; display: grid; grid-template-rows: auto 1fr auto; gap: 14px; }
 :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
-@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
 /* top bar */
-.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand svg { width: 30px; height: 30px; }
-.brand h1 { font-size: 22px; font-weight: 800; font-stretch: 112%; letter-spacing: -.01em; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip { font-family: var(--f-mono); font-size: 12px; color: var(--ink2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; background: var(--panel); white-space: nowrap; }
-.chip b { color: var(--ink); font-weight: 500; }
-.top .sp { flex: 1; }
-.state { display: inline-flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink2); }
-.led { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
-.led.on { background: var(--good); box-shadow: 0 0 0 0 var(--good); animation: led 1.3s ease-out infinite; }
-.led.off { background: var(--bad); }
-@keyframes led { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 50%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
-.btn { font: 500 12px var(--f-mono); color: var(--ink2); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; cursor: pointer; }
-.btn:hover { color: var(--ink); border-color: var(--muted); }
+.bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.mark { display: flex; align-items: center; gap: 9px; font-weight: 900; font-size: 19px; letter-spacing: -.01em; }
+.mark svg { width: 26px; height: 26px; }
+.tag { font: 500 12px var(--f-num); color: var(--ink2); border: 1px solid var(--line); background: var(--deck); border-radius: 5px; padding: 3px 8px; white-space: nowrap; }
+.tag b { color: var(--ink); font-weight: 500; }
+.bar .sp { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 8px; font: 700 12px var(--f-num); letter-spacing: .12em; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink2); background: var(--deck); }
+.pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.writing { color: var(--brass); border-color: var(--brass-dim); } .pill.writing i { background: var(--brass); box-shadow: 0 0 10px var(--brass); animation: blink 1s ease-in-out infinite; }
+.pill.reading { color: var(--cyan); border-color: var(--cyan-dim); } .pill.reading i { background: var(--cyan); box-shadow: 0 0 10px var(--cyan); animation: blink .6s ease-in-out infinite; }
+.pill.off i { background: var(--bad); }
+@keyframes blink { 50% { opacity: .35; } }
 
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; min-width: 0; }
-.panel h2 { font-size: 15px; font-weight: 700; font-stretch: 112%; letter-spacing: .01em; }
-.panel .lede { color: var(--ink2); margin: 4px 0 0; max-width: 62ch; }
+/* main */
+.main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 14px; min-height: 0; }
+@media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+.deck { background: var(--deck); border: 1px solid var(--line); border-radius: 12px; min-width: 0; position: relative; overflow: hidden; }
+.label { font: 500 11px var(--f-num); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
 
-/* hero */
-.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px; }
-@media (max-width: 920px) { .hero { grid-template-columns: 1fr; } }
-.readout { display: grid; grid-template-rows: auto auto 1fr auto; gap: 6px; }
-.readout .big { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
-.readout .big b { font-family: var(--f-display); font-weight: 800; font-stretch: 112%; font-size: clamp(64px, 9vw, 104px); line-height: .9; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
-.readout .big span { font-family: var(--f-mono); color: var(--ink2); font-size: 14px; }
-.readout .say { font-size: 15px; color: var(--ink); min-height: 22px; }
-.readout .say small { color: var(--ink2); font-size: 14px; }
-svg.trace { width: 100%; height: 120px; display: block; margin-top: 6px; align-self: end; }
+.live { display: grid; grid-template-rows: auto auto auto auto; align-content: space-between; padding: 20px 22px 16px; gap: 6px; }
+.speed { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.speed .n { font: 700 clamp(84px, 13vw, 168px)/.82 var(--f-num); letter-spacing: -.06em; font-variant-numeric: tabular-nums; transition: color .4s; }
+.speed .u { font: 500 15px var(--f-num); color: var(--ink2); padding-bottom: 10px; }
+.speed .side { margin-left: auto; text-align: right; padding-bottom: 8px; display: grid; gap: 2px; }
+.speed .side b { font: 700 22px var(--f-num); }
+.speed .side span { font-size: 12px; color: var(--muted); }
+.live.writing .speed .n { color: var(--brass); text-shadow: 0 0 40px color-mix(in srgb, var(--brass) 35%, transparent); }
+.status { font-size: 16px; color: var(--ink2); min-height: 24px; }
+.status b { color: var(--ink); font-weight: 500; }
+canvas { display: block; width: 100%; }
+#belt { height: clamp(170px, 34vh, 380px); }
+#trace { height: 70px; }
+.beltnote { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 
-.fit .bars { display: grid; gap: 16px; margin-top: 16px; }
-.mbar .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
-.mbar .row1 b { font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 14px; letter-spacing: .02em; }
-.mbar .row1 span { font-family: var(--f-mono); font-size: 12px; color: var(--ink2); }
-.mbar .track { display: flex; height: 30px; border-radius: 5px; overflow: hidden; background: var(--track); }
-.mbar .seg { height: 100%; min-width: 2px; border-right: 2px solid var(--panel); transition: flex-grow .8s ease; position: relative; }
-.mbar .seg:last-child { border-right: 0; }
-.seg.w { background: var(--brass); } .seg.k { background: var(--steel); }
-.seg.o { background: repeating-linear-gradient(135deg, var(--hatch) 0 5px, transparent 5px 9px); }
-.seg.f { background: transparent; }
-.mbar .keys { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 7px; font-size: 12.5px; color: var(--ink2); }
-.mbar .keys i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
-.mbar .keys .mono { color: var(--ink); }
-.pcie { display: flex; align-items: center; gap: 10px; margin-top: 2px; font-size: 13px; color: var(--ink2); }
-.pcie svg { flex: 0 0 auto; width: 120px; height: 18px; }
-.flow { stroke: var(--brass); stroke-width: 2; stroke-dasharray: 4 6; animation: flow 1s linear infinite; }
-.flow.idle { animation-duration: 6s; opacity: .45; }
-@keyframes flow { to { stroke-dashoffset: -20; } }
+.mem { display: grid; grid-template-rows: auto 1fr auto; padding: 18px 18px 16px; gap: 10px; }
+.box { border: 1px solid var(--line); background: var(--deck2); border-radius: 9px; padding: 12px 13px; }
+.box .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.box .hd b { font-weight: 700; font-size: 14px; }
+.box .hd span { font: 12px var(--f-num); color: var(--ink2); }
+.meter { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: #0b0e12; margin-top: 9px; }
+.meter i { display: block; height: 100%; border-right: 2px solid var(--deck2); transition: flex-grow .8s ease; }
+.meter i:last-child { border-right: 0; }
+.m-w { background: var(--brass); } .m-k { background: var(--cyan); } .m-o { background: repeating-linear-gradient(135deg, #2a323c 0 4px, transparent 4px 8px); } .m-f { background: transparent; }
+.keys { display: grid; gap: 3px; margin-top: 9px; font-size: 12.5px; color: var(--ink2); }
+.keys div { display: flex; justify-content: space-between; gap: 8px; }
+.keys i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 7px; }
+.keys .num { color: var(--ink); }
+.pipe { position: relative; min-height: 120px; display: grid; place-items: center; overflow: hidden; }
+#pcie { contain: strict; }
+#pcie { position: absolute; inset: 0; height: 100%; }
+.pipe .cap { position: relative; font: 500 11px var(--f-num); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); background: var(--deck); padding: 3px 8px; border-radius: 4px; text-align: center; }
+.pipe .cap b { display: block; font: 500 12px var(--f-num); letter-spacing: 0; text-transform: none; color: var(--ink2); margin-top: 2px; }
 
-/* session */
-.sesshead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; max-width: 100%; }
-.tab { flex: 0 0 auto; font: 500 12.5px var(--f-mono); color: var(--ink2); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
-.tab:hover { color: var(--ink); border-color: var(--muted); }
-.tab[aria-pressed="true"] { color: var(--ink); background: var(--brass-soft); border-color: var(--brass); }
-.tab .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 6px; vertical-align: 1px; }
-.story { font-size: 16px; line-height: 1.65; max-width: 78ch; margin: 0; }
-.story b { font-weight: 600; }
-.story .hl { font-family: var(--f-mono); font-weight: 600; color: var(--brass); }
-
-.readings { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); margin-top: 16px; }
-@media (max-width: 760px) { .readings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.reading { padding: 14px 16px 2px 0; }
-.reading + .reading { padding-left: 16px; border-left: 1px solid var(--line); }
-@media (max-width: 760px) { .reading:nth-child(3) { border-left: 0; padding-left: 0; } }
-.reading .v { font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 30px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.reading .v small { font-family: var(--f-mono); font-size: 12px; font-weight: 400; color: var(--ink2); letter-spacing: 0; margin-left: 4px; }
-.reading .l { font-size: 13px; color: var(--ink2); }
-
-.body2 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; }
-@media (max-width: 920px) { .body2 { grid-template-columns: 1fr; } }
-svg.tape { width: 100%; height: 150px; display: block; margin-top: 14px; }
-.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
-.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
-.ax { fill: var(--muted); font: 11px var(--f-mono); }
-.gl { stroke: var(--line); }
-
-.log { list-style: none; margin: 12px 0 0; padding: 0; max-height: 360px; overflow-y: auto; }
-.log li { display: grid; grid-template-columns: 46px 14px minmax(0, 1fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
-.log li:last-child { border-bottom: 0; }
-.log time { font: 12px var(--f-mono); color: var(--muted); padding-top: 1px; }
-.log .mk { width: 8px; height: 8px; border-radius: 2px; margin-top: 6px; background: var(--muted); }
-.log .mk.good { background: var(--good); } .log .mk.warn { background: var(--warn); } .log .mk.bad { background: var(--bad); } .log .mk.brass { background: var(--brass); }
-.log .quiet { color: var(--ink2); }
-
-/* guessing */
-.gauges { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; margin-top: 16px; }
-@media (max-width: 860px) { .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.gauge .v { font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 26px; font-variant-numeric: tabular-nums; }
-.gauge .v small { font-family: var(--f-mono); font-size: 12px; font-weight: 400; color: var(--ink2); margin-left: 4px; }
-.gauge .l { font-size: 13px; font-weight: 500; }
-.gauge .m { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
-.meter { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin-top: 8px; display: flex; }
-.meter i { display: block; height: 100%; background: var(--brass); transition: width .8s ease; }
-.meter i + i { background: var(--steel); }
-
-details.ledger summary { cursor: pointer; font-family: var(--f-display); font-weight: 700; font-stretch: 112%; font-size: 15px; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-details.ledger summary::-webkit-details-marker { display: none; }
-details.ledger summary::after { content: "Show"; font: 500 12px var(--f-mono); color: var(--ink2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; }
-details.ledger[open] summary::after { content: "Hide"; }
-.tablewrap { overflow-x: auto; max-height: 460px; overflow-y: auto; margin-top: 14px; }
-table { width: 100%; border-collapse: collapse; font: 12.5px var(--f-mono); font-variant-numeric: tabular-nums; }
-th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-th:first-child, td:first-child, th:last-child, td:last-child { text-align: left; }
-th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
-tbody tr:hover { background: var(--track); }
-.empty { color: var(--muted); padding: 22px 0; text-align: center; }
-
-#tip { position: fixed; pointer-events: none; z-index: 30; max-width: 300px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
-  padding: 9px 11px; font-size: 13px; line-height: 1.45; box-shadow: 0 10px 30px rgba(0,0,0,.22); opacity: 0; transition: opacity .1s; }
-#tip time { display: block; font: 11px var(--f-mono); color: var(--muted); margin-bottom: 3px; }
-@media (max-width: 520px) { body { padding: 0 16px; } .panel { padding: 16px; } }
+/* session strip */
+.strip { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 900px) { .strip { grid-template-columns: 1fr; } }
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 14px 6px; }
+@media (max-width: 620px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 12px; } }
+.stat { padding: 0 14px; border-left: 1px solid var(--line); }
+.stat:first-child { border-left: 0; }
+.stat b { display: block; font: 700 24px var(--f-num); letter-spacing: -.03em; }
+.stat b small { font-size: 12px; font-weight: 400; color: var(--ink2); letter-spacing: 0; margin-left: 3px; }
+.stat span { font-size: 12px; color: var(--muted); }
+.events { padding: 12px 16px; display: grid; gap: 5px; align-content: start; }
+.ev { display: grid; grid-template-columns: 44px 8px minmax(0, 1fr); gap: 9px; align-items: baseline; font-size: 13px; color: var(--ink2); animation: in .5s ease both; }
+.ev time { font: 12px var(--f-num); color: var(--muted); }
+.ev i { width: 7px; height: 7px; border-radius: 2px; background: var(--muted); align-self: center; }
+.ev.good i { background: var(--good); } .ev.warn i { background: var(--warn); } .ev.bad i { background: var(--bad); } .ev.brass i { background: var(--brass); }
+.ev.good, .ev.warn, .ev.bad { color: var(--ink); }
+@keyframes in { from { opacity: 0; transform: translateY(4px); } }
+.foot { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.foot a { color: var(--ink2); }
+@media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
+@media (max-width: 520px) { body { padding: 0 16px; } .live { padding: 16px; } }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header class="top">
-    <div class="brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="brassg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="var(--brass-hi)"/><stop offset="1" stop-color="var(--brass)"/></linearGradient></defs>
-        <path d="M13.2 3h5.6a2.2 2.2 0 0 1 2.2 2.2v5.3c0 2.6 3.4 6 3.4 11.4 0 4.4-4 7.1-8.4 7.1s-8.4-2.7-8.4-7.1c0-5.4 3.4-8.8 3.4-11.4V5.2A2.2 2.2 0 0 1 13.2 3z" fill="url(#brassg)"/>
-        <circle cx="16" cy="7" r="1.6" fill="var(--bg)"/><path d="M11.4 22.5c.6 2.4 2.5 3.6 4.6 3.6" fill="none" stroke="var(--bg)" stroke-width="1.6" stroke-linecap="round" opacity=".55"/></svg>
-      <h1>shoehorn</h1>
+<div class="cockpit">
+  <header class="bar">
+    <div class="mark">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="bg1" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#f4c56c"/><stop offset="1" stop-color="#c88a2c"/></linearGradient></defs>
+        <path d="M13.2 3h5.6a2.2 2.2 0 0 1 2.2 2.2v5.3c0 2.6 3.4 6 3.4 11.4 0 4.4-4 7.1-8.4 7.1s-8.4-2.7-8.4-7.1c0-5.4 3.4-8.8 3.4-11.4V5.2A2.2 2.2 0 0 1 13.2 3z" fill="url(#bg1)"/>
+        <circle cx="16" cy="7" r="1.6" fill="#090b0e"/></svg>
+      shoehorn
     </div>
-    <div class="chips" id="chips"></div>
+    <span class="tag" id="tModel">–</span>
+    <span class="tag" id="tCtx"></span>
+    <span class="tag" id="tKv"></span>
     <span class="sp"></span>
-    <span class="state"><span class="led" id="led"></span><span id="stateText">connecting</span></span>
-    <button class="btn" id="theme" type="button" aria-label="Switch light or dark theme">Theme</button>
+    <span class="pill" id="pill"><i></i><span id="pillText">connecting</span></span>
   </header>
 
-  <section class="hero">
-    <div class="panel readout">
-      <span class="eyebrow" id="roLabel">Writing speed</span>
-      <div class="big"><b id="roNum">–</b><span>tokens / s</span></div>
-      <svg class="trace" id="trace" role="img" aria-label="Writing speed over the last two minutes"></svg>
-      <div class="say" id="roSay">Connecting to the server…</div>
+  <section class="main">
+    <div class="deck live" id="live">
+      <span class="label" id="liveLabel">Writing speed</span>
+      <div class="speed">
+        <span class="n" id="spd">–</span><span class="u">tokens / s</span>
+        <div class="side"><b class="num" id="sideN">–</b><span id="sideL">tokens this answer</span></div>
+      </div>
+      <canvas id="belt" aria-label="Tokens confirmed by each check of the full model"></canvas>
+      <div>
+        <canvas id="trace" aria-label="Writing speed over the last two minutes"></canvas>
+        <div class="beltnote"><span id="beltNote">Each block group is the tokens one check of the full model confirmed.</span><span>speed, last 2 min</span></div>
+      </div>
     </div>
-    <div class="panel fit">
-      <span class="eyebrow">The fit</span>
-      <h2 style="margin-top:6px" id="fitTitle">The model and where it lives</h2>
-      <p class="lede" id="fitSay">Reading memory…</p>
-      <div class="bars" id="bars"></div>
+
+    <div class="deck mem">
+      <div class="box" id="gpu"></div>
+      <div class="pipe"><canvas id="pcie"></canvas><span class="cap">PCIe<b id="pipeText">idle</b></span></div>
+      <div class="box" id="ram"></div>
     </div>
   </section>
 
-  <section class="panel">
-    <div class="sesshead">
-      <span class="eyebrow">Session</span>
-      <div class="tabs" id="tabs" role="group" aria-label="Pick a session"></div>
-    </div>
-    <p class="story" id="story" style="margin-top:12px"></p>
-    <div class="readings" id="readings"></div>
+  <section class="strip">
+    <div class="deck stats" id="stats"></div>
+    <div class="deck events" id="events"></div>
   </section>
-
-  <section class="body2">
-    <div class="panel">
-      <h2>Session tape</h2>
-      <p class="lede">Every request on the clock. The gaps are time spent on your side: reading, typing, running tools.</p>
-      <svg class="tape" id="tape" role="img" aria-label="Requests over the session's time"></svg>
-      <div class="legend"><span><i style="background:var(--steel)"></i>reading the prompt</span><span><i style="background:var(--brass)"></i>writing</span><span><i style="background:var(--bad)"></i>re-reading after a cache miss</span></div>
-    </div>
-    <div class="panel">
-      <h2>What happened</h2>
-      <ul class="log" id="log"></ul>
-    </div>
-  </section>
-
-  <section class="panel">
-    <span class="eyebrow">Guessing ahead</span>
-    <h2 style="margin-top:6px">How the speculation went</h2>
-    <p class="lede">Shoehorn drafts several tokens with cheap guesses, then checks them all in one pass of the full model. Every check costs the same trip across PCIe, so the more guesses it keeps, the faster it writes.</p>
-    <div class="gauges" id="gauges"></div>
-  </section>
-
-  <details class="panel ledger" id="ledger">
-    <summary>Request ledger</summary>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Time</th><th>Prompt</th><th>Cached</th><th>Read in</th><th>Wrote</th><th>tok/s</th><th>tok/check</th><th>Notes</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table></div>
-  </details>
+  <div class="foot"><span id="sessNote"></span><span>shoehorn dashboard · updates 4× a second</span></div>
 </div>
-<div id="tip" role="tooltip"></div>
 <script>
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const k = v => v == null ? "–" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
-const GiB = 1073741824, gb = b => b == null ? "–" : fmt(b / GiB, 1);  // the GB Windows shows
-const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const dur = s => s == null || !isFinite(s) ? "–" : s < 1 ? fmt(s * 1000) + " ms" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s"
-  : s < 3600 ? Math.floor(s / 60) + " min" + (s < 600 && Math.round(s % 60) ? " " + Math.round(s % 60) + " s" : "") : fmt(s / 3600, 1) + " h";
+const GiB = 1073741824, gb = b => b == null ? "–" : fmt(b / GiB, 1);
+const dur = s => s == null || !isFinite(s) ? "–" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s" : s < 3600 ? Math.floor(s / 60) + " min" : fmt(s / 3600, 1) + " h";
 const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const day = t => { const d = new Date(t * 1000), n = new Date(), y = new Date(Date.now() - 864e5);
-  return d.toDateString() === n.toDateString() ? "Today" : d.toDateString() === y.toDateString() ? "Yesterday" : d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }); };
 const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
 const pct = (a, b) => b > 0 ? 100 * a / b : null;
-const n_ = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : ws || w + "s"}`;
-const speed = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
+const plural = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : ws || w + "s"}`;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const C = { brass: "#e4ac4c", cyan: "#5cc0e6", muted: "#5d6874", line: "#1f2630", ink2: "#9aa4ae", bad: "#f06a6a" };
 const GAP = 300;  // a session ends after 5 minutes without requests
 
-let ALL = [], newest = -1, sel = "latest", live = {}, cfg = {}, mem = {}, loaded = "", prevGen = null, prevT = null, inst = null, trace = [], lastSig = "";
-try { const t = localStorage.getItem("sh.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
-$("theme").onclick = () => {
-  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-  document.documentElement.dataset.theme = dark ? "light" : "dark";
-  try { localStorage.setItem("sh.theme", document.documentElement.dataset.theme); } catch (e) {}
-  lastSig = ""; drawTrace(); render();
-};
+let ALL = [], newest = -1, live = {}, cfg = {}, mem = {}, loaded = "";
+let prevGen = null, prevT = null, rate = null, bursts = [], speedHist = [], lastSample = 0, beltT = 0;  // beltT: ms, advances only while busy
 
-// ---- tooltip
-const tip = $("tip");
-function showTip(e, html) {
-  tip.innerHTML = html; tip.style.opacity = 1;
-  const w = tip.offsetWidth, h = tip.offsetHeight;
-  let x = e.clientX + 14, y = e.clientY + 14;
-  if (x + w > innerWidth - 8) x = e.clientX - w - 14;
-  if (y + h > innerHeight - 8) y = e.clientY - h - 14;
-  tip.style.left = x + "px"; tip.style.top = y + "px";
+// ---------- canvases ----------
+function fit(cv) {
+  const r = cv.getBoundingClientRect(), dpr = Math.max(1, Math.min(2, devicePixelRatio || 1));
+  const w = Math.max(10, Math.round(r.width * dpr)), h = Math.max(10, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, W: r.width, H: r.height };
 }
-const hideTip = () => { tip.style.opacity = 0; };
+// token belt: each poll's new tokens arrive as one group of blocks at the right edge and drift left
+function drawBelt(now) {
+  const { g, W, H } = fit($("belt"));
+  g.clearRect(0, 0, W, H);
+  const v = 70;  // px per second drift
+  const bw = 7, gap = 2, rows = Math.max(3, Math.floor((H - 30) / (bw + gap)));
+  // baseline grid
+  g.strokeStyle = C.line; g.lineWidth = 1;
+  for (let x = W; x > 0; x -= v * 5) { g.beginPath(); g.moveTo(Math.round(x) + .5, 6); g.lineTo(Math.round(x) + .5, H - 18); g.stroke(); }
+  now = beltT;
+  bursts = bursts.filter(b => W - (now - b.t) / 1000 * v > -120);
+  for (const b of bursts) {
+    const age = (now - b.t) / 1000, x0 = W - 8 - age * v - Math.ceil(b.n / rows) * (bw + gap);
+    const cols = Math.ceil(b.n / rows), alpha = live.busy ? Math.max(.25, 1 - age / 14) : Math.max(.35, 1 - age / 14), fresh = Math.max(0, 1 - age * 3);
+    g.fillStyle = b.miss ? C.bad : b.read ? C.cyan : C.brass;
+    for (let i = 0; i < b.n; i++) {
+      const c = Math.floor(i / rows), r = i % rows;
+      const x = x0 + c * (bw + gap), y = H - 22 - (r + 1) * (bw + gap) - fresh * 10 * (1 - r / rows);
+      g.globalAlpha = alpha;
+      g.fillRect(x, y, bw, bw);
+    }
+    g.globalAlpha = Math.min(1, alpha + .2);
+    if (cols >= 1 && b.n > 0) { g.fillStyle = C.ink2; g.font = "11px 'Chivo Mono', monospace"; g.textAlign = "center"; g.fillText(b.label || ("+" + b.n), x0 + cols * (bw + gap) / 2, H - 6); }
+    g.globalAlpha = 1;
+  }
+  if (!live.busy && !bursts.length) {
+    g.fillStyle = C.muted; g.font = "13px Chivo, sans-serif"; g.textAlign = "center";
+    g.fillText(live.down ? "server offline" : "waiting for the next request", W / 2, H / 2);
+  }
+}
+function drawTrace() {
+  const { g, W, H } = fit($("trace"));
+  g.clearRect(0, 0, W, H);
+  const now = Date.now() / 1000, span = 120, pts = speedHist.filter(p => now - p.t <= span);
+  const max = Math.max(30, ...pts.map(p => p.v || 0)) * 1.15;
+  g.strokeStyle = C.line; g.beginPath(); g.moveTo(0, H - .5); g.lineTo(W, H - .5); g.stroke();
+  if (!pts.some(p => p.v != null)) return;
+  const X = t => W - (now - t) / span * W, Y = v => H - 3 - (H - 8) * v / max;
+  g.beginPath(); let pen = false, firstX = 0, lastX = 0;
+  for (const p of pts) { if (p.v == null) { pen = false; continue; } const x = X(p.t), y = Y(p.v); if (!pen) { g.moveTo(x, y); firstX = x; } else g.lineTo(x, y); pen = true; lastX = x; }
+  g.strokeStyle = C.brass; g.lineWidth = 2; g.lineJoin = "round"; g.stroke();
+  const grd = g.createLinearGradient(0, 0, 0, H); grd.addColorStop(0, "rgba(228,172,76,.28)"); grd.addColorStop(1, "rgba(228,172,76,0)");
+  g.lineTo(lastX, H); g.lineTo(firstX, H); g.closePath(); g.fillStyle = grd; g.fill();
+  g.fillStyle = C.muted; g.font = "11px 'Chivo Mono', monospace"; g.textAlign = "left"; g.fillText(fmt(max / 1.15) + " tok/s", 2, 11);
+}
+// PCIe: particles rising from RAM to the GPU while the residual streams (every check)
+const parts = [];
+function drawPcie(dt) {
+  const { g, W, H } = fit($("pcie"));
+  g.clearRect(0, 0, W, H);
+  const cx = W / 2, lanes = [-18, -9, 0, 9, 18];
+  g.strokeStyle = C.line; g.lineWidth = 1;
+  for (const l of lanes) { g.beginPath(); g.moveTo(cx + l + .5, 0); g.lineTo(cx + l + .5, H); g.stroke(); }
+  const streaming = live.busy && live.gen > 0, reading = live.busy && !(live.gen > 0);
+  const rateP = streaming ? 90 : reading ? 40 : 0;   // particles per second
+  if (!reduced) for (let i = 0; i < rateP * dt; i++) parts.push({ l: Math.floor(Math.random() * lanes.length), y: H + Math.random() * 10, v: 140 + Math.random() * 120, c: streaming ? C.brass : C.cyan });
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.y -= p.v * dt;
+    if (p.y < -10) { parts.splice(i, 1); continue; }
+    g.fillStyle = p.c; g.globalAlpha = .55 + .45 * (1 - Math.max(0, p.y) / H);
+    g.fillRect(cx + lanes[p.l] - 1.5, p.y, 3, 8);
+  }
+  g.globalAlpha = 1;
+}
 
-// ---- requests
+// ---------- requests and sessions ----------
 function annotate(R) {
   let main = null;
+  let prevEnd = -Infinity;
   for (const r of R) {
     r.start = r.t - (r.prefill_s || 0) - (r.decode_s || 0);
+    if (r.start - prevEnd > GAP) main = null;  // a new session: nothing to compare with
+    prevEnd = Math.max(prevEnd, r.t);
     r.isSide = r.side === "parked" || r.side == null && main != null && main.prompt_tokens > 4000 && r.prompt_tokens < main.prompt_tokens * 0.4 && r.reused_tokens < 256;
     const fresh = r.prompt_tokens - r.reused_tokens;
     r.miss = !r.isSide && main != null && main.prompt_tokens > 2000 && r.prompt_tokens >= main.prompt_tokens * 0.8 && fresh > Math.max(2000, r.prompt_tokens * 0.5);
@@ -275,275 +248,129 @@ function annotate(R) {
     if (!r.isSide && !r.warmup) main = r;
   }
 }
-function sessions(R) {
+function lastSession() {
   const S = [];
-  for (const r of R) {
+  for (const r of ALL) {
     if (r.warmup) continue;
     const c = S[S.length - 1];
     if (!c || r.start - c.end > GAP) S.push({ start: r.start, end: r.t, R: [r] });
     else { c.R.push(r); c.end = r.t; }
   }
-  S.forEach(s => s.id = "s" + Math.round(s.start));
-  return S;
+  return S[S.length - 1];
 }
-function describe(r) {
-  const fresh = r.prompt_tokens - r.reused_tokens;
-  let s = `<time>${clock(r.t)}${r.isSide ? " · side request" : ""}</time>`;
-  s += r.reused_tokens > 0 ? `Read ${k(fresh)} new tokens in ${dur(r.prefill_s)}; ${k(r.reused_tokens)} came from cache.` : `Read ${k(r.prompt_tokens)} tokens in ${dur(r.prefill_s)}.`;
-  s += ` Wrote ${fmt(r.gen_tokens)} tokens in ${dur(r.decode_s)}${r.gen_tokens >= 16 ? `, ${fmt(r.gen_tokens / r.decode_s, 0)} per second` : ""}.`;
-  if (r.tool_calls) s += ` Ended with ${n_(r.tool_calls, "tool call")}.`;
-  if (r.miss) s += ` <b>Cache miss:</b> the conversation had to be read again.`;
-  if (r.side === "parked") s += ` The conversation was set aside while this ran.`;
-  if (r.side === "resumed") s += ` Picked the conversation back up from where it was set aside.`;
-  if (r.loop) s += ` <b>Repetition</b> showed up in this answer.`;
-  if (r.finish === "length") s += ` <b>Cut off</b> at the token limit.`;
-  return s;
-}
+const speedOf = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
 
-// ---- hero: readout + trace
-function drawTrace() {
-  const svg = $("trace"), W = Math.max(260, svg.getBoundingClientRect().width || svg.parentElement.clientWidth - 40), H = 120, n = 120;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const v = trace.filter(x => x != null);
-  if (!v.length) return drawRecent(svg, W, H);
-  const max = Math.max(40, ...v) * 1.15;
-  const X = i => W * (i + n - trace.length) / (n - 1), Y = x => H - 4 - (H - 14) * x / max;
-  let g = "";
-  for (const q of [0.5, 1]) { const y = Y(max / 1.15 * q); g += `<line class="gl" x1="0" x2="${W}" y1="${y}" y2="${y}" stroke-dasharray="2 4"/>`; }
-  let d = "", area = "", pen = false, first = 0, last = null;
-  trace.forEach((x, i) => {
-    if (x == null) { if (pen) area += `L${last[0]},${H}L${first},${H}Z`; pen = false; return; }
-    const p = [X(i).toFixed(1), Y(x).toFixed(1)];
-    if (!pen) { first = p[0]; d += `M${p[0]},${p[1]}`; area += `M${p[0]},${H}L${p[0]},${p[1]}`; } else { d += `L${p[0]},${p[1]}`; area += `L${p[0]},${p[1]}`; }
-    pen = true; last = p;
-  });
-  if (pen) area += `L${last[0]},${H}L${first},${H}Z`;
-  if (d) g += `<path d="${area}" fill="${css("--brass")}" opacity=".14"/><path d="${d}" fill="none" stroke="${css("--brass")}" stroke-width="2" stroke-linejoin="round"/>`;
-  if (pen && trace[trace.length - 1] != null) g += `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="${css("--brass")}" stroke="${css("--panel")}" stroke-width="2"/>`;
-  if (!v.length) g += `<text class="ax" x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle">the trace runs while shoehorn is writing</text>`;
-  g += `<text class="ax" x="0" y="11">${fmt(max / 1.15, 0)}</text><text class="ax" x="${W}" y="${H - 2}" text-anchor="end">now</text><text class="ax" x="0" y="${H - 2}">2 min ago</text>`;
-  svg.innerHTML = g;
+// ---------- DOM panels ----------
+function renderTop(d) {
+  $("tModel").innerHTML = d.loaded ? `<b>${d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")}</b>` : "model <b>unloaded</b>";
+  $("tCtx").innerHTML = cfg.ctx ? `context <b>${k(cfg.ctx)}</b>` : "";
+  $("tKv").innerHTML = cfg.kv ? `KV <b>${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</b>${cfg.window ? ` · window <b>${k(cfg.window)}</b>` : ""}` : "";
+  $("tCtx").hidden = !cfg.ctx; $("tKv").hidden = !cfg.kv;
 }
-function drawRecent(svg, W, H) {  // idle: the speed of the latest answers
-  const R = ALL.filter(r => r.gen_tokens >= 16).slice(-40);
-  if (R.length < 2) { svg.innerHTML = `<text class="ax" x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle">the trace runs while shoehorn is writing</text>`; svg.onmousemove = null; return; }
-  const v = R.map(r => r.gen_tokens / r.decode_s), max = Math.max(...v) * 1.15, n = v.length;
-  const X = i => 6 + (W - 12) * i / (n - 1), Y = x => H - 18 - (H - 30) * x / max;
-  let d = v.map((x, i) => (i ? "L" : "M") + X(i).toFixed(1) + "," + Y(x).toFixed(1)).join("");
-  let g = `<line class="gl" x1="0" x2="${W}" y1="${H - 18}" y2="${H - 18}"/><path d="${d}" fill="none" stroke="${css("--brass")}" stroke-width="2" stroke-linejoin="round" opacity=".9"/>`;
-  v.forEach((x, i) => g += `<circle cx="${X(i)}" cy="${Y(x)}" r="${i === n - 1 ? 4 : 2.5}" fill="${i === n - 1 ? css("--brass") : css("--panel")}" stroke="${css("--brass")}" stroke-width="1.5"/>`);
-  g += `<text class="ax" x="0" y="${H - 3}">last ${n} answers, oldest first</text><text class="ax" x="${W}" y="${H - 3}" text-anchor="end">peak ${fmt(Math.max(...v), 0)} tok/s</text>`;
-  svg.innerHTML = g;
-  svg.onmousemove = e => { const bb = svg.getBoundingClientRect(), x = (e.clientX - bb.left) * W / bb.width, i = Math.max(0, Math.min(n - 1, Math.round((x - 6) / ((W - 12) / (n - 1))))); showTip(e, describe(R[i])); };
-  svg.onmouseleave = hideTip;
-}
-function renderReadout() {
-  const L = live, last = [...ALL].reverse().find(r => r.gen_tokens >= 16);
-  $("led").className = "led" + (L.busy ? " on" : L.down ? " off" : "");
-  $("stateText").textContent = L.down ? "offline" : L.busy ? (L.gen > 0 ? "writing" : "reading") : "idle";
-  if (L.down) { $("roLabel").textContent = "Offline"; $("roNum").textContent = "–"; $("roSay").innerHTML = "The server isn't answering. Start it with <span class=\"mono\">start-detached.ps1</span>."; return; }
-  if (L.busy) {
-    const avg = L.elapsed_s > 0 ? L.gen / L.elapsed_s : 0;
-    $("roLabel").textContent = L.gen > 0 ? "Writing now" : "Reading the prompt";
-    $("roNum").textContent = L.gen > 0 ? fmt(inst ?? avg, 0) : "…";
-    $("roSay").innerHTML = L.gen > 0 ? `${fmt(L.gen)} tokens so far, ${dur(L.elapsed_s)} in. <small>Prompt: ${k(L.prompt)} tokens.</small>` : `Taking in a ${k(L.prompt)}-token prompt.`;
+function renderLive() {
+  const L = live, writing = L.busy && L.gen > 0, reading = L.busy && !writing;
+  $("pill").className = "pill" + (writing ? " writing" : reading ? " reading" : L.down ? " off" : "");
+  $("pillText").textContent = L.down ? "offline" : writing ? "writing" : reading ? "reading" : loaded ? "idle" : "idle · GPU free";
+  $("live").className = "deck live" + (writing ? " writing" : "");
+  const last = [...ALL].reverse().find(r => r.gen_tokens >= 16);
+  if (writing) {
+    $("liveLabel").textContent = "Writing now";
+    $("spd").textContent = fmt(rate ?? (L.elapsed_s > 0 ? L.gen / L.elapsed_s : 0), 0);
+    $("sideN").textContent = fmt(L.gen); $("sideL").textContent = "tokens this answer";
+  } else if (reading) {
+    $("liveLabel").textContent = "Reading the prompt";
+    $("spd").textContent = "…";
+    $("sideN").textContent = k(L.prompt); $("sideL").textContent = "prompt tokens";
   } else {
-    $("roLabel").textContent = "Last answer";
-    $("roNum").textContent = last ? fmt(last.gen_tokens / last.decode_s, 0) : "–";
-    $("roSay").innerHTML = last ? `${fmt(last.gen_tokens)} tokens, finished ${dur(Date.now() / 1e3 - last.t)} ago. <small>It read a ${k(last.prompt_tokens)}-token prompt first.</small>` : "Nothing has run yet. Start a chat in dsh.";
+    $("liveLabel").textContent = last ? "Last answer" : "Writing speed";
+    $("spd").textContent = last ? fmt(last.gen_tokens / last.decode_s, 0) : "–";
+    $("sideN").textContent = last ? fmt(last.gen_tokens) : "–"; $("sideL").textContent = last ? `tokens, ${dur(Date.now() / 1e3 - last.t)} ago` : "no answers yet";
   }
 }
-
-// ---- the fit
-function renderFit() {
+function renderMem() {
   const m = mem;
-  if (!m.vram_total) { $("fitSay").textContent = "Memory figures appear once the server reports them."; $("bars").innerHTML = ""; return; }
-  const vUsed = m.vram_total - m.vram_free, wG = m.weights_gpu || 0, none = !loaded, wC = (m.residual || 0) + (m.weights_cpu || 0), kv = m.kv_ram || 0;
+  if (!m.vram_total) { $("gpu").innerHTML = `<div class="hd"><b>Graphics card</b><span>–</span></div>`; $("ram").innerHTML = `<div class="hd"><b>System memory</b><span>–</span></div>`; return; }
+  const vUsed = m.vram_total - m.vram_free, wG = loaded ? (m.weights_gpu || 0) : 0, wC = loaded ? (m.residual || 0) + (m.weights_cpu || 0) : 0, kv = m.kv_ram || 0;
   const vOther = Math.max(0, vUsed - wG), rUsed = m.ram_total - m.ram_avail, rOther = Math.max(0, rUsed - wC - kv);
-  const total = wG + wC;
-  if (wG) $("fitTitle").textContent = `A ${fmt(total / GiB, 0)} GB model on a ${fmt(m.vram_total / GiB, 0)} GB graphics card`;
-  $("fitSay").innerHTML = wG
-    ? `Of the model's <b class="mono">${gb(total)} GB</b>, <b class="mono">${gb(wG)} GB</b> sit on the graphics card. The other <b class="mono">${gb(wC)} GB</b> of precision live in system memory and cross PCIe on every check, so the card never has to hold it all.`
-    : `No model is loaded right now: shoehorn hands the GPU back after 30 minutes idle. The next request loads it again in about 40 seconds. What you see in use is the desktop, other apps and shoehorn's own CUDA setup.`;
-  if (none) $("fitTitle").textContent = "Model unloaded, GPU free";
-  const bar = (name, totalB, segs) => {
-    const free = Math.max(0, totalB - segs.reduce((s, x) => s + x.b, 0));
-    const all = [...segs, { c: "f", b: free, l: "free" }];
-    return `<div class="mbar"><div class="row1"><b>${name}</b><span>${gb(totalB - free)} of ${gb(totalB)} GB in use</span></div>
-      <div class="track">${all.map(x => x.b > 0 ? `<div class="seg ${x.c}" style="flex-grow:${x.b}" data-t="${x.l}: ${gb(x.b)} GB"></div>` : "").join("")}</div>
-      <div class="keys">${segs.filter(x => x.b > 0).map(x => `<span><i class="seg ${x.c}" style="display:inline-block;width:9px;height:9px;border:0"></i>${x.l} <span class="mono">${gb(x.b)} GB</span></span>`).join("")}</div></div>`;
+  const box = (name, total, segs) => {
+    const free = Math.max(0, total - segs.reduce((s, x) => s + x.b, 0));
+    return `<div class="hd"><b>${name}</b><span>${gb(total - free)} / ${gb(total)} GB</span></div>
+      <div class="meter">${[...segs, { c: "f", b: free }].map(x => x.b > 0 ? `<i class="m-${x.c}" style="flex-grow:${x.b}"></i>` : "").join("")}</div>
+      <div class="keys">${segs.filter(x => x.b > 0).map(x => `<div><span><i class="m-${x.c}"></i>${x.l}</span><span class="num">${gb(x.b)}</span></div>`).join("")}</div>`;
   };
-  const busy = !!live.busy;
-  $("bars").innerHTML =
-    bar("Graphics card", m.vram_total, none ? [{ c: "o", b: vUsed, l: "desktop, other apps, CUDA setup" }] : [{ c: "w", b: wG, l: "base weights" }, { c: "k", b: vOther, l: "recent context + working memory" }]) +
-    (none ? "" : `<div class="pcie"><svg viewBox="0 0 120 18" aria-hidden="true"><line class="flow${busy ? "" : " idle"}" x1="2" y1="9" x2="118" y2="9"/></svg><span>${busy ? "Residual weights streaming across PCIe" : "PCIe link, quiet until the next request"}</span></div>`) +
-    bar("System memory", m.ram_total, [{ c: "w", b: wC, l: "residual + embedding weights" }, { c: "k", b: kv, l: "conversation memory" }, { c: "o", b: rOther, l: "everything else on this PC" }]);
-  $("bars").querySelectorAll(".seg[data-t]").forEach(el => { el.onmousemove = e => showTip(e, el.dataset.t); el.onmouseleave = hideTip; });
+  $("gpu").innerHTML = box("Graphics card", m.vram_total, loaded
+    ? [{ c: "w", b: wG, l: "base weights (4-bit)" }, { c: "k", b: vOther, l: "recent context, working memory" }]
+    : [{ c: "o", b: vUsed, l: "desktop and other apps" }]);
+  $("ram").innerHTML = box("System memory", m.ram_total, [{ c: "w", b: wC, l: "residual weights (the other 4 bits)" }, { c: "k", b: kv, l: "conversation memory" }, { c: "o", b: rOther, l: "everything else" }]);
+  const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+  $("pipeText").textContent = !loaded ? "model unloaded" : writing ? "residual streaming" : reading ? "reading prompt" : "idle";
 }
-
-// ---- session
-function story(R, s, all, nS) {
-  if (!R.length) return "No requests yet. When you chat through dsh, this panel tells the story of each session.";
-  const gen = sum(R, r => r.gen_tokens), tools = sum(R, r => r.tool_calls), prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens);
-  const sp = speed(R), misses = R.filter(r => r.miss);
-  if (all) return `Across <b>${n_(nS, "session")}</b>, shoehorn answered <b>${n_(R.length, "request")}</b> and wrote <b>${k(gen)} tokens</b> at <span class="hl">${fmt(sp, 0)} tok/s</span>. <b>${fmt(pct(reused, prompt), 0)}%</b> of everything it read came from cache.`;
-  const wall = s.end - s.start, busy = sum(R, r => r.prefill_s + r.decode_s), peak = Math.max(...R.map(r => r.prompt_tokens + r.gen_tokens));
-  const isLive = live.busy || Date.now() / 1e3 - s.end < GAP;
-  const when = day(s.start) === "Today" ? `at ${clock(s.start)}` : `${day(s.start).toLowerCase()} at ${clock(s.start)}`;
-  let t = `Started <b>${when}</b>, ${isLive ? "running for" : "lasted"} <b>${dur(wall)}</b>. `;
-  t += `Shoehorn answered <b>${n_(R.length, "request")}</b>${tools ? ` with <b>${n_(tools, "tool call")}</b>` : ""} and wrote <b>${k(gen)} tokens</b>${sp ? ` at <span class="hl">${fmt(sp, 0)} tok/s</span>` : ""}. `;
-  if (wall > 5) t += `It was busy ${fmt(Math.min(100, pct(busy, wall)), 0)}% of the time. `;
-  t += `The conversation reached <b>${k(peak)} tokens</b>; <b>${fmt(pct(reused, prompt), 0)}%</b> of what it read came from cache`;
-  t += misses.length ? `, and <b>${n_(misses.length, "cache miss", "cache misses")}</b> cost <b>${dur(sum(misses, r => r.prefill_s))}</b>.` : ", with no cache misses.";
-  return t;
-}
-function readings(R) {
-  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), pre = sum(R, r => r.prefill_s);
-  const peak = R.length ? Math.max(...R.map(r => r.prompt_tokens + r.gen_tokens)) : 0;
-  const x = (v, u, l) => `<div class="reading"><div class="v">${v}<small>${u}</small></div><div class="l">${l}</div></div>`;
-  return x(fmt(speed(R), 0), "tok/s", "writing speed") +
-    x(fmt(pre > 0 ? (prompt - reused) / pre : null, 0), "tok/s", "reading speed, new text") +
-    x(fmt(pct(reused, prompt), 0), "%", "of prompts served from cache") +
-    x(k(peak), cfg.ctx ? `/ ${k(cfg.ctx)}` : "tok", "largest context");
-}
-function drawTape(R, s) {
-  const svg = $("tape"), W = Math.max(300, svg.getBoundingClientRect().width || svg.parentElement.clientWidth - 40), H = 150, l = 4, r = 4, top = 10, lane = 92, bot = H - 22;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  if (!R.length) { svg.innerHTML = `<text class="ax" x="${W / 2}" y="${H / 2}" text-anchor="middle">no requests in this session yet</text>`; svg.onmousemove = null; return; }
-  const t0 = R[0].start, t1 = Math.max(R[R.length - 1].t, t0 + 1), span = t1 - t0, pw = W - l - r;
-  const X = t => l + pw * (t - t0) / span;
-  // bar height = how much it wrote (log scale), so long answers stand taller
-  const maxGen = Math.max(...R.map(x => x.gen_tokens || 1));
-  const hOf = g => 18 + (lane - 18) * Math.log1p(g) / Math.log1p(maxGen);
-  let g = `<line class="gl" x1="${l}" x2="${W - r}" y1="${bot}" y2="${bot}"/>`;
-  const ticks = 4;
-  for (let i = 0; i <= ticks; i++) { const t = t0 + span * i / ticks, x = X(t); g += `<line class="gl" x1="${x}" x2="${x}" y1="${top}" y2="${bot}" stroke-dasharray="2 4"/><text class="ax" x="${x}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === ticks ? "end" : "middle"}">${span < 600 ? new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : clock(t)}</text>`; }
-  const hits = [];
-  R.forEach((q, i) => {
-    const xs = X(q.start), xm = X(q.start + (q.prefill_s || 0)), xe = X(q.t), h = hOf(q.gen_tokens || 1), y = bot - h;
-    const wP = Math.max(xm - xs, 0), wD = Math.max(xe - xm, 0);
-    const minW = 2.5;
-    if (wP + wD < minW) { g += `<rect x="${xs}" y="${y}" width="${minW}" height="${h}" rx="1" fill="${q.miss ? css("--bad") : css("--brass")}"/>`; }
-    else {
-      if (wP > 0) g += `<rect x="${xs}" y="${y}" width="${Math.max(1, wP - (wD > 1 ? 1 : 0))}" height="${h}" fill="${q.miss ? css("--bad") : css("--steel")}"/>`;
-      if (wD > 0) g += `<rect x="${xm}" y="${y}" width="${wD}" height="${h}" rx="2" fill="${css("--brass")}"/>`;
-    }
-    if (q.isSide) g += `<circle cx="${xs + 1}" cy="${y - 7}" r="3" fill="none" stroke="${css("--ink2")}" stroke-width="1.5"/>`;
-    hits.push({ x0: xs - 3, x1: Math.max(xe, xs + minW) + 3, q });
-  });
-  svg.innerHTML = g;
-  svg.onmousemove = e => {
-    const bb = svg.getBoundingClientRect(), x = (e.clientX - bb.left) * W / bb.width;
-    const h = hits.filter(o => x >= o.x0 && x <= o.x1).sort((a, b) => Math.abs((a.x0 + a.x1) / 2 - x) - Math.abs((b.x0 + b.x1) / 2 - x))[0];
-    if (h) showTip(e, describe(h.q)); else hideTip();
-  };
-  svg.onmouseleave = hideTip;
-}
-function log(R) {
-  if (!R.length) return `<li><time></time><span></span><span class="quiet">Nothing yet.</span></li>`;
-  const ev = [];
-  const add = (t, kind, html) => ev.push({ t, kind, html });
-  add(R[0].start, "brass", `Session started with a ${k(R[0].prompt_tokens)}-token prompt.`);
-  R.forEach(r => {
-    if (r.miss) add(r.t, "bad", `Re-read ${k(r.prompt_tokens - r.reused_tokens)} tokens of conversation after a cache miss (${dur(r.prefill_s)}).`);
-    if (r.side === "parked") add(r.t, "good", `A side request (likely a title) ran on its own; the conversation was set aside, not lost.`);
-    else if (r.isSide) add(r.t, "", `Short side request, ${k(r.prompt_tokens)} tokens.`);
-    if (r.side === "resumed") add(r.t, "good", `Conversation picked back up: ${k(r.reused_tokens)} tokens reused.`);
-    if (r.loop) add(r.t, "warn", `The answer started repeating itself.`);
-    if (r.finish === "length") add(r.t, "warn", `An answer hit the token limit and stopped early.`);
-    if (r.finish && !["stop", "length", "tool_calls"].includes(r.finish)) add(r.t, "bad", `A request ended abnormally (${r.finish}).`);
-    if (!r.miss && !r.isSide && r.side !== "resumed" && !r.loop && r.gen_tokens >= 16)
-      add(r.t, "", `<span class="quiet">Wrote ${fmt(r.gen_tokens)} tokens at ${fmt(r.gen_tokens / r.decode_s, 0)} tok/s${r.tool_calls ? `, then ${n_(r.tool_calls, "tool call")}` : ""}.</span>`);
-  });
-  return ev.slice(-60).reverse().map(e => `<li><time>${clock(e.t)}</time><span class="mk ${e.kind}"></span><span>${e.html}</span></li>`).join("");
-}
-function gauges(R) {
-  const sp = R.filter(r => r.spec && r.spec.cycles), cyc = sum(sp, r => r.spec.cycles), g = sum(sp, r => r.gen_tokens);
-  const mp = sum(sp, r => r.spec.mtp_proposed), mk = sum(sp, r => r.spec.mtp_kept), ep = sum(sp, r => r.spec.echo_proposed), ek = sum(sp, r => r.spec.echo_kept);
-  const ds = sum(sp, r => r.spec.draft_s), vs = sum(sp, r => r.spec.verify_s);
-  const m1 = (p) => `<div class="meter"><i style="width:${Math.max(0, Math.min(100, p || 0))}%"></i></div>`;
-  return `<div class="gauge"><div class="l">Tokens per check</div><div class="v">${fmt(cyc ? g / cyc : null, 1)}<small>tok</small></div>
-      <div class="m">One pass of the full model confirms this many tokens on average. Plain decoding would give one.</div></div>` +
-    `<div class="gauge"><div class="l">Predictor guesses kept</div><div class="v">${fmt(pct(mk, mp), 0)}<small>%</small></div>${m1(pct(mk, mp))}
-      <div class="m">The model's built-in next-token predictor (MTP). ${mp ? k(mp) + " guesses." : ""}</div></div>` +
-    `<div class="gauge"><div class="l">Copied guesses kept</div><div class="v">${fmt(pct(ek, ep), 0)}<small>%</small></div>${m1(pct(ek, ep))}
-      <div class="m">Guesses copied from earlier text, great for code edits and quotes. ${ep ? k(ep) + " guesses." : ""}</div></div>` +
-    `<div class="gauge"><div class="l">Guessing vs checking</div><div class="v">${fmt(cyc ? 1000 * vs / cyc : null, 0)}<small>ms per check</small></div>
-      <div class="meter"><i style="width:${pct(ds, ds + vs) || 0}%"></i><i style="width:${pct(vs, ds + vs) || 0}%"></i></div>
-      <div class="m">${ds + vs > 0 ? `${fmt(pct(ds, ds + vs), 0)}% of writing time goes to guessing, ${fmt(pct(vs, ds + vs), 0)}% to checking.` : "No speculative writing yet."}</div></div>`;
-}
-function ledger(R) {
-  $("rows").innerHTML = R.slice(-200).reverse().map(r => {
-    const n = [];
-    if (r.miss) n.push("cache miss");
-    if (r.side === "parked") n.push("side, conversation set aside"); else if (r.isSide) n.push("side");
-    if (r.side === "resumed") n.push("conversation resumed");
-    if (r.tool_calls) n.push(n_(r.tool_calls, "tool call"));
-    if (r.loop) n.push("repetition");
-    if (r.finish === "length") n.push("cut off");
-    return `<tr><td>${clock(r.t)}</td><td>${k(r.prompt_tokens)}</td><td>${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</td><td>${dur(r.prefill_s)}</td><td>${fmt(r.gen_tokens)}</td>
-      <td>${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</td><td>${r.spec && r.spec.cycles && r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.spec.cycles, 1) : "–"}</td><td>${n.join(", ")}</td></tr>`;
-  }).join("") || `<tr><td colspan="8" class="empty">No requests yet.</td></tr>`;
-}
-
-function render() {
-  renderReadout();
-  renderFit();
+function renderSession() {
   annotate(ALL);
-  const S = sessions(ALL);
-  const want = sel === "latest" ? (S.length ? S[S.length - 1].id : "all") : sel;
-  const tabs = S.slice(-12).reverse().map((s, i) => {
-    const isLive = i === 0 && (live.busy || Date.now() / 1e3 - s.end < GAP);
-    return `<button class="tab" type="button" data-id="${s.id}" aria-pressed="${want === s.id}">${isLive ? '<span class="dot"></span>' : ""}${day(s.start) === "Today" ? "" : day(s.start) + " "}${clock(s.start)} · ${n_(s.R.length, "req")}</button>`;
-  }).join("") + `<button class="tab" type="button" data-id="all" aria-pressed="${want === "all"}">All · ${S.length}</button>`;
-  if ($("tabs").dataset.h !== tabs) {
-    $("tabs").innerHTML = tabs; $("tabs").dataset.h = tabs;
-    $("tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => { sel = b.dataset.id === (S.length ? S[S.length - 1].id : "") ? "latest" : b.dataset.id; lastSig = ""; render(); });
+  const s = lastSession();
+  if (!s) { $("stats").innerHTML = `<div class="stat"><b>–</b><span>no sessions yet</span></div>`; $("events").innerHTML = ""; $("sessNote").textContent = ""; return; }
+  const R = s.R, isLive = live.busy || Date.now() / 1e3 - s.end < GAP;
+  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), misses = R.filter(r => r.miss);
+  const st = (v, u, l) => `<div class="stat"><b>${v}${u ? `<small>${u}</small>` : ""}</b><span>${l}</span></div>`;
+  $("stats").innerHTML =
+    st(dur((isLive ? Date.now() / 1e3 : s.end) - s.start), "", isLive ? "session so far" : "last session") +
+    st(fmt(R.length), "", `requests · ${plural(sum(R, r => r.tool_calls), "tool call")}`) +
+    st(k(sum(R, r => r.gen_tokens)), "", "tokens written") +
+    st(fmt(speedOf(R), 0), "tok/s", "average speed") +
+    st(fmt(pct(reused, prompt), 0), "%", misses.length ? `from cache · ${plural(misses.length, "miss", "misses")}` : "from cache");
+  $("sessNote").textContent = `${isLive ? "Current" : "Last"} session started ${clock(s.start)}${s.start < Date.now() / 1e3 - 86400 ? " on " + new Date(s.start * 1000).toLocaleDateString() : ""}.`;
+  const ev = [];
+  for (const r of R) {
+    if (r.miss) ev.push({ t: r.t, c: "bad", h: `Cache miss: re-read ${k(r.prompt_tokens - r.reused_tokens)} tokens (${dur(r.prefill_s)})` });
+    else if (r.side === "resumed") ev.push({ t: r.t, c: "good", h: `Conversation resumed, ${k(r.reused_tokens)} tokens kept` });
+    else if (r.side === "parked") ev.push({ t: r.t, c: "good", h: `Title request ran on the side slot` });
+    else if (r.isSide) ev.push({ t: r.t, c: "", h: `Side request, ${k(r.prompt_tokens)} tokens` });
+    if (r.loop) ev.push({ t: r.t, c: "warn", h: `Answer started repeating itself` });
+    if (r.finish === "length") ev.push({ t: r.t, c: "warn", h: `Answer cut off at the token limit` });
+    if (!r.miss && !r.isSide && r.gen_tokens >= 16) ev.push({ t: r.t, c: "", h: `Wrote ${fmt(r.gen_tokens)} tokens at ${fmt(r.gen_tokens / r.decode_s, 0)} tok/s${r.tool_calls ? " → " + plural(r.tool_calls, "tool call") : ""}` });
   }
-  const s = S.find(x => x.id === want), all = !s, R = all ? S.flatMap(x => x.R) : s.R;
-  const sig = [want, R.length, R.length ? R[R.length - 1].t : 0, document.documentElement.dataset.theme || "", !!live.busy, Math.floor(Date.now() / 30000)].join("|");
-  if (sig === lastSig) return;
-  lastSig = sig;
-  $("story").innerHTML = story(R, s, all, S.length);
-  $("readings").innerHTML = R.length ? readings(R) : "";
-  drawTape(all ? R.slice(-200) : R, s);
-  $("log").innerHTML = log(R);
-  $("gauges").innerHTML = gauges(R);
-  ledger(R);
+  const html = ev.slice(-5).reverse().map(e => `<div class="ev ${e.c}"><time>${clock(e.t)}</time><i></i><span>${e.h}</span></div>`).join("");
+  if ($("events").dataset.h !== html) { $("events").innerHTML = html; $("events").dataset.h = html; }
 }
 
-function chips(d) {
-  const c = [];
-  c.push(d.loaded ? `<span class="chip"><b>${d.loaded.replace(/^qwen3.8-/, "").replace(/-shoehorn$/, "")}</b></span>` : `<span class="chip">model <b>unloaded</b></span>`);
-  if (cfg.ctx) c.push(`<span class="chip">context <b>${k(cfg.ctx)}</b></span>`);
-  if (cfg.kv) c.push(`<span class="chip">KV <b>${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</b></span>`);
-  if (cfg.window) c.push(`<span class="chip">VRAM window <b>${k(cfg.window)}</b></span>`);
-  const h = c.join("");
-  if ($("chips").dataset.h !== h) { $("chips").innerHTML = h; $("chips").dataset.h = h; }
-}
-
-async function tick() {
+// ---------- polling ----------
+async function poll() {
   let d;
   try { d = await (await fetch("/stats?since=" + newest, { cache: "no-store" })).json(); }
-  catch (e) { live = { down: true }; trace.push(null); if (trace.length > 120) trace.shift(); renderReadout(); drawTrace(); return; }
-  for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; }
-  const now = Date.now() / 1e3;
-  live = d.live || {};
-  if (live.busy && live.gen > 0) { if (prevGen != null && live.gen >= prevGen && now > prevT) inst = (live.gen - prevGen) / (now - prevT); prevGen = live.gen; prevT = now; }
-  else { prevGen = null; inst = null; }
-  trace.push(live.busy && inst != null ? inst : null); if (trace.length > 120) trace.shift();
-  cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || "";
-  chips(d);
-  drawTrace();
-  render();
+  catch (e) { live = { down: true }; renderLive(); return; }
+  let added = false;
+  for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; added = true; }
+  const now = performance.now(), wall = Date.now() / 1000;
+  const was = live;
+  live = d.live || {}; cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || "";
+  // new tokens since the last poll arrive on the belt as one group (a check of the full model, or two)
+  if (live.busy && live.gen > 0) {
+    if (prevGen != null && live.gen > prevGen) {
+      const n = live.gen - prevGen, dt = (now - prevT) / 1000;
+      bursts.push({ t: beltT, n: Math.min(n, 120) });
+      const inst = n / Math.max(dt, .05);
+      rate = rate == null ? inst : rate * .7 + inst * .3;
+    }
+    if (prevGen == null || live.gen >= prevGen) { prevGen = live.gen; prevT = now; }
+  } else {
+    if (was.busy && !live.busy && prevGen != null) bursts.push({ t: beltT, n: 0, label: "done" });
+    prevGen = null; rate = null;
+  }
+  if (live.busy && !(live.gen > 0) && !(was.busy && !(was.gen > 0))) bursts.push({ t: beltT, n: Math.min(60, Math.ceil((live.prompt || 0) / 400)), read: true, label: `read ${k(live.prompt)}` });
+  if (wall - lastSample >= 1) { speedHist.push({ t: wall, v: live.busy && live.gen > 0 ? rate : null }); lastSample = wall; speedHist = speedHist.filter(p => wall - p.t <= 125); }
+  renderTop(d); renderLive(); renderMem(); drawTrace();
+  if (added || !poll.n || poll.n % 20 === 0) renderSession();
+  poll.n = (poll.n || 0) + 1;
 }
-let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { lastSig = ""; drawTrace(); render(); }, 150); });
-tick();
-setInterval(tick, 1000);
-// redraw once fonts and layout settle (the charts are sized from their boxes)
-const redraw = () => { lastSig = ""; drawTrace(); render(); };
-addEventListener("load", redraw);
-if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw);
+let lastFrame = performance.now();
+function frame(t) {
+  const real = Math.min(1, (t - lastFrame) / 1000), dt = Math.min(.1, real); lastFrame = t;
+  if (live.busy) beltT += real * 1000;  // real time, so a throttled tab still keeps the belt honest
+  drawBelt(t); drawPcie(dt);
+  requestAnimationFrame(frame);
+}
+poll(); setInterval(poll, 250);
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
