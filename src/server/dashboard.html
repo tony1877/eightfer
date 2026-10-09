@@ -158,7 +158,7 @@ const C = { accent: "#d9a54a", read: "#6cb6e0", ink2: "#9ba1ab", muted: "#5f6570
 const GAP = 300;
 
 let ALL = [], newest = -1, live = {}, cfg = {}, mem = {}, loaded = "";
-let prevGen = null, prevT = null, rate = null, shown = null, target = null;
+let prevGen = null, prevT = null, rate = null, shown = null, target = null, genHist = [];
 let samples = [];   // {t (s), v}
 let checks = [];    // {t (s), n, read}
 let seenRows = new Set();
@@ -365,15 +365,20 @@ async function poll() {
   for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; }
   const nowP = performance.now(), nowS = Date.now() / 1000, was = live;
   live = d.live || {}; cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || "";
-  if (live.busy && live.gen > 0) {
-    if (prevGen != null && live.gen > prevGen) {
-      const n = live.gen - prevGen, inst = n / Math.max(.05, (nowP - prevT) / 1000);
-      checks.push({ t: nowS, n });
-      rate = rate == null ? inst : rate * .75 + inst * .25;
-    }
-    if (prevGen == null || live.gen >= prevGen) { prevGen = live.gen; prevT = nowP; }
-  } else { prevGen = null; rate = null; }
-  samples.push({ t: nowS, v: live.busy && live.gen > 0 && rate != null ? rate : null });
+  const writing = live.busy && live.gen > 0;
+  if (writing) {
+    if (prevGen != null && live.gen > prevGen) checks.push({ t: nowS, n: live.gen - prevGen });
+    if (prevGen != null && live.gen < prevGen) genHist = [];  // a new answer started
+    prevGen = live.gen; prevT = nowP;
+    // the real rate: tokens over the last 2 seconds (checks land in bursts, so a per-poll rate overshoots)
+    genHist.push({ t: nowS, g: live.gen });
+    genHist = genHist.filter(p => nowS - p.t <= 2.05);
+    const o = genHist[0], dt = nowS - o.t;
+    rate = dt >= .5 ? (live.gen - o.g) / dt : (live.elapsed_s > 0 ? live.gen / live.elapsed_s : null);
+  } else { prevGen = null; rate = null; genHist = []; }
+  // between turns of a session (tool calls, prompt reading) the line drops to 0 instead of breaking
+  const inSession = live.busy || (live.last_end_s != null && live.last_end_s < 60);
+  samples.push({ t: nowS, v: writing && rate != null ? rate : inSession ? 0 : null });
   samples = samples.filter(p => nowS - p.t <= 125); checks = checks.filter(c => nowS - c.t <= 65);
   renderHeader(d); renderNow(); renderMem();
   if (!poll.n || poll.n % 4 === 0 || (was.busy !== live.busy)) renderList();
