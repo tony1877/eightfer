@@ -369,12 +369,15 @@ async function poll() {
   if (writing) {
     if (prevGen != null && live.gen > prevGen) checks.push({ t: nowS, n: live.gen - prevGen });
     if (prevGen != null && live.gen < prevGen) genHist = [];  // a new answer started
+    // the answer's first tokens arrived during the last poll interval: anchor 0 tokens just before them
+    if (!genHist.length) genHist.push({ t: nowS - .25, g: 0 });
     prevGen = live.gen; prevT = nowP;
-    // the real rate: tokens over the last 2 seconds (checks land in bursts, so a per-poll rate overshoots)
+    // tokens over the last 2 seconds, never over less than 1 s: checks land in bursts ~270 ms apart, so a short
+    // window holding two bursts would read double
     genHist.push({ t: nowS, g: live.gen });
-    genHist = genHist.filter(p => nowS - p.t <= 2.05);
-    const o = genHist[0], dt = nowS - o.t;
-    rate = dt >= .5 ? (live.gen - o.g) / dt : (live.elapsed_s > 0 ? live.gen / live.elapsed_s : null);
+    while (genHist.length > 2 && nowS - genHist[1].t >= 2) genHist.shift();
+    const o = genHist[0];
+    rate = (live.gen - o.g) / Math.max(1, nowS - o.t);
   } else { prevGen = null; rate = null; genHist = []; }
   // between turns of a session (tool calls, prompt reading) the line drops to 0 instead of breaking
   const inSession = live.busy || (live.last_end_s != null && live.last_end_s < 60);
