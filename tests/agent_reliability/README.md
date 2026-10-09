@@ -7,7 +7,8 @@ PowerShell computations (11), glob (10), JSON lookups (5) and background jobs (4
 python tests/agent_reliability/gen.py          # builds C:\tmp\reltest and C:\tmp\reltest-key
 ```
 
-Paste the contents of `C:\tmp\reltest\PROMPT.txt` into a new dsh session, wait for it to finish, then:
+Paste the contents of `C:\tmp\reltest\PROMPT.txt` into a new session of the bundled agent (`scripts\agent.ps1`) or any
+other agent client, wait for it to finish, then:
 
 ```
 python tests/agent_reliability/check.py        # score, per-kind breakdown, every failure
