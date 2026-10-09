@@ -129,6 +129,24 @@ Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` pi
   usage and timings. Client disconnects stop generation.
 - **Dashboard** at `/`, fed by `/stats`.
 
+## Agent and web UI
+
+`agent/` bundles a coding agent with a web UI: a fork of [dsh](https://github.com/deepseek-ai/deepseek-harness)
+(MIT, DeepSeek), set up for shoehorn. It has a persistent PowerShell shell, file tools, background jobs, a task list,
+durable memory, past-session search, web fetch, context compaction, skills and subagents, and it shows the server's
+live stats in its header. Needs Node 24 and pnpm (`corepack enable`).
+
+```powershell
+$env:SHOEHORN_API_KEY = '<the key shoehorn serve was started with, if any>'
+.\scripts\agent.ps1                 # installs and builds on first run, then prints the UI link
+.\scripts\agent.ps1 --no-open --port 3080
+```
+
+Its settings, sessions and memory live in `~\.shoehorn\agent` (or `-AgentHome` / `$env:DSH_HOME`), filled on first
+run from [`agent-home/`](agent-home): the routes to both models, the `shoehorn` agent preset and a few skills.
+Upstream updates: `git subtree pull --prefix=agent <dsh repo> master --squash`. Any other OpenAI-compatible client
+works the same; nothing in the server depends on the agent.
+
 ## Other commands
 
 - `shoehorn bench`: RAM, GPU, PCIe and disk bandwidth (about 3-5 minutes; `--help` for options). Reference results:

@@ -1,0 +1,82 @@
+# shoehorn agent settings ($DSH_HOME/settings.yaml). scripts/agent.ps1 copies
+# this file into a new $DSH_HOME once and never overwrites it, so edit the copy
+# there. Every route talks to shoehorn serve at 127.0.0.1:8090; change baseURL
+# if it runs elsewhere. The API key comes from SHOEHORN_API_KEY (agent.ps1 sets
+# it; "none" when the server has no key).
+# the upstream "internal testing" welcome notice, already acknowledged
+ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+agent-default-model:
+  provider: shoehorn-27b
+  model: qwen3.8-27b-uncensored-shoehorn
+  reasoningEffort: medium
+agent-presets: { default: shoehorn }
+agent-loop:
+  # shoehorn decodes one request at a time fastest; parallel tool calls only
+  # queue behind each other.
+  maxParallelToolCalls: 1
+
+# Two routes per model: the conversation route (thinking on; low / medium /
+# xhigh pass straight through and cap reasoning at 2K / 8K / 24K tokens) and a
+# summarizer route for compaction (thinking off, Qwen's non-thinking sampling).
+# The context window and generation cap share the server's --ctx (262,144):
+# 190,000 + 72,000 for conversations. streamIdleTimeoutMs is an hour because a
+# large cold prefill streams nothing for minutes.
+llm-pi-ai:
+  providers:
+    shoehorn-27b:
+      displayName: Qwen3.8 27B (shoehorn)
+      streamIdleTimeoutMs: 3600000
+      apiKeyEnv: SHOEHORN_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:8090/v1
+      models:
+        - id: qwen3.8-27b-uncensored-shoehorn
+          name: Qwen3.8 27B (shoehorn)
+          contextWindow: 190000
+          maxTokens: 72000
+          reasoningEfforts:
+            low: low
+            medium: medium
+            xhigh: xhigh
+    shoehorn-27b-summarizer:
+      displayName: Qwen3.8 27B summarizer (shoehorn)
+      streamIdleTimeoutMs: 3600000
+      sampling:
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        min_p: 0.0
+        presence_penalty: 1.5
+      apiKeyEnv: SHOEHORN_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:8090/v1
+      models:
+        - id: qwen3.8-27b-uncensored-shoehorn
+          name: Qwen3.8 27B (summarisation, shoehorn)
+          contextWindow: 214000
+          maxTokens: 48000
+          reasoningEfforts:
+            low: low
+            medium: low
+            xhigh: low
+          compat:
+            thinkingFormat: chat-template
+            chatTemplateKwargs:
+              enable_thinking: false
+              terse: false
+    shoehorn-flash:
+      displayName: Qwen3.8 Flash-Next (shoehorn)
+      streamIdleTimeoutMs: 3600000
+      apiKeyEnv: SHOEHORN_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:8090/v1
+      models:
+        - id: qwen3.8-flash-next-uncensored-shoehorn
+          name: Qwen3.8 Flash-Next (shoehorn)
+          contextWindow: 190000
+          maxTokens: 72000
+          reasoningEfforts:
+            low: low
+            medium: medium
+            xhigh: xhigh

@@ -1,0 +1,24 @@
+# shoehorn agent host overrides ($DSH_HOME/cordis.patch.yml), applied over every
+# profile after the bundles. A row patch REPLACES that row's whole config.
+# scripts/agent.ps1 copies this file into a new $DSH_HOME once and never
+# overwrites it, so edit the copy there for machine-specific changes.
+
+# The built-in DeepSeek adapter registers DeepSeek's public API even with no
+# settings. Everything here runs on shoehorn, so turn it off.
+- id: llm-deepseek
+  disabled: true
+
+# Keyless page fetch. The default web search authenticates against DeepSeek's
+# API, so it is off; point searchProvider at a search backend you run (for
+# example searxng) to enable web_search.
+- id: web
+  config:
+    fetchProvider: http
+
+# Full-text index behind the session_search tools. The shipped row is
+# ':memory:', which refuses every search; this keeps a disposable index in
+# $DSH_HOME (rebuilt from the session logs if deleted), opened on first use.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-index', 'sessions.db')
+    openAt: first-search

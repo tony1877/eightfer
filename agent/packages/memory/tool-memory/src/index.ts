@@ -34,7 +34,7 @@ export const inject = ['tools', 'systemPrompt']
 
 /** Plugin configuration. */
 export interface Config {
-  /** Database file. Defaults to `~/.dsh/memory/memory.db`; `:memory:` keeps nothing. */
+  /** Database file. Defaults to `$DSH_HOME/memory/memory.db` (`~/.dsh` when DSH_HOME is unset); `:memory:` keeps nothing. */
   path?: string
   /** Most memories listed in the runtime-context index. Defaults to 40. */
   indexMaxItems?: number
@@ -84,7 +84,7 @@ export const PROMPT_TEXT = [
 function databasePath(config: Config): string {
   const configured = config.path?.trim()
   return configured === undefined || configured.length === 0
-    ? join(homedir(), '.dsh', 'memory', 'memory.db')
+    ? join(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'), 'memory', 'memory.db')
     : configured
 }
 

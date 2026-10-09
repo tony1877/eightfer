@@ -22,7 +22,7 @@ import type { SummaryTemplate } from './types.ts'
  * conversation is minutes of apparent silence. Rewritten at the start of each
  * compaction; open or tail it to watch the summary being written.
  */
-const LIVE_PATH = join(homedir(), '.dsh', 'compaction-live.md')
+const LIVE_PATH = join(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'), 'compaction-live.md')
 
 /** Observability only: a failed write must never fail the compaction. */
 function live(write: () => void): void {

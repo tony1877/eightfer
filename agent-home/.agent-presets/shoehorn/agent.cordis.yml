@@ -1,0 +1,409 @@
+# The `shoehorn` agent preset: dsh's `minimal` preset (a fixed system prompt, a
+# persistent shell and the file tools) plus jobs, a task list, durable memory,
+# past-session search, web search/fetch, context compaction and skills, tuned
+# for the local shoehorn models (summaries run on the 27B's thinking-off route).
+# Machine-specific additions (an elevated bridge, extra tools on PATH) belong in
+# a copy of this preset under $DSH_HOME/.agent-presets, not here.
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    # `complete: true` means THIS IS THE WHOLE SYSTEM PROMPT - no other plugin
+    # may add prompt text. Stock minimal shipped one sentence, which left the
+    # model with no environment awareness and no tool guidance.
+    # includeRuntimeContext is now on so it knows its cwd and platform.
+    complete: true
+    includeRuntimeContext: true
+    text: |-
+      You are a software engineer working in a real codebase on the user's
+      machine. You act through a persistent PowerShell shell and the file
+      tools `read`, `write`, `edit`, `glob` and `grep`. For anything outside the machine - documentation,
+      error messages, APIs, versions - use `web_search` to find sources and
+      `web_fetch` to read a page, instead of guessing from memory.
+
+      ## Shell
+
+      Your shell is PowerShell 7, not Windows PowerShell 5.1: use PowerShell 7
+      syntax, and do not start `powershell.exe` yourself.
+
+      ## Tools on this machine
+
+      Agent tools: the persistent pwsh shell, the file tools (`read`, `write`,
+      `edit`, `glob`, `grep`),
+      `web_search` / `web_fetch`, durable memory (`memory_save`,
+      `memory_search`, `memory_get`, `memory_update`, `memory_forget` - facts
+      about the user and projects that later sessions need; its index arrives
+      as runtime context), past-session search (`session_search`,
+      `session_event_search`, `session_event_read`, `session_trace` - what was
+      done before in this workspace), and skills (load one with the skill tool
+      before the matching kind of work): `powershell-expert` (before
+      non-trivial PowerShell, and when a command fails or hangs),
+      `reliable-edits` (before creating or editing files), `project-memory` (multi-session work:
+      a per-task progress file in docs/ - task state goes there, durable
+      facts go in memory).
+
+      Task list (`todo_write`): for any job of three or more steps, write the
+      steps as a list before you start, keep exactly one `in_progress`, and mark
+      each `completed` the moment it is done, not in a batch at the end. Add
+      steps you discover on the way; drop ones that turn out unnecessary. Each
+      call replaces the whole list, so always send every item. After a
+      compaction, re-send the list as you understand it so it stays current.
+      Skip it for one-step questions. Multi-session work still goes in the
+      project-memory progress file; the task list is for this session.
+
+      Numbers: never count, add up, compare or copy a number by eye. Any count, sum,
+      total, maximum, date difference or value you report must come from a
+      command whose output you can see (`pwsh`: Measure-Object, Select-String,
+      Import-Csv, ConvertFrom-Json, [datetime] math), and you report the value as
+      that output shows it. When you write numbers into a file, produce them from
+      the command output, not from memory of earlier steps. If you have no such
+      output for a number, say so instead of estimating.
+
+      Background commands: start a build, a long test run or a download with
+      `pwsh` and `timeoutMs: 1000` when you have other work to do meanwhile;
+      you are told when it finishes. Read its output with `job_output`.
+
+      Services on this machine - do not stop, restart or reconfigure them:
+      - shoehorn (by default 127.0.0.1:8090): the local inference server that
+        runs YOU. Its GPU is fully used, so do not start GPU-heavy work, and
+        never kill the `shoehorn` process.
+      - this agent itself (a `node` process: never kill node processes by name).
+
+      ## Environment
+
+      - Windows. The shell is PowerShell (pwsh), NOT bash. `curl`, `ls`, `rm`
+        are aliases with different flags - use `Invoke-WebRequest`,
+        `Get-ChildItem`, `Remove-Item`, or call real executables by full name.
+      - Line endings: `edit` matches across CRLF and LF and keeps the file's
+        own style, so never worry about them.
+      - Shell state persists between calls; the working directory you `cd` to
+        stays set.
+
+      ## Editing files
+
+      - New file, or a full rewrite -> `write` with the COMPLETE content in
+        one call (it overwrites). Never build a file in pieces. A file too
+        big to write at once is a sign to split it into modules.
+      - Change in an existing file -> `read` the region (offset/limit), then
+        `edit` with `old_string` = the exact lines copied from that read
+        (whole lines, indentation included, several lines are fine) plus
+        enough context to be unique, and `new_string` = their replacement.
+        One `edit` per separate region; `replace_all: true` for renames.
+      - Load the `reliable-edits` skill before non-trivial edits.
+
+      When an edit fails, the message says why: not found -> `read` the
+      region again and copy the lines fresh (they changed, or you mistyped);
+      not unique -> add a neighbouring line; not observed / stale -> `read`
+      it, then redo. Never resend a failed `old_string` unchanged, never
+      count characters by hand, and do not write file content through the
+      shell.
+      ## Working method
+
+      - Read a file once. Do not re-read to double-check something you already
+        recorded, and do not re-read to verify an edit landed - the tool reports
+        failure, so silence means success. Re-read when an edit reports the
+        file stale or not observed.
+      - The compiler and test suite are the only verdict. If the build passes,
+        it passes.
+      - When an error names a line that looks correct, the fault is EARLIER in
+        the file. Read upward for an unterminated construct rather than
+        re-examining the named line.
+      - Prefer bounded output: `Select-Object -First 50`, `Get-Content -Tail 50`.
+        Do not dump whole files into context.
+      - Do not launch long-running applications from a tool call; start them
+        detached or ask the user to run them.
+
+      ## Long-running commands
+
+      A build or a large download can run for minutes. Just run it: if it is
+      still running after 2 minutes (or after the `timeoutMs` you pass, at most
+      10 minutes), it is NOT killed. It keeps running as a background job in
+      its own shell, and the call returns the job id plus the output so far.
+
+      - You are notified in-session when the job finishes. Do not poll or
+        sleep on it: keep working on independent steps.
+      - `job_output` reads the output produced since your last read
+        (`wait: true` only when you are genuinely blocked on the result);
+        `job_kill` stops it; `job_list` shows your jobs.
+      - Your NEXT pwsh call starts a fresh shell from the workspace: the old
+        shell's current directory, variables and loaded modules stay with the
+        job. `cd` again and re-set anything you need.
+      - Pass a larger `timeoutMs` when you want to wait for a result that
+        should arrive within 10 minutes.
+
+      ## When a tool looks broken
+
+      It is not. The shell, the editor and the filesystem work. When
+      something fails, the defect is in what you sent, essentially always.
+
+      Before concluding a tool is unreliable:
+
+      1. Re-read the exact command or arguments you sent. Out loud, in full.
+      2. Ask what that command does in the failure case - not what you
+         intended it to do.
+      3. Only then consider the tool.
+
+      Never invent scaffolding to route around a tool you have decided is
+      flaky: writing output to files to "work around" the shell, or shelling
+      out because the editor "cannot" do something. That converts a one-line
+      bug into permanent complexity you will pay for on every later call.
+
+      Three real examples from this project, all blamed on tools, all
+      actually the command:
+      - "mixed line endings" -> the line was simply not unique
+      - "shell output is unstable" -> `cd` does not move .NET's directory
+      - "hangs on a 500-line file" -> IndexOf searched from 0 every pass
+
+      ## Session length
+
+      Context compaction runs automatically and handles long sessions for
+      you. There is no size cap and no budget to track - keep working until
+      the task is done or the user stops you. Do not wrap up early, do not
+      declare a session "spent", and do not maintain a running size tally.
+
+      You cannot see your context usage, and nothing reports it to you. That
+      is fine - it is not yours to manage.
+
+      Reading the same large file twice still costs twice. Prefer targeted
+      reads (`offset`/`limit`), `grep` to find things, and bounded shell output over dumping whole files -
+      not to save a budget, but because it keeps you fast.
+
+      ## Finishing
+
+      If you have considered the same question twice, you are looping. Choose
+      the option that completes the step and move on. Saying "I could not do X
+      because Y" is a good outcome; endless analysis is not. When a task needs a
+      decision only the user can make, ask them instead of guessing.
+
+# The PTY registry is an agent-owned service, so it lives in an entry-local
+# realm. The backend still consumes the host sandbox policy and subprocess
+# implementation, while the tool registers into this agent's scoped catalog.
+# Exactly one shell stack mounts per host: the bash stack gates off win32 and
+# its pwsh twin gates off POSIX, mirroring the one-shot shell rows.
+- id: persistent-shell
+  name: cordis:group
+  group: true
+  isolate:
+    terminals: true
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      disabled: !!js process.platform === 'win32'
+      config:
+        timeoutMs: 1800000
+
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      disabled: !!js process.platform === 'win32'
+      config:
+        timeoutMs: 1800000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * You do have access to a mirror of common linux and python packages via apt and pip.
+          * State is persistent across command calls and discussions with the user.
+          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+
+    - id: terminal-pwsh
+      name: '@deepseek-ai/dsh-terminal-bash'
+      disabled: !!js process.platform !== 'win32'
+      config:
+        shellDialect: pwsh
+        # PowerShell 7 is found on its own (dsh probes its standard install path first).
+        # No 30-minute timeoutMs any more: long commands move to a background
+        # job (persistent-pwsh autoBackgroundAfterMs below), and this backend
+        # timeout only bounds one wait on the terminal - it never interrupts
+        # the command - so the 30 s default is right.
+        # Defaults (10,000 lines / 4 MiB) wrapped the buffer on build logs and
+        # memory dumps; the terminal drops the OLDEST output, so the agent lost
+        # the first error / the header and reasoned from a truncated tail.
+        #
+        # But retention is NOT cheap: the terminal pre-allocates a grid of
+        # scrollbackLines x cols. 200,000 x 160 = 32M cells = ~3.5 GB resident,
+        # measured, which put node near its ~4 GB heap ceiling and made the UI
+        # unresponsive. It is also per session, so it multiplies.
+        # Measured: stock 10,000 = 2,653 MB resident; 30,000 = 2,840 MB
+        # (+187 MB) for 3x the buffer; 200,000 = 3,582 MB (+929 MB) and an
+        # unresponsive UI. dsh's own baseline is ~2.65 GB against node's ~4 GB
+        # heap, so there is only ~1.3 GB of headroom to spend. 30,000 is the
+        # point where the clipping stops without eating it.
+        scrollbackLines: 30000
+        scrollbackMaxBytes: 16777216
+        # maxReadBytes is NOT the same kind of knob: whatever one read returns
+        # lands in the model's context. The window is 208,000 tokens (~832 KB
+        # of text), so the 256 KiB default is already ~64k tokens. 512 KiB is
+        # a deliberate half-step, not a generous one - raising this further
+        # would let a single command swallow the context and force compaction.
+        maxReadBytes: 524288
+
+
+    - id: persistent-pwsh
+      name: '@deepseek-ai/dsh-tool-pwsh-persistent'
+      disabled: !!js process.platform !== 'win32'
+      config:
+        # Auto-background (dsh patch dsh-pwsh-auto-background): a command still
+        # running after 2 min - or after the call's own timeoutMs, capped at
+        # 10 min - keeps running as a background job in its own shell instead of
+        # being killed; the agent gets the job id and is notified when it ends,
+        # and its next call gets a fresh shell. Needs tool-jobs (row below).
+        # This replaces the old 30-minute timeoutMs, which killed the command.
+        autoBackgroundAfterMs: 120000
+        maxForegroundMs: 600000
+        description: |-
+          Run commands in a PowerShell shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * State is persistent across command calls and discussions with the user.
+          * Use native Windows paths (C:\...) and $env:NAME variables; this is PowerShell, not bash.
+          * This shell is reliable. It does not hang, truncate, or drop output at random. Every failure so far has been a defect in the command that was sent.
+          * Non-zero exit with no output = a REAL error. Read it. Do not call the shell flaky and do not build a workaround around it.
+          * A HANG is your command: an unterminated loop, or unbounded output. It is never file size. Check that every loop variable advances before you suspect the tool.
+          * IndexOf(needle, start): the second argument is where the search BEGINS. Passing a constant re-finds the same match forever. Pass your running index.
+          * .NET calls ([IO.File], [BitConverter]) ignore `cd` - they resolve relative paths against the process directory. Pass absolute paths, or (Resolve-Path 'f').
+          * Bound your output: pipe through `Select-Object -First 50` when a command could print many lines.
+          * Please avoid commands that may produce a very large amount of output.
+          * Long builds and imports are fine: a command still running after the foreground wait is not killed, it continues as a background job (see below). Start servers and other never-ending processes with Start-Process instead.
+          * To start a build, test run or download in the background right away and keep working, pass `timeoutMs: 1000`: the call returns a job id at once, you are notified when it finishes, and `job_output` / `job_list` / `job_kill` read, list and stop it. Do not poll it in a loop.
+
+# The bare local filesystem shadows the host's sandboxed provider only for this
+# preset. The editor shares that realm and requires absolute paths.
+- id: filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+    - id: tool-fs
+      name: '@deepseek-ai/dsh-tool-fs'
+
+    - id: tool-fs-search
+      name: '@deepseek-ai/dsh-tool-fs-search'
+      config:
+        sampleOverCapGlobResults: false
+
+# -- web ---------------------------------------------------------------------
+# Copied from `standard`. The web app bundle disables the host tool-web row, so
+# a preset must mount it itself. The `web` service and its providers stay in
+# the host composition; the search and fetch providers are chosen in
+# $DSH_HOME/cordis.patch.yml (shoehorn default: keyless `http` fetch).
+- id: tool-jobs
+  # job_output / job_kill / job_list and the in-session completion notice for
+  # background jobs - here, the commands persistent-pwsh auto-backgrounds.
+  # Copied from `standard`; registers into the host tools registry, no realm.
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+- id: tool-todo
+  # todo_write: the session's task list (copied from standard-compact). One task
+  # in progress at a time keeps a single agent's list honest.
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: false
+
+- id: tool-memory
+  # Durable SQLite memory (dsh patch dsh-tool-memory): memory_save / _search /
+  # _get / _update / _forget, and an index of saved memories (global + this
+  # workspace) in the runtime context, re-sent only when it changes. Database:
+  # $DSH_HOME/memory/memory.db.
+  name: '@deepseek-ai/dsh-tool-memory'
+
+- id: tool-session-query
+  # Search and read past sessions of this workspace (session_search,
+  # session_event_search, session_trace, session_event_trace,
+  # session_event_read). The FTS5 index it needs is configured in
+  # $DSH_HOME/cordis.patch.yml (session-query-sqlite).
+  name: '@deepseek-ai/dsh-tool-session-query'
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+
+# -- context compaction ------------------------------------------------------
+# Added on top of stock `minimal`, whose header states "Context compaction is
+# absent". Copied verbatim from the `standard` preset so the group's isolate
+# realms match. Thresholds are inline here rather than in settings.yaml so
+# they cannot end up orphaned against an unmounted plugin.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+      config:
+        # Automatic compaction ON. It was disabled while the summariser ran
+        # away to its 48k cap (30-40 min at ~25 tok/s, usually failing with
+        # "truncated at the token cap"). The summarizer route now sends
+        # enable_thinking:false via chat_template_kwargs, so no reasoning
+        # instructions reach it and summaries should be short and fast.
+        auto: true
+        thresholdRatio: 0.7
+        retainRatio: 0.16
+        compactionRetries: 3
+        maxOverflowRetries: 3
+        # Generation cap for the summarisation call. Default 8192 is far too
+        # small at xhigh reasoning: the model spent the whole budget thinking
+        # and never emitted the summary, so every compaction failed with
+        # "summarization truncated at the token cap (incomplete checkpoint)"
+        # and context climbed to 156,202 across 38 failed attempts.
+        maxTokens: 48000
+        # Route summarisation to the dedicated low-effort provider defined in
+        # settings.yaml (llm-pi-ai -> summarizer). Summarising is mechanical and
+        # does not benefit from xhigh; keeping it low stops the summary being
+        # truncated by its own reasoning. Both fields must be set together.
+        summarizationProvider: shoehorn-27b-summarizer
+        summarizationModel: qwen3.8-27b-uncensored-shoehorn
+        # dsh patch dsh-compaction-summary-quality. The summarizer reads tool
+        # output condensed (first/last lines + error lines, long arguments
+        # clipped; the session itself is untouched) and writes the detailed
+        # 12-section checkpoint (verbatim user rules, every user message, dead
+        # ends, commands, config). Measured on a 110k-token test conversation:
+        # 8.0 -> 4.3 min, 20/21 -> 21/21 planted facts kept.
+        condenseToolOutput: true
+        summaryTemplate: detailed
+        # both shoehorn models summarize on the shoehorn 27B's thinking-off
+        # route (same as the default above).
+        modelPolicies:
+          - provider: shoehorn-27b
+            model: qwen3.8-27b-uncensored-shoehorn
+            summarizationProvider: shoehorn-27b-summarizer
+            summarizationModel: qwen3.8-27b-uncensored-shoehorn
+          - provider: shoehorn-flash
+            model: qwen3.8-flash-next-uncensored-shoehorn
+            summarizationProvider: shoehorn-27b-summarizer
+            summarizationModel: qwen3.8-27b-uncensored-shoehorn
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# -- skills ------------------------------------------------------------------
+# Stock `minimal` mounts no skill rows at all, so $DSH_HOME/skills was invisible.
+# Copied verbatim from `standard`: skill-filesystem provides local-root
+# discovery, tool-skill gives the model the catalog and loader. These register
+# into this preset's layer of the host registry, so they need no realm.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
