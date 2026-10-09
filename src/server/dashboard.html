@@ -4,162 +4,165 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>shoehorn</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2308090a'/%3E%3Cpath d='M13.2 4h5.6a2 2 0 0 1 2 2v5c0 2.5 3.2 5.7 3.2 10.8 0 4.2-3.8 6.7-8 6.7s-8-2.5-8-6.7c0-5.1 3.2-8.3 3.2-10.8V6a2 2 0 0 1 2-2z' fill='%23d9a54a'/%3E%3Ccircle cx='16' cy='7.6' r='1.5' fill='%2308090a'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;500;700;900&family=Chivo+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: a single-screen cockpit. Live speed and the token belt fill the left, the memory column (RAM -> PCIe -> GPU) stands on the right, the session strip runs along the bottom. Dark only, by choice. */
+/* Layout: a quiet console. Header, a hero row (live number | scrolling speed chart), the check strip, three memory panels (GPU | PCIe | RAM), then the request list. Dark only, 1px hairlines, one brass accent. */
 :root {
   color-scheme: dark;
-  --bg: #090b0e; --deck: #10141a; --deck2: #151a21; --ink: #e9ecef; --ink2: #9aa4ae; --muted: #5d6874; --line: #1f2630;
-  --brass: #e4ac4c; --brass-dim: #6b5224; --cyan: #5cc0e6; --cyan-dim: #1f4d61; --good: #4fca72; --warn: #e8b13a; --bad: #f06a6a;
-  --f-ui: "Chivo", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --f-num: "Chivo Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --bg: #08090a; --panel: #0e0f11; --raise: #141518; --line: #1d1f23; --line2: #2a2d32;
+  --ink: #f2f3f5; --ink2: #9ba1ab; --muted: #5f6570;
+  --accent: #d9a54a; --accent-dim: rgba(217,165,74,.14); --read: #6cb6e0; --good: #4cc38a; --warn: #e2b04a; --bad: #ec6a5e;
+  --f-ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; }
-body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--f-ui); padding: 0 18px; overflow-x: hidden; }
-.num { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
-.cockpit { max-width: 1500px; margin: 0 auto; min-height: 100%; padding-block: 14px 16px; display: grid; grid-template-rows: auto 1fr auto; gap: 14px; }
-:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.5 var(--f-ui); padding: 0 24px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 18px 48px; display: grid; gap: 16px; }
+:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.cap { font: 500 11px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 
-/* top bar */
-.bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.mark { display: flex; align-items: center; gap: 9px; font-weight: 900; font-size: 19px; letter-spacing: -.01em; }
-.mark svg { width: 26px; height: 26px; }
-.tag { font: 500 12px var(--f-num); color: var(--ink2); border: 1px solid var(--line); background: var(--deck); border-radius: 5px; padding: 3px 8px; white-space: nowrap; }
-.tag b { color: var(--ink); font-weight: 500; }
-.bar .sp { flex: 1; }
-.pill { display: inline-flex; align-items: center; gap: 8px; font: 700 12px var(--f-num); letter-spacing: .12em; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink2); background: var(--deck); }
-.pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.pill.writing { color: var(--brass); border-color: var(--brass-dim); } .pill.writing i { background: var(--brass); box-shadow: 0 0 10px var(--brass); animation: blink 1s ease-in-out infinite; }
-.pill.reading { color: var(--cyan); border-color: var(--cyan-dim); } .pill.reading i { background: var(--cyan); box-shadow: 0 0 10px var(--cyan); animation: blink .6s ease-in-out infinite; }
-.pill.off i { background: var(--bad); }
-@keyframes blink { 50% { opacity: .35; } }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.word { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.word svg { width: 18px; height: 18px; }
+.crumbs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--ink2); font: 12px var(--f-mono); }
+.crumbs span + span::before { content: "/"; color: var(--line2); margin-right: 6px; }
+header .sp { flex: 1; }
+.status { display: inline-flex; align-items: center; gap: 7px; font: 12px var(--f-mono); color: var(--ink2); padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.status.writing { color: var(--ink); } .status.writing i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); animation: beat 1.2s ease-in-out infinite; }
+.status.reading i { background: var(--read); animation: beat .7s ease-in-out infinite; }
+.status.off i { background: var(--bad); }
+@keyframes beat { 50% { opacity: .4; } }
 
-/* main */
-.main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 14px; min-height: 0; }
-@media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
-.deck { background: var(--deck); border: 1px solid var(--line); border-radius: 12px; min-width: 0; position: relative; overflow: hidden; }
-.label { font: 500 11px var(--f-num); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
-
-.live { display: grid; grid-template-rows: auto auto auto auto; align-content: space-between; padding: 20px 22px 16px; gap: 6px; }
-.speed { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
-.speed .n { font: 700 clamp(84px, 13vw, 168px)/.82 var(--f-num); letter-spacing: -.06em; font-variant-numeric: tabular-nums; transition: color .4s; }
-.speed .u { font: 500 15px var(--f-num); color: var(--ink2); padding-bottom: 10px; }
-.speed .side { margin-left: auto; text-align: right; padding-bottom: 8px; display: grid; gap: 2px; }
-.speed .side b { font: 700 22px var(--f-num); }
-.speed .side span { font-size: 12px; color: var(--muted); }
-.live.writing .speed .n { color: var(--brass); text-shadow: 0 0 40px color-mix(in srgb, var(--brass) 35%, transparent); }
-.status { font-size: 16px; color: var(--ink2); min-height: 24px; }
-.status b { color: var(--ink); font-weight: 500; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.hero { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
+@media (max-width: 820px) { .hero { grid-template-columns: 1fr; } }
+.now { padding: 20px 22px; border-right: 1px solid var(--line); display: grid; align-content: space-between; gap: 18px; }
+@media (max-width: 820px) { .now { border-right: 0; border-bottom: 1px solid var(--line); } }
+.big { font: 500 64px/1 var(--f-ui); letter-spacing: -.045em; font-variant-numeric: tabular-nums; margin-top: 8px; }
+.big small { font: 400 13px var(--f-mono); letter-spacing: 0; color: var(--ink2); margin-left: 8px; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 12.5px; }
+.kv dt { color: var(--ink2); } .kv dd { margin: 0; font-family: var(--f-mono); text-align: right; }
+.chartbox { padding: 16px 18px 12px; display: grid; gap: 8px; }
+.chartbox .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.chartbox .row .mono { color: var(--ink2); font-size: 12px; }
 canvas { display: block; width: 100%; }
-#belt { height: clamp(170px, 34vh, 380px); }
-#trace { height: 70px; }
-.beltnote { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+#speed { height: 190px; }
+.strip { padding: 12px 18px 10px; display: grid; gap: 6px; }
+#checks { height: 58px; }
 
-.mem { display: grid; grid-template-rows: auto 1fr auto; padding: 18px 18px 16px; gap: 10px; }
-.box { border: 1px solid var(--line); background: var(--deck2); border-radius: 9px; padding: 12px 13px; }
-.box .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.box .hd b { font-weight: 700; font-size: 14px; }
-.box .hd span { font: 12px var(--f-num); color: var(--ink2); }
-.meter { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: #0b0e12; margin-top: 9px; }
-.meter i { display: block; height: 100%; border-right: 2px solid var(--deck2); transition: flex-grow .8s ease; }
-.meter i:last-child { border-right: 0; }
-.m-w { background: var(--brass); } .m-k { background: var(--cyan); } .m-o { background: repeating-linear-gradient(135deg, #2a323c 0 4px, transparent 4px 8px); } .m-f { background: transparent; }
-.keys { display: grid; gap: 3px; margin-top: 9px; font-size: 12.5px; color: var(--ink2); }
-.keys div { display: flex; justify-content: space-between; gap: 8px; }
-.keys i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 7px; }
-.keys .num { color: var(--ink); }
-.pipe { position: relative; min-height: 120px; display: grid; place-items: center; overflow: hidden; }
-#pcie { contain: strict; }
-#pcie { position: absolute; inset: 0; height: 100%; }
-.pipe .cap { position: relative; font: 500 11px var(--f-num); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); background: var(--deck); padding: 3px 8px; border-radius: 4px; text-align: center; }
-.pipe .cap b { display: block; font: 500 12px var(--f-num); letter-spacing: 0; text-transform: none; color: var(--ink2); margin-top: 2px; }
+.mem { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) { .mem { grid-template-columns: 1fr; } }
+.mcell { padding: 16px 18px; display: grid; gap: 12px; align-content: start; }
+.mcell + .mcell { border-left: 1px solid var(--line); }
+@media (max-width: 900px) { .mcell + .mcell { border-left: 0; border-top: 1px solid var(--line); } }
+.mhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.mhead b { font-weight: 500; font-size: 13px; }
+.mhead .mono { font-size: 12px; color: var(--ink2); }
+.mval { font: 500 26px var(--f-ui); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.mval small { font: 400 12px var(--f-mono); color: var(--ink2); letter-spacing: 0; margin-left: 4px; }
+.bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--raise); gap: 2px; }
+.bar i { display: block; height: 100%; transition: flex-grow .9s cubic-bezier(.2,.7,.2,1); }
+.b-w { background: var(--accent); } .b-k { background: var(--read); } .b-o { background: var(--line2); } .b-f { background: transparent; }
+.legend { display: grid; gap: 4px; font-size: 12px; color: var(--ink2); }
+.legend div { display: flex; justify-content: space-between; gap: 8px; }
+.legend i { display: inline-block; width: 6px; height: 6px; border-radius: 1px; margin-right: 8px; vertical-align: 1px; }
+.legend .mono { color: var(--ink); }
+#link { height: 34px; }
 
-/* session strip */
-.strip { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; }
-@media (max-width: 900px) { .strip { grid-template-columns: 1fr; } }
-.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 14px 6px; }
-@media (max-width: 620px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 12px; } }
-.stat { padding: 0 14px; border-left: 1px solid var(--line); }
-.stat:first-child { border-left: 0; }
-.stat b { display: block; font: 700 24px var(--f-num); letter-spacing: -.03em; }
-.stat b small { font-size: 12px; font-weight: 400; color: var(--ink2); letter-spacing: 0; margin-left: 3px; }
-.stat span { font-size: 12px; color: var(--muted); }
-.events { padding: 12px 16px; display: grid; gap: 5px; align-content: start; }
-.ev { display: grid; grid-template-columns: 44px 8px minmax(0, 1fr); gap: 9px; align-items: baseline; font-size: 13px; color: var(--ink2); animation: in .5s ease both; }
-.ev time { font: 12px var(--f-num); color: var(--muted); }
-.ev i { width: 7px; height: 7px; border-radius: 2px; background: var(--muted); align-self: center; }
-.ev.good i { background: var(--good); } .ev.warn i { background: var(--warn); } .ev.bad i { background: var(--bad); } .ev.brass i { background: var(--brass); }
-.ev.good, .ev.warn, .ev.bad { color: var(--ink); }
-@keyframes in { from { opacity: 0; transform: translateY(4px); } }
-.foot { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-.foot a { color: var(--ink2); }
-@media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
-@media (max-width: 520px) { body { padding: 0 16px; } .live { padding: 16px; } }
+.reqs .top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.reqs .top .sum { color: var(--ink2); font-size: 12.5px; }
+.reqs .top .sum b { color: var(--ink); font-weight: 500; }
+.list { overflow-x: auto; }
+.rowh, .r { display: grid; grid-template-columns: 64px 92px 74px 76px 74px 1fr; gap: 12px; padding: 9px 18px; align-items: center; min-width: 640px; }
+.rowh { color: var(--muted); font: 500 11px var(--f-mono); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); }
+.r { border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.r:last-child { border-bottom: 0; }
+.r .mono { color: var(--ink2); }
+.r .t { color: var(--muted); }
+.r .spd { color: var(--ink); }
+.r.live { background: linear-gradient(90deg, var(--accent-dim), transparent 60%); }
+.r.live .spd { color: var(--accent); }
+.r.enter { animation: enter .6s ease both; }
+@keyframes enter { from { opacity: 0; transform: translateY(-4px); background: var(--accent-dim); } }
+.tagz { display: flex; gap: 6px; flex-wrap: wrap; }
+.tg { font: 11px var(--f-mono); color: var(--ink2); border: 1px solid var(--line2); border-radius: 4px; padding: 0 6px; white-space: nowrap; }
+.tg.bad { color: var(--bad); border-color: rgba(236,106,94,.35); } .tg.warn { color: var(--warn); border-color: rgba(226,176,74,.35); } .tg.good { color: var(--good); border-color: rgba(76,195,138,.35); }
+.empty { color: var(--muted); padding: 22px 18px; }
+footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+@media (max-width: 520px) { body { padding: 0 16px; } .big { font-size: 52px; } }
 </style>
 </head>
 <body>
-<div class="cockpit">
-  <header class="bar">
-    <div class="mark">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="bg1" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#f4c56c"/><stop offset="1" stop-color="#c88a2c"/></linearGradient></defs>
-        <path d="M13.2 3h5.6a2.2 2.2 0 0 1 2.2 2.2v5.3c0 2.6 3.4 6 3.4 11.4 0 4.4-4 7.1-8.4 7.1s-8.4-2.7-8.4-7.1c0-5.4 3.4-8.8 3.4-11.4V5.2A2.2 2.2 0 0 1 13.2 3z" fill="url(#bg1)"/>
-        <circle cx="16" cy="7" r="1.6" fill="#090b0e"/></svg>
+<div class="wrap">
+  <header>
+    <div class="word">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.2 2h3.6c.7 0 1.2.5 1.2 1.2v3.4c0 1.6 2.1 3.8 2.1 7.1 0 2.8-2.5 4.3-5.1 4.3s-5.1-1.5-5.1-4.3c0-3.3 2.1-5.5 2.1-7.1V3.2C7 2.5 7.5 2 8.2 2z" fill="none" stroke="var(--accent)" stroke-width="1.4"/><circle cx="10" cy="4.6" r=".9" fill="var(--accent)"/></svg>
       shoehorn
     </div>
-    <span class="tag" id="tModel">–</span>
-    <span class="tag" id="tCtx"></span>
-    <span class="tag" id="tKv"></span>
+    <div class="crumbs" id="crumbs"></div>
     <span class="sp"></span>
-    <span class="pill" id="pill"><i></i><span id="pillText">connecting</span></span>
+    <span class="status" id="status"><i></i><span id="statusText">connecting</span></span>
   </header>
 
-  <section class="main">
-    <div class="deck live" id="live">
-      <span class="label" id="liveLabel">Writing speed</span>
-      <div class="speed">
-        <span class="n" id="spd">–</span><span class="u">tokens / s</span>
-        <div class="side"><b class="num" id="sideN">–</b><span id="sideL">tokens this answer</span></div>
-      </div>
-      <canvas id="belt" aria-label="Tokens confirmed by each check of the full model"></canvas>
+  <section class="panel hero">
+    <div class="now">
       <div>
-        <canvas id="trace" aria-label="Writing speed over the last two minutes"></canvas>
-        <div class="beltnote"><span id="beltNote">Each block group is the tokens one check of the full model confirmed.</span><span>speed, last 2 min</span></div>
+        <div class="cap" id="nowCap">Writing speed</div>
+        <div class="big" id="big">–<small>tok/s</small></div>
       </div>
+      <dl class="kv" id="nowKv"></dl>
     </div>
-
-    <div class="deck mem">
-      <div class="box" id="gpu"></div>
-      <div class="pipe"><canvas id="pcie"></canvas><span class="cap">PCIe<b id="pipeText">idle</b></span></div>
-      <div class="box" id="ram"></div>
+    <div class="chartbox">
+      <div class="row"><span class="cap">Tokens per second · last 2 minutes</span><span class="mono" id="peak"></span></div>
+      <canvas id="speed" aria-label="Tokens per second over the last two minutes"></canvas>
     </div>
   </section>
 
-  <section class="strip">
-    <div class="deck stats" id="stats"></div>
-    <div class="deck events" id="events"></div>
+  <section class="panel strip">
+    <div class="chartbox row" style="padding:0"><span class="cap">Tokens confirmed per check of the full model</span><span class="mono" id="perCheck" style="color:var(--ink2);font-size:12px"></span></div>
+    <canvas id="checks" aria-label="Tokens confirmed by each verify pass"></canvas>
   </section>
-  <div class="foot"><span id="sessNote"></span><span>shoehorn dashboard · updates 4× a second</span></div>
+
+  <section class="panel mem">
+    <div class="mcell" id="gpu"></div>
+    <div class="mcell" id="pcie"></div>
+    <div class="mcell" id="ram"></div>
+  </section>
+
+  <section class="panel reqs">
+    <div class="top"><span class="cap">Requests</span><span class="sum" id="sum"></span></div>
+    <div class="list">
+      <div class="rowh"><span>Time</span><span>Prompt</span><span>Cached</span><span>Wrote</span><span>tok/s</span><span>Notes</span></div>
+      <div id="rows"></div>
+    </div>
+  </section>
+  <footer><span id="foot"></span><span>live · 4 updates a second</span></footer>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const k = v => v == null ? "–" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
 const GiB = 1073741824, gb = b => b == null ? "–" : fmt(b / GiB, 1);
-const dur = s => s == null || !isFinite(s) ? "–" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s" : s < 3600 ? Math.floor(s / 60) + " min" : fmt(s / 3600, 1) + " h";
-const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const dur = s => s == null || !isFinite(s) ? "–" : s < 1 ? fmt(s * 1000) + " ms" : s < 60 ? fmt(s, s < 10 ? 1 : 0) + " s" : s < 3600 ? Math.floor(s / 60) + " min" : fmt(s / 3600, 1) + " h";
+const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
 const pct = (a, b) => b > 0 ? 100 * a / b : null;
 const plural = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : ws || w + "s"}`;
-const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const C = { brass: "#e4ac4c", cyan: "#5cc0e6", muted: "#5d6874", line: "#1f2630", ink2: "#9aa4ae", bad: "#f06a6a" };
-const GAP = 300;  // a session ends after 5 minutes without requests
+const C = { accent: "#d9a54a", read: "#6cb6e0", ink2: "#9ba1ab", muted: "#5f6570", line: "#1d1f23", line2: "#2a2d32", bad: "#ec6a5e" };
+const GAP = 300;
 
 let ALL = [], newest = -1, live = {}, cfg = {}, mem = {}, loaded = "";
-let prevGen = null, prevT = null, rate = null, bursts = [], speedHist = [], lastSample = 0, beltT = 0;  // beltT: ms, advances only while busy
+let prevGen = null, prevT = null, rate = null, shown = null, target = null;
+let samples = [];   // {t (s), v}
+let checks = [];    // {t (s), n, read}
+let seenRows = new Set();
 
-// ---------- canvases ----------
 function fit(cv) {
   const r = cv.getBoundingClientRect(), dpr = Math.max(1, Math.min(2, devicePixelRatio || 1));
   const w = Math.max(10, Math.round(r.width * dpr)), h = Math.max(10, Math.round(r.height * dpr));
@@ -167,78 +170,82 @@ function fit(cv) {
   const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { g, W: r.width, H: r.height };
 }
-// token belt: each poll's new tokens arrive as one group of blocks at the right edge and drift left
-function drawBelt(now) {
-  const { g, W, H } = fit($("belt"));
+
+// ---- speed chart: continuous scroll, smoothed line, dotted grid, live endpoint
+function drawSpeed(nowS) {
+  const { g, W, H } = fit($("speed")), span = 120, padL = 34, padB = 18;
   g.clearRect(0, 0, W, H);
-  const v = 70;  // px per second drift
-  const bw = 7, gap = 2, rows = Math.max(3, Math.floor((H - 30) / (bw + gap)));
-  // baseline grid
-  g.strokeStyle = C.line; g.lineWidth = 1;
-  for (let x = W; x > 0; x -= v * 5) { g.beginPath(); g.moveTo(Math.round(x) + .5, 6); g.lineTo(Math.round(x) + .5, H - 18); g.stroke(); }
-  now = beltT;
-  bursts = bursts.filter(b => W - (now - b.t) / 1000 * v > -120);
-  for (const b of bursts) {
-    const age = (now - b.t) / 1000, x0 = W - 8 - age * v - Math.ceil(b.n / rows) * (bw + gap);
-    const cols = Math.ceil(b.n / rows), alpha = live.busy ? Math.max(.25, 1 - age / 14) : Math.max(.35, 1 - age / 14), fresh = Math.max(0, 1 - age * 3);
-    g.fillStyle = b.miss ? C.bad : b.read ? C.cyan : C.brass;
-    for (let i = 0; i < b.n; i++) {
-      const c = Math.floor(i / rows), r = i % rows;
-      const x = x0 + c * (bw + gap), y = H - 22 - (r + 1) * (bw + gap) - fresh * 10 * (1 - r / rows);
-      g.globalAlpha = alpha;
-      g.fillRect(x, y, bw, bw);
-    }
-    g.globalAlpha = Math.min(1, alpha + .2);
-    if (cols >= 1 && b.n > 0) { g.fillStyle = C.ink2; g.font = "11px 'Chivo Mono', monospace"; g.textAlign = "center"; g.fillText(b.label || ("+" + b.n), x0 + cols * (bw + gap) / 2, H - 6); }
-    g.globalAlpha = 1;
+  const pts = samples.filter(p => nowS - p.t <= span + 2);
+  const vals = pts.filter(p => p.v != null).map(p => p.v);
+  const top = Math.max(40, Math.ceil(Math.max(0, ...vals) * 1.15 / 20) * 20);
+  const X = t => padL + (W - padL) * (1 - (nowS - t) / span), Y = v => (H - padB) - (H - padB - 8) * v / top;
+  g.font = "11px 'Geist Mono', monospace"; g.fillStyle = C.muted; g.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const v = top * i / 4, y = Math.round(Y(v)) + .5;
+    g.strokeStyle = i ? C.line : C.line2; g.setLineDash(i ? [2, 4] : []); g.beginPath(); g.moveTo(padL, y); g.lineTo(W, y); g.stroke();
+    g.fillText(fmt(v), padL - 8, y + 3.5);
   }
-  if (!live.busy && !bursts.length) {
-    g.fillStyle = C.muted; g.font = "13px Chivo, sans-serif"; g.textAlign = "center";
-    g.fillText(live.down ? "server offline" : "waiting for the next request", W / 2, H / 2);
+  g.setLineDash([]); g.textAlign = "center";
+  for (const s of [120, 90, 60, 30]) g.fillText(s === 120 ? "−2 min" : `−${s}s`, X(nowS - s), H - 3);
+  // segments where the model was writing
+  let seg = [];
+  const segs = [];
+  for (const p of pts) { if (p.v == null) { if (seg.length) segs.push(seg); seg = []; } else seg.push(p); }
+  if (seg.length) segs.push(seg);
+  for (const s of segs) {
+    if (s.length < 2) continue;
+    g.beginPath();
+    s.forEach((p, i) => { const x = X(p.t), y = Y(p.v); if (!i) g.moveTo(x, y); else { const q = s[i - 1], mx = (X(q.t) + x) / 2; g.bezierCurveTo(mx, Y(q.v), mx, y, x, y); } });
+    g.strokeStyle = C.accent; g.lineWidth = 1.5; g.stroke();
+    g.lineTo(X(s[s.length - 1].t), H - padB); g.lineTo(X(s[0].t), H - padB); g.closePath();
+    const grd = g.createLinearGradient(0, 0, 0, H); grd.addColorStop(0, "rgba(217,165,74,.22)"); grd.addColorStop(1, "rgba(217,165,74,0)");
+    g.fillStyle = grd; g.fill();
   }
+  const last = pts[pts.length - 1];
+  if (last && last.v != null && live.busy) {
+    const x = X(last.t), y = Y(last.v);
+    g.fillStyle = C.accent; g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill();
+    g.strokeStyle = "rgba(217,165,74,.35)"; g.beginPath(); g.arc(x, y, 7 + 2 * Math.sin(nowS * 6), 0, 7); g.stroke();
+  }
+  if (!vals.length) { g.fillStyle = C.muted; g.textAlign = "center"; g.font = "12px Geist, sans-serif"; g.fillText("The line draws itself while shoehorn writes.", padL + (W - padL) / 2, (H - padB) / 2); }
 }
-function drawTrace() {
-  const { g, W, H } = fit($("trace"));
+// ---- check strip: one thin bar per check, scrolling
+function drawChecks(nowS) {
+  const { g, W, H } = fit($("checks")), span = 60;
   g.clearRect(0, 0, W, H);
-  const now = Date.now() / 1000, span = 120, pts = speedHist.filter(p => now - p.t <= span);
-  const max = Math.max(30, ...pts.map(p => p.v || 0)) * 1.15;
-  g.strokeStyle = C.line; g.beginPath(); g.moveTo(0, H - .5); g.lineTo(W, H - .5); g.stroke();
-  if (!pts.some(p => p.v != null)) return;
-  const X = t => W - (now - t) / span * W, Y = v => H - 3 - (H - 8) * v / max;
-  g.beginPath(); let pen = false, firstX = 0, lastX = 0;
-  for (const p of pts) { if (p.v == null) { pen = false; continue; } const x = X(p.t), y = Y(p.v); if (!pen) { g.moveTo(x, y); firstX = x; } else g.lineTo(x, y); pen = true; lastX = x; }
-  g.strokeStyle = C.brass; g.lineWidth = 2; g.lineJoin = "round"; g.stroke();
-  const grd = g.createLinearGradient(0, 0, 0, H); grd.addColorStop(0, "rgba(228,172,76,.28)"); grd.addColorStop(1, "rgba(228,172,76,0)");
-  g.lineTo(lastX, H); g.lineTo(firstX, H); g.closePath(); g.fillStyle = grd; g.fill();
-  g.fillStyle = C.muted; g.font = "11px 'Chivo Mono', monospace"; g.textAlign = "left"; g.fillText(fmt(max / 1.15) + " tok/s", 2, 11);
-}
-// PCIe: particles rising from RAM to the GPU while the residual streams (every check)
-const parts = [];
-function drawPcie(dt) {
-  const { g, W, H } = fit($("pcie"));
-  g.clearRect(0, 0, W, H);
-  const cx = W / 2, lanes = [-18, -9, 0, 9, 18];
-  g.strokeStyle = C.line; g.lineWidth = 1;
-  for (const l of lanes) { g.beginPath(); g.moveTo(cx + l + .5, 0); g.lineTo(cx + l + .5, H); g.stroke(); }
-  const streaming = live.busy && live.gen > 0, reading = live.busy && !(live.gen > 0);
-  const rateP = streaming ? 90 : reading ? 40 : 0;   // particles per second
-  if (!reduced) for (let i = 0; i < rateP * dt; i++) parts.push({ l: Math.floor(Math.random() * lanes.length), y: H + Math.random() * 10, v: 140 + Math.random() * 120, c: streaming ? C.brass : C.cyan });
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const p = parts[i]; p.y -= p.v * dt;
-    if (p.y < -10) { parts.splice(i, 1); continue; }
-    g.fillStyle = p.c; g.globalAlpha = .55 + .45 * (1 - Math.max(0, p.y) / H);
-    g.fillRect(cx + lanes[p.l] - 1.5, p.y, 3, 8);
+  g.strokeStyle = C.line2; g.beginPath(); g.moveTo(0, H - .5); g.lineTo(W, H - .5); g.stroke();
+  const recent = checks.filter(c => nowS - c.t <= span);
+  const top = Math.max(16, ...recent.map(c => c.n));
+  for (const c of recent) {
+    const x = W * (1 - (nowS - c.t) / span), h = Math.max(2, (H - 6) * c.n / top), fresh = Math.max(0, 1 - (nowS - c.t) * 2);
+    g.fillStyle = c.read ? C.read : C.accent; g.globalAlpha = .5 + .5 * fresh + 0;
+    g.fillRect(Math.round(x) - 1, H - 1 - h, 2, h);
   }
   g.globalAlpha = 1;
+  if (!recent.length) { g.fillStyle = C.muted; g.font = "12px Geist, sans-serif"; g.textAlign = "left"; g.fillText(live.busy ? "reading the prompt…" : "Each bar is one pass of the full model; its height is how many drafted tokens it confirmed.", 0, H / 2 + 4); }
+}
+// ---- PCIe link: a hairline with a light running along it while the residual streams
+function drawLink(nowS) {
+  const { g, W, H } = fit($("link")), y = H / 2;
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = C.line2; g.lineWidth = 1; g.beginPath(); g.moveTo(0, y + .5); g.lineTo(W, y + .5); g.stroke();
+  g.fillStyle = C.muted; g.font = "10px 'Geist Mono', monospace"; g.textAlign = "left"; g.fillText("RAM", 0, y - 7); g.textAlign = "right"; g.fillText("GPU", W, y - 7);
+  const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+  if (!writing && !reading) return;
+  const speed = writing ? 1.6 : .8, col = writing ? "217,165,74" : "108,182,224";
+  for (let i = 0; i < 3; i++) {
+    const p = ((nowS * speed + i / 3) % 1), x = p * W;
+    const grd = g.createLinearGradient(x - 70, 0, x, 0); grd.addColorStop(0, `rgba(${col},0)`); grd.addColorStop(1, `rgba(${col},.95)`);
+    g.strokeStyle = grd; g.lineWidth = 2; g.beginPath(); g.moveTo(Math.max(0, x - 70), y + .5); g.lineTo(x, y + .5); g.stroke();
+  }
 }
 
-// ---------- requests and sessions ----------
+// ---- data helpers
 function annotate(R) {
-  let main = null;
-  let prevEnd = -Infinity;
+  let main = null, prevEnd = -Infinity;
   for (const r of R) {
     r.start = r.t - (r.prefill_s || 0) - (r.decode_s || 0);
-    if (r.start - prevEnd > GAP) main = null;  // a new session: nothing to compare with
+    if (r.start - prevEnd > GAP) main = null;
     prevEnd = Math.max(prevEnd, r.t);
     r.isSide = r.side === "parked" || r.side == null && main != null && main.prompt_tokens > 4000 && r.prompt_tokens < main.prompt_tokens * 0.4 && r.reused_tokens < 256;
     const fresh = r.prompt_tokens - r.reused_tokens;
@@ -248,129 +255,138 @@ function annotate(R) {
     if (!r.isSide && !r.warmup) main = r;
   }
 }
-function lastSession() {
-  const S = [];
-  for (const r of ALL) {
-    if (r.warmup) continue;
-    const c = S[S.length - 1];
-    if (!c || r.start - c.end > GAP) S.push({ start: r.start, end: r.t, R: [r] });
-    else { c.R.push(r); c.end = r.t; }
-  }
-  return S[S.length - 1];
+function session() {
+  let s = null;
+  for (const r of ALL) { if (r.warmup) continue; if (!s || r.start - s.end > GAP) s = { start: r.start, end: r.t, R: [r] }; else { s.R.push(r); s.end = r.t; } }
+  return s;
 }
 const speedOf = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
+const lastSpec = () => [...ALL].reverse().find(r => r.spec && r.spec.cycles && r.gen_tokens >= 16);
 
-// ---------- DOM panels ----------
-function renderTop(d) {
-  $("tModel").innerHTML = d.loaded ? `<b>${d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")}</b>` : "model <b>unloaded</b>";
-  $("tCtx").innerHTML = cfg.ctx ? `context <b>${k(cfg.ctx)}</b>` : "";
-  $("tKv").innerHTML = cfg.kv ? `KV <b>${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</b>${cfg.window ? ` · window <b>${k(cfg.window)}</b>` : ""}` : "";
-  $("tCtx").hidden = !cfg.ctx; $("tKv").hidden = !cfg.kv;
+// ---- DOM
+function renderHeader(d) {
+  const c = [];
+  c.push(`<span>${d.loaded ? d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "") : "no model loaded"}</span>`);
+  if (cfg.ctx) c.push(`<span>ctx ${k(cfg.ctx)}</span>`);
+  if (cfg.kv) c.push(`<span>kv ${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</span>`);
+  if (cfg.window && d.loaded) c.push(`<span>vram window ${k(cfg.window)}</span>`);
+  const h = c.join(""); if ($("crumbs").dataset.h !== h) { $("crumbs").innerHTML = h; $("crumbs").dataset.h = h; }
+  const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+  $("status").className = "status" + (writing ? " writing" : reading ? " reading" : live.down ? " off" : "");
+  $("statusText").textContent = live.down ? "offline" : writing ? "writing" : reading ? "reading prompt" : loaded ? "idle" : "idle · model unloaded";
 }
-function renderLive() {
-  const L = live, writing = L.busy && L.gen > 0, reading = L.busy && !writing;
-  $("pill").className = "pill" + (writing ? " writing" : reading ? " reading" : L.down ? " off" : "");
-  $("pillText").textContent = L.down ? "offline" : writing ? "writing" : reading ? "reading" : loaded ? "idle" : "idle · GPU free";
-  $("live").className = "deck live" + (writing ? " writing" : "");
-  const last = [...ALL].reverse().find(r => r.gen_tokens >= 16);
+function renderNow() {
+  const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+  const last = [...ALL].reverse().find(r => r.gen_tokens >= 16), ls = lastSpec();
+  let cap, val, rows;
   if (writing) {
-    $("liveLabel").textContent = "Writing now";
-    $("spd").textContent = fmt(rate ?? (L.elapsed_s > 0 ? L.gen / L.elapsed_s : 0), 0);
-    $("sideN").textContent = fmt(L.gen); $("sideL").textContent = "tokens this answer";
+    cap = "Writing now"; target = rate ?? (live.elapsed_s > 0 ? live.gen / live.elapsed_s : 0);
+    rows = [["Tokens so far", fmt(live.gen)], ["Elapsed", dur(live.elapsed_s)], ["Prompt", k(live.prompt) + " tok"]];
   } else if (reading) {
-    $("liveLabel").textContent = "Reading the prompt";
-    $("spd").textContent = "…";
-    $("sideN").textContent = k(L.prompt); $("sideL").textContent = "prompt tokens";
+    cap = "Reading the prompt"; target = null;
+    rows = [["Prompt", k(live.prompt) + " tok"], ["Elapsed", dur(live.elapsed_s)], ["", ""]];
   } else {
-    $("liveLabel").textContent = last ? "Last answer" : "Writing speed";
-    $("spd").textContent = last ? fmt(last.gen_tokens / last.decode_s, 0) : "–";
-    $("sideN").textContent = last ? fmt(last.gen_tokens) : "–"; $("sideL").textContent = last ? `tokens, ${dur(Date.now() / 1e3 - last.t)} ago` : "no answers yet";
+    cap = last ? "Last answer" : "Writing speed"; target = last ? last.gen_tokens / last.decode_s : null;
+    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"], ["Prompt", `${k(last.prompt_tokens)} · ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`]] : [["", ""]];
   }
+  $("nowCap").textContent = cap;
+  const h = rows.filter(r => r[0]).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join("");
+  if ($("nowKv").dataset.h !== h) { $("nowKv").innerHTML = h; $("nowKv").dataset.h = h; }
+  $("perCheck").textContent = ls ? `last answer: ${fmt(ls.gen_tokens / ls.spec.cycles, 1)} tok per check · ${fmt(1000 * ls.spec.verify_s / ls.spec.cycles, 0)} ms each` : "";
+}
+function tweenBig() {  // the number eases toward its target instead of jumping
+  if (target == null) { $("big").innerHTML = `${live.busy ? "…" : "–"}<small>tok/s</small>`; shown = null; return; }
+  shown = shown == null ? target : shown + (target - shown) * .12;
+  $("big").innerHTML = `${fmt(shown, 0)}<small>tok/s</small>`;
 }
 function renderMem() {
   const m = mem;
-  if (!m.vram_total) { $("gpu").innerHTML = `<div class="hd"><b>Graphics card</b><span>–</span></div>`; $("ram").innerHTML = `<div class="hd"><b>System memory</b><span>–</span></div>`; return; }
-  const vUsed = m.vram_total - m.vram_free, wG = loaded ? (m.weights_gpu || 0) : 0, wC = loaded ? (m.residual || 0) + (m.weights_cpu || 0) : 0, kv = m.kv_ram || 0;
-  const vOther = Math.max(0, vUsed - wG), rUsed = m.ram_total - m.ram_avail, rOther = Math.max(0, rUsed - wC - kv);
-  const box = (name, total, segs) => {
-    const free = Math.max(0, total - segs.reduce((s, x) => s + x.b, 0));
-    return `<div class="hd"><b>${name}</b><span>${gb(total - free)} / ${gb(total)} GB</span></div>
-      <div class="meter">${[...segs, { c: "f", b: free }].map(x => x.b > 0 ? `<i class="m-${x.c}" style="flex-grow:${x.b}"></i>` : "").join("")}</div>
-      <div class="keys">${segs.filter(x => x.b > 0).map(x => `<div><span><i class="m-${x.c}"></i>${x.l}</span><span class="num">${gb(x.b)}</span></div>`).join("")}</div>`;
+  if (!m.vram_total) return;
+  const wG = loaded ? (m.weights_gpu || 0) : 0, wC = loaded ? (m.residual || 0) + (m.weights_cpu || 0) : 0, kv = m.kv_ram || 0;
+  const vUsed = m.vram_total - m.vram_free, vOther = Math.max(0, vUsed - wG), rUsed = m.ram_total - m.ram_avail, rOther = Math.max(0, rUsed - wC - kv);
+  const cell = (name, total, segs, note) => {
+    const used = segs.reduce((s, x) => s + x.b, 0), free = Math.max(0, total - used);
+    return `<div class="mhead"><b>${name}</b><span class="mono">${gb(total)} GB</span></div>
+      <div class="mval">${gb(used)}<small>GB used</small></div>
+      <div class="bar">${[...segs, { c: "f", b: free }].map(x => x.b > 0 ? `<i class="b-${x.c}" style="flex-grow:${x.b}"></i>` : "").join("")}</div>
+      <div class="legend">${segs.filter(x => x.b > 0).map(x => `<div><span><i class="b-${x.c}"></i>${x.l}</span><span class="mono">${gb(x.b)}</span></div>`).join("")}</div>${note ? `<div class="legend">${note}</div>` : ""}`;
   };
-  $("gpu").innerHTML = box("Graphics card", m.vram_total, loaded
-    ? [{ c: "w", b: wG, l: "base weights (4-bit)" }, { c: "k", b: vOther, l: "recent context, working memory" }]
-    : [{ c: "o", b: vUsed, l: "desktop and other apps" }]);
-  $("ram").innerHTML = box("System memory", m.ram_total, [{ c: "w", b: wC, l: "residual weights (the other 4 bits)" }, { c: "k", b: kv, l: "conversation memory" }, { c: "o", b: rOther, l: "everything else" }]);
-  const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
-  $("pipeText").textContent = !loaded ? "model unloaded" : writing ? "residual streaming" : reading ? "reading prompt" : "idle";
+  const gpu = cell("Graphics card", m.vram_total, loaded
+    ? [{ c: "w", b: wG, l: "4-bit base weights" }, { c: "k", b: vOther, l: "context window, buffers" }]
+    : [{ c: "o", b: vUsed, l: "desktop, other apps" }]);
+  const ram = cell("System memory", m.ram_total, [{ c: "w", b: wC, l: "residual weights" }, { c: "k", b: kv, l: "conversation memory" }, { c: "o", b: rOther, l: "other programs" }]);
+  if ($("gpu").dataset.h !== gpu) { $("gpu").innerHTML = gpu; $("gpu").dataset.h = gpu; }
+  if ($("ram").dataset.h !== ram) { $("ram").innerHTML = ram; $("ram").dataset.h = ram; }
+  // PCIe: the residual crosses the link once per check, so traffic = residual size / check time
+  const ls = lastSpec(), res = m.residual || 0;
+  const perCheckS = ls ? ls.spec.verify_s / ls.spec.cycles : null, bw = perCheckS && res ? res / perCheckS : null;
+  const writing = live.busy && live.gen > 0;
+  const p = `<div class="mhead"><b>PCIe link</b><span class="mono">${writing ? "streaming" : live.busy ? "prompt" : "quiet"}</span></div>
+    <div class="mval">${bw ? fmt(bw / 1e9, 0) : "–"}<small>GB/s during a check</small></div>
+    <canvas id="link"></canvas>
+    <div class="legend"><div><span>Residual sent per check</span><span class="mono">${res ? gb(res) + " GB" : "–"}</span></div>
+      <div><span>Check takes</span><span class="mono">${perCheckS ? fmt(perCheckS * 1000, 0) + " ms" : "–"}</span></div></div>`;
+  if ($("pcie").dataset.h !== p) { $("pcie").innerHTML = p; $("pcie").dataset.h = p; }
 }
-function renderSession() {
+function renderList() {
   annotate(ALL);
-  const s = lastSession();
-  if (!s) { $("stats").innerHTML = `<div class="stat"><b>–</b><span>no sessions yet</span></div>`; $("events").innerHTML = ""; $("sessNote").textContent = ""; return; }
-  const R = s.R, isLive = live.busy || Date.now() / 1e3 - s.end < GAP;
-  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), misses = R.filter(r => r.miss);
-  const st = (v, u, l) => `<div class="stat"><b>${v}${u ? `<small>${u}</small>` : ""}</b><span>${l}</span></div>`;
-  $("stats").innerHTML =
-    st(dur((isLive ? Date.now() / 1e3 : s.end) - s.start), "", isLive ? "session so far" : "last session") +
-    st(fmt(R.length), "", `requests · ${plural(sum(R, r => r.tool_calls), "tool call")}`) +
-    st(k(sum(R, r => r.gen_tokens)), "", "tokens written") +
-    st(fmt(speedOf(R), 0), "tok/s", "average speed") +
-    st(fmt(pct(reused, prompt), 0), "%", misses.length ? `from cache · ${plural(misses.length, "miss", "misses")}` : "from cache");
-  $("sessNote").textContent = `${isLive ? "Current" : "Last"} session started ${clock(s.start)}${s.start < Date.now() / 1e3 - 86400 ? " on " + new Date(s.start * 1000).toLocaleDateString() : ""}.`;
-  const ev = [];
-  for (const r of R) {
-    if (r.miss) ev.push({ t: r.t, c: "bad", h: `Cache miss: re-read ${k(r.prompt_tokens - r.reused_tokens)} tokens (${dur(r.prefill_s)})` });
-    else if (r.side === "resumed") ev.push({ t: r.t, c: "good", h: `Conversation resumed, ${k(r.reused_tokens)} tokens kept` });
-    else if (r.side === "parked") ev.push({ t: r.t, c: "good", h: `Title request ran on the side slot` });
-    else if (r.isSide) ev.push({ t: r.t, c: "", h: `Side request, ${k(r.prompt_tokens)} tokens` });
-    if (r.loop) ev.push({ t: r.t, c: "warn", h: `Answer started repeating itself` });
-    if (r.finish === "length") ev.push({ t: r.t, c: "warn", h: `Answer cut off at the token limit` });
-    if (!r.miss && !r.isSide && r.gen_tokens >= 16) ev.push({ t: r.t, c: "", h: `Wrote ${fmt(r.gen_tokens)} tokens at ${fmt(r.gen_tokens / r.decode_s, 0)} tok/s${r.tool_calls ? " → " + plural(r.tool_calls, "tool call") : ""}` });
+  const s = session();
+  const R = s ? s.R : [];
+  const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), misses = R.filter(r => r.miss).length;
+  const isLive = s && (live.busy || Date.now() / 1e3 - s.end < GAP);
+  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session · started ${clock(s.start).slice(0, 5)} · <b>${plural(R.length, "request")}</b> · <b>${k(sum(R, r => r.gen_tokens))}</b> tokens · <b>${fmt(speedOf(R), 0)}</b> tok/s avg · <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? ` · <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
+  let html = "";
+  if (live.busy) {
+    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">–</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) : "…"}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
   }
-  const html = ev.slice(-5).reverse().map(e => `<div class="ev ${e.c}"><time>${clock(e.t)}</time><i></i><span>${e.h}</span></div>`).join("");
-  if ($("events").dataset.h !== html) { $("events").innerHTML = html; $("events").dataset.h = html; }
+  const rows = R.slice(-14).reverse();
+  for (const r of rows) {
+    const id = String(r.t), fresh = !seenRows.has(id); seenRows.add(id);
+    const tg = [];
+    if (r.miss) tg.push(`<span class="tg bad">cache miss</span>`);
+    if (r.side === "parked") tg.push(`<span class="tg good">side slot</span>`); else if (r.isSide) tg.push(`<span class="tg">side</span>`);
+    if (r.side === "resumed") tg.push(`<span class="tg good">resumed</span>`);
+    if (r.tool_calls) tg.push(`<span class="tg">${plural(r.tool_calls, "tool call")}</span>`);
+    if (r.loop) tg.push(`<span class="tg warn">repetition</span>`);
+    if (r.finish === "length") tg.push(`<span class="tg warn">cut off</span>`);
+    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</span><span class="tagz">${tg.join("")}</span></div>`;
+  }
+  if (!html) html = `<div class="empty">Requests show up here as dsh sends them.</div>`;
+  if ($("rows").dataset.h !== html) { $("rows").innerHTML = html; $("rows").dataset.h = html; }
+  renderList.ready = true;
+  $("foot").textContent = s && !isLive ? `Last activity ${dur(Date.now() / 1e3 - s.end)} ago` : "";
 }
 
-// ---------- polling ----------
+// ---- polling
 async function poll() {
   let d;
   try { d = await (await fetch("/stats?since=" + newest, { cache: "no-store" })).json(); }
-  catch (e) { live = { down: true }; renderLive(); return; }
-  let added = false;
-  for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; added = true; }
-  const now = performance.now(), wall = Date.now() / 1000;
-  const was = live;
+  catch (e) { live = { down: true }; $("status").className = "status off"; $("statusText").textContent = "offline"; return; }
+  for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; }
+  const nowP = performance.now(), nowS = Date.now() / 1000, was = live;
   live = d.live || {}; cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || "";
-  // new tokens since the last poll arrive on the belt as one group (a check of the full model, or two)
   if (live.busy && live.gen > 0) {
     if (prevGen != null && live.gen > prevGen) {
-      const n = live.gen - prevGen, dt = (now - prevT) / 1000;
-      bursts.push({ t: beltT, n: Math.min(n, 120) });
-      const inst = n / Math.max(dt, .05);
-      rate = rate == null ? inst : rate * .7 + inst * .3;
+      const n = live.gen - prevGen, inst = n / Math.max(.05, (nowP - prevT) / 1000);
+      checks.push({ t: nowS, n });
+      rate = rate == null ? inst : rate * .75 + inst * .25;
     }
-    if (prevGen == null || live.gen >= prevGen) { prevGen = live.gen; prevT = now; }
-  } else {
-    if (was.busy && !live.busy && prevGen != null) bursts.push({ t: beltT, n: 0, label: "done" });
-    prevGen = null; rate = null;
-  }
-  if (live.busy && !(live.gen > 0) && !(was.busy && !(was.gen > 0))) bursts.push({ t: beltT, n: Math.min(60, Math.ceil((live.prompt || 0) / 400)), read: true, label: `read ${k(live.prompt)}` });
-  if (wall - lastSample >= 1) { speedHist.push({ t: wall, v: live.busy && live.gen > 0 ? rate : null }); lastSample = wall; speedHist = speedHist.filter(p => wall - p.t <= 125); }
-  renderTop(d); renderLive(); renderMem(); drawTrace();
-  if (added || !poll.n || poll.n % 20 === 0) renderSession();
+    if (prevGen == null || live.gen >= prevGen) { prevGen = live.gen; prevT = nowP; }
+  } else { prevGen = null; rate = null; }
+  samples.push({ t: nowS, v: live.busy && live.gen > 0 && rate != null ? rate : null });
+  samples = samples.filter(p => nowS - p.t <= 125); checks = checks.filter(c => nowS - c.t <= 65);
+  renderHeader(d); renderNow(); renderMem();
+  if (!poll.n || poll.n % 4 === 0 || (was.busy !== live.busy)) renderList();
   poll.n = (poll.n || 0) + 1;
 }
-let lastFrame = performance.now();
-function frame(t) {
-  const real = Math.min(1, (t - lastFrame) / 1000), dt = Math.min(.1, real); lastFrame = t;
-  if (live.busy) beltT += real * 1000;  // real time, so a throttled tab still keeps the belt honest
-  drawBelt(t); drawPcie(dt);
+function frame() {
+  const nowS = Date.now() / 1000;
+  drawSpeed(nowS); drawChecks(nowS); if ($("link")) drawLink(nowS); tweenBig();
   requestAnimationFrame(frame);
 }
 poll(); setInterval(poll, 250);
 requestAnimationFrame(frame);
+addEventListener("load", () => renderMem());
 </script>
 </body>
 </html>

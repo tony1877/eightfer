@@ -1579,6 +1579,12 @@ int serve(const std::vector<std::string> & args) {
         resp.set_content(page, "text/html; charset=utf-8");
     });
     // /stats?since=T: only the timing lines after T (the dashboard polls with its newest line's t)
+    http.Get("/favicon.ico", [](const httplib::Request &, httplib::Response & resp) {  // the dashboard's mark
+        resp.set_header("Cache-Control", "max-age=86400");
+        resp.set_content(R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#08090a"/>)"
+                         R"(<path d="M13.2 4h5.6a2 2 0 0 1 2 2v5c0 2.5 3.2 5.7 3.2 10.8 0 4.2-3.8 6.7-8 6.7s-8-2.5-8-6.7c0-5.1 3.2-8.3 3.2-10.8V6a2 2 0 0 1 2-2z" fill="#d9a54a"/>)"
+                         R"(<circle cx="16" cy="7.6" r="1.5" fill="#08090a"/></svg>)", "image/svg+xml");
+    });
     http.Get("/stats", [&](const httplib::Request & req, httplib::Response & resp) {
         const double since = req.has_param("since") ? std::atof(req.get_param_value("since").c_str()) : -1;
         const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
