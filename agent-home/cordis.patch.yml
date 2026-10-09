@@ -22,3 +22,17 @@
   config:
     path: !!js dshHomePath('session-index', 'sessions.db')
     openAt: first-search
+
+# Session titles on the thinking-off summarizer route: with thinking on, the
+# 64-token title budget went to reasoning, and the title request (which runs
+# before the first message) cost about 3 s. A row patch replaces the whole
+# config, so the bundle's values are repeated.
+- id: session-title-llm
+  config:
+    targetWords: 5
+    targetCjkCharacters: 10
+    maxInputBytes: 4096
+    maxOutputTokens: 64
+    timeoutMs: 60000
+    provider: shoehorn-27b-summarizer
+    model: qwen3.8-27b-uncensored-shoehorn
