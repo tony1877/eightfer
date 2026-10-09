@@ -1,4 +1,5 @@
 #include "model/qwen35.h"
+#include "model/traffic.h"
 
 #include "kernels/q4k_small.h"
 
@@ -497,6 +498,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
         }
         ggml_backend_buffer_set_usage(mbuf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         gpu_bytes_ += ggml_backend_buffer_get_size(mbuf_);
+        traffic::mtp_bytes = ggml_backend_buffer_get_size(mbuf_);
         if (!read_tensors(path, file_, ml, err)) return false;
     }
     ggml_init_params sp    = { ggml_tensor_overhead() * (size_t) (h.n_layer * 14 + 16), nullptr, true };
@@ -766,6 +768,7 @@ bool Qwen35::load(const std::string & path, const LoadOptions & opt, std::string
     graph_meta_.resize(ggml_tensor_overhead() * kGraphSize + ggml_graph_overhead_custom(kGraphSize, false));
     graph_meta_draft_.resize(graph_meta_.size());
     graph_meta_mtp_.resize(graph_meta_.size());
+    traffic::base_bytes = gpu_bytes_ - (mbuf_ ? ggml_backend_buffer_get_size(mbuf_) : 0);
     return true;
 }
 
@@ -1559,6 +1562,8 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     }
     if (rbuf_) ggml_backend_buffer_set_usage(rbuf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     res_bytes_ = (rbuf_ ? ggml_backend_buffer_get_size(rbuf_) : 0) + res_gpu_bytes_;
+    traffic::res_vram_bytes = res_gpu_bytes_;
+    traffic::res_ram_bytes  = res_bytes_ - res_gpu_bytes_;
     if (res_gpu_bytes_) {
         fprintf(stderr, "residual: %.2f GB in VRAM, %.2f GB in RAM\n", res_gpu_bytes_ / 1e9, (res_bytes_ - res_gpu_bytes_) / 1e9);
     }
@@ -2173,6 +2178,7 @@ bool Qwen35::mtp_step(int32_t tok, int pos, int hid_row, float * logits, int32_t
     }
     ggml_backend_tensor_set(inp_m, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
     const bool ok = ggml_backend_sched_graph_compute(sched_, gf) == GGML_STATUS_SUCCESS;
+    if (ok) traffic::mtp();
     if (ok) {
         if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
         if (oids && id) ggml_backend_tensor_get(oids, id, 0, ggml_nbytes(oids));
@@ -2277,6 +2283,7 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     ggml_context *   ctx = ggml_init(ip);
     ggml_tensor *    inp_tok = nullptr, * inp_pos = nullptr, * inp_mask = nullptr, * out = nullptr;
     ggml_cgraph *    gf      = build_graph(ctx, n, opts, inp_tok, inp_pos, inp_mask, out, n_kv);
+    const bool       with_res = use_res_;
     use_res_                 = false;
     write_state_             = true;
 
@@ -2391,6 +2398,7 @@ bool Qwen35::eval(const int32_t * tokens, int n, const EvalOpts & opts, float * 
     }
 
     const ggml_status st = ggml_backend_sched_graph_compute(sched_, gf);
+    if (st == GGML_STATUS_SUCCESS) traffic::pass(with_res);
     if (st != GGML_STATUS_SUCCESS) {
         ggml_free(ctx);
         err = "eval: graph compute failed";
@@ -2716,6 +2724,7 @@ bool Qwen35::eval_multi(const std::vector<MultiSeq> & seqs, int topk, float * lo
         err = "eval_multi: graph compute failed";
         return false;
     }
+    traffic::pass(has_residual());
     if (logits) ggml_backend_tensor_get(out, logits, 0, ggml_nbytes(out));
     if (oids && ids) ggml_backend_tensor_get(oids, ids, 0, ggml_nbytes(oids));
     if (mtp_on_) {
@@ -3228,6 +3237,7 @@ bool Qwen35::draft_eval(const std::vector<std::vector<int32_t>> & ins, int topk,
         err = "draft_eval: graph compute failed";
         return false;
     }
+    traffic::pass(false);
     // the real rows of each member, in order (padding rows dropped)
     auto take = [&](ggml_tensor * t, void * dst) {  // (rows of out / oids: 1 id, topk values or ids, or n_vocab logits)
         const size_t rs = argmax ? sizeof(int32_t) : topk > 0 ? (size_t) topk * sizeof(int32_t) : (size_t) h.n_vocab * sizeof(float);
@@ -3445,6 +3455,7 @@ bool Qwen35::draft_mtp_multi(const std::vector<MtpItem> & items, int topk, bool 
         ggml_backend_tensor_set(inp_p, pos.data(), 0, pos.size() * sizeof(int32_t));
     }
     const bool ok = ggml_backend_sched_graph_compute(sched_, gf) == GGML_STATUS_SUCCESS;
+    if (ok) traffic::mtp();
     if (ok) {
         if (argmax) {
             if (ids) ggml_backend_tensor_get(out, ids, 0, ggml_nbytes(out));

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: a quiet console. Header, a hero row (live number | scrolling speed chart), the check strip, three memory panels (GPU | PCIe | RAM), then the request list. Dark only, 1px hairlines, one brass accent. */
+/* Layout: a quiet console. Header, a hero row (live number | scrolling speed chart), three memory panels (GPU | PCIe | RAM), the hardware row (memory reads | temperatures), then the request list. Dark only, 1px hairlines, one brass accent. */
 :root {
   color-scheme: dark;
   --bg: #08090a; --panel: #0e0f11; --raise: #141518; --line: #1d1f23; --line2: #2a2d32;
@@ -52,8 +52,19 @@ header .sp { flex: 1; }
 .chartbox .row .mono { color: var(--ink2); font-size: 12px; }
 canvas { display: block; width: 100%; }
 #speed { height: 190px; }
-.strip { padding: 12px 18px 10px; display: grid; gap: 6px; }
-#checks { height: 58px; }
+.prog { height: 6px; border-radius: 3px; background: var(--raise); overflow: hidden; }
+.prog i { display: block; height: 100%; background: var(--read); transition: width .3s linear; }
+.hw { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 900px) { .hw { grid-template-columns: 1fr; } }
+.hw .mcell + .mcell { border-left: 1px solid var(--line); }
+@media (max-width: 900px) { .hw .mcell + .mcell { border-left: 0; border-top: 1px solid var(--line); } }
+.temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 16px; }
+.temp { display: grid; gap: 2px; min-width: 0; }
+.temp .n { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.temp .v { font: 500 20px var(--f-ui); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.temp .v small { font: 400 12px var(--f-mono); color: var(--ink2); margin-left: 2px; }
+.temp.warm .v { color: var(--warn); } .temp.hot .v { color: var(--bad); }
+.note { color: var(--muted); font-size: 12px; }
 
 .mem { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 900px) { .mem { grid-template-columns: 1fr; } }
@@ -78,7 +89,8 @@ canvas { display: block; width: 100%; }
 .reqs .top .sum { color: var(--ink2); font-size: 12.5px; }
 .reqs .top .sum b { color: var(--ink); font-weight: 500; }
 .list { overflow-x: auto; }
-.rowh, .r { display: grid; grid-template-columns: 64px 84px 66px 118px 70px 64px 1fr; gap: 12px; padding: 9px 18px; align-items: center; min-width: 720px; }
+.rowh, .r { display: grid; grid-template-columns: 56px 70px 62px 70px 96px 62px 92px 1fr; gap: 12px; padding: 9px 18px; align-items: center; min-width: 800px; }
+.r .rd { color: var(--read); }
 .rowh { color: var(--muted); font: 500 11px var(--f-mono); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); }
 .r { border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .r:last-child { border-bottom: 0; }
@@ -124,21 +136,21 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
     </div>
   </section>
 
-  <section class="panel strip">
-    <div class="chartbox row" style="padding:0"><span class="cap">Tokens confirmed per check of the full model</span><span class="mono" id="perCheck" style="color:var(--ink2);font-size:12px"></span></div>
-    <canvas id="checks" aria-label="Tokens confirmed by each verify pass"></canvas>
-  </section>
-
   <section class="panel mem">
     <div class="mcell" id="gpu"></div>
     <div class="mcell" id="pcie"></div>
     <div class="mcell" id="ram"></div>
   </section>
 
+  <section class="panel hw">
+    <div class="mcell" id="reads"></div>
+    <div class="mcell" id="temps"></div>
+  </section>
+
   <section class="panel reqs">
     <div class="top"><span class="cap">Requests</span><span class="sum" id="sum"></span></div>
     <div class="list">
-      <div class="rowh"><span>Time</span><span>Prompt</span><span>Cached</span><span>Read</span><span>Wrote</span><span>tok/s</span><span>Notes</span></div>
+      <div class="rowh"><span>Time</span><span>Prompt</span><span>Cached</span><span>Read in</span><span>Read speed</span><span>Wrote</span><span>Write speed</span><span>Notes</span></div>
       <div id="rows"></div>
     </div>
   </section>
@@ -156,11 +168,13 @@ const pct = (a, b) => b > 0 ? 100 * a / b : null;
 const plural = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : ws || w + "s"}`;
 const C = { accent: "#d9a54a", read: "#6cb6e0", ink2: "#9ba1ab", muted: "#5f6570", line: "#1d1f23", line2: "#2a2d32", bad: "#ec6a5e" };
 const GAP = 300;
+const nowS0 = () => Date.now() / 1000;
 
 let ALL = [], newest = -1, live = {}, cfg = {}, mem = {}, loaded = "";
 let prevGen = null, prevT = null, rate = null, shown = null, target = null, genHist = [];
 let samples = [];   // {t (s), v}
-let checks = [];    // {t (s), n, read}
+let hw = {}, reads = [];   // reads: {t (s), v (VRAM bytes), r (RAM bytes)} for the read rates
+let readHist = [];         // {t, n}: prompt tokens read, for the live reading speed
 let seenRows = new Set();
 
 function fit(cv) {
@@ -209,21 +223,6 @@ function drawSpeed(nowS) {
   }
   if (!vals.length) { g.fillStyle = C.muted; g.textAlign = "center"; g.font = "12px Geist, sans-serif"; g.fillText("The line draws itself while shoehorn writes.", padL + (W - padL) / 2, (H - padB) / 2); }
 }
-// ---- check strip: one thin bar per check, scrolling
-function drawChecks(nowS) {
-  const { g, W, H } = fit($("checks")), span = 60;
-  g.clearRect(0, 0, W, H);
-  g.strokeStyle = C.line2; g.beginPath(); g.moveTo(0, H - .5); g.lineTo(W, H - .5); g.stroke();
-  const recent = checks.filter(c => nowS - c.t <= span);
-  const top = Math.max(16, ...recent.map(c => c.n));
-  for (const c of recent) {
-    const x = W * (1 - (nowS - c.t) / span), h = Math.max(2, (H - 6) * c.n / top), fresh = Math.max(0, 1 - (nowS - c.t) * 2);
-    g.fillStyle = c.read ? C.read : C.accent; g.globalAlpha = .5 + .5 * fresh + 0;
-    g.fillRect(Math.round(x) - 1, H - 1 - h, 2, h);
-  }
-  g.globalAlpha = 1;
-  if (!recent.length) { g.fillStyle = C.muted; g.font = "12px Geist, sans-serif"; g.textAlign = "left"; g.fillText(live.busy ? "reading the prompt..." : "Each bar is one pass of the full model; its height is how many drafted tokens it confirmed.", 0, H / 2 + 4); }
-}
 // ---- PCIe link: a hairline with a light running along it while the residual streams
 function drawLink(nowS) {
   const { g, W, H } = fit($("link")), y = H / 2;
@@ -262,11 +261,9 @@ function session() {
 }
 const speedOf = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
 // prompt reading: the new (uncached) tokens and how fast they were read; a speed only when there were enough of them
-const readText = r => {
-  const fresh = r.prompt_tokens - r.reused_tokens;
-  if (!(r.prefill_s > 0)) return "-";
-  return fresh >= 256 ? `${dur(r.prefill_s)}, ${k(fresh / r.prefill_s)}/s` : dur(r.prefill_s);
-};
+const readTime = r => r.prefill_s > 0 ? dur(r.prefill_s) : "-";
+const readRate = r => { const fresh = r.prompt_tokens - r.reused_tokens;
+  return r.prefill_s > 0 && fresh >= 256 ? `${k(fresh / r.prefill_s)} tok/s` : "-"; };
 const readSpeed = R => { const B = R.filter(r => r.prompt_tokens - r.reused_tokens >= 256 && r.prefill_s > 0);
   const s = sum(B, r => r.prefill_s); return s > 0 ? sum(B, r => r.prompt_tokens - r.reused_tokens) / s : null; };
 const lastSpec = () => [...ALL].reverse().find(r => r.spec && r.spec.cycles && r.gen_tokens >= 16);
@@ -291,21 +288,33 @@ function renderNow() {
     cap = "Writing now"; target = rate ?? (live.elapsed_s > 0 ? live.gen / live.elapsed_s : 0);
     rows = [["Tokens so far", fmt(live.gen)], ["Elapsed", dur(live.elapsed_s)], ["Prompt", k(live.prompt) + " tok"]];
   } else if (reading) {
-    cap = "Reading the prompt"; target = null;
-    rows = [["Prompt", k(live.prompt) + " tok"], ["Elapsed", dur(live.elapsed_s)], ["", ""]];
+    cap = "Reading the prompt"; target = readRateNow();
+    const done = live.read ?? 0, left = live.prompt - done, rr = readRateNow();
+    rows = [["Read", `${k(done)} of ${k(live.prompt)} tok`], ["", `<div class="prog"><i style="width:${fmt(pct(done, live.prompt) || 0, 1)}%"></i></div>`],
+            ["Elapsed", dur(live.elapsed_s)], ["Left", rr && left > 0 ? "about " + dur(left / rr) : "-"]];
   } else {
     cap = last ? "Last answer" : "Writing speed"; target = last ? last.gen_tokens / last.decode_s : null;
-    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"], ["Prompt", `${k(last.prompt_tokens)}, ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`], ["Read", readText(last)]] : [["", ""]];
+    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"],
+                   ["Prompt", `${k(last.prompt_tokens)}, ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`],
+                   ["Prompt read in", readTime(last) + (readRate(last) !== "-" ? ", " + readRate(last) : "")],
+                   ...(ls ? [["Per check", `${fmt(ls.gen_tokens / ls.spec.cycles, 1)} tok in ${fmt(1000 * ls.spec.verify_s / ls.spec.cycles, 0)} ms`]] : [])] : [["", ""]];
   }
   $("nowCap").textContent = cap;
-  const h = rows.filter(r => r[0]).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join("");
+  $("big").dataset.unit = reading ? "tok/s read" : "tok/s";
+  const h = rows.filter(r => r[0] || r[1]).map(([a, b]) => a ? `<dt>${a}</dt><dd>${b}</dd>` : `<dd style="grid-column:1/-1">${b}</dd>`).join("");
   if ($("nowKv").dataset.h !== h) { $("nowKv").innerHTML = h; $("nowKv").dataset.h = h; }
-  $("perCheck").textContent = ls ? `last answer: ${fmt(ls.gen_tokens / ls.spec.cycles, 1)} tok per check, ${fmt(1000 * ls.spec.verify_s / ls.spec.cycles, 0)} ms each` : "";
+}
+// prompt tokens read per second over the last 2 s of polls
+function readRateNow() {
+  if (readHist.length < 2) return null;
+  const a = readHist[0], b = readHist[readHist.length - 1];
+  return b.t - a.t >= .5 && b.n > a.n ? (b.n - a.n) / (b.t - a.t) : null;
 }
 function tweenBig() {  // the number eases toward its target instead of jumping
-  if (target == null) { $("big").innerHTML = `${live.busy ? "..." : "-"}<small>tok/s</small>`; shown = null; return; }
+  const unit = $("big").dataset.unit || "tok/s";
+  if (target == null) { $("big").innerHTML = `${live.busy ? "..." : "-"}<small>${unit}</small>`; shown = null; return; }
   shown = shown == null ? target : shown + (target - shown) * .12;
-  $("big").innerHTML = `${fmt(shown, 0)}<small>tok/s</small>`;
+  $("big").innerHTML = `${fmt(shown, 0)}<small>${unit}</small>`;
 }
 function renderMem() {
   const m = mem;
@@ -336,16 +345,52 @@ function renderMem() {
       <div><span>Check takes</span><span class="mono">${perCheckS ? fmt(perCheckS * 1000, 0) + " ms" : "-"}</span></div></div>`;
   if ($("pcie").dataset.h !== p) { $("pcie").innerHTML = p; $("pcie").dataset.h = p; }
 }
+// ---- hardware: weight bytes read (counted per pass of the model, see traffic.h) and temperatures
+const GB = 1e9;
+function rateOf(key) {
+  if (reads.length < 2) return null;
+  const a = reads[0], b = reads[reads.length - 1];
+  return b.t - a.t >= 1 ? (b[key] - a[key]) / (b.t - a.t) : null;
+}
+function renderHw() {
+  if (hw.vram_read == null) return;
+  const vr = rateOf("v"), rr = rateOf("r"), g = hw.gpu || {};
+  const line = (l, v) => `<div><span>${l}</span><span class="mono">${v}</span></div>`;
+  const r = `<div class="mhead"><b>Memory reads</b><span class="mono">model weights, since start</span></div>
+    <div class="mval">${vr != null && vr > 0 ? fmt(vr / GB, 0) : "0"}<small>GB/s from VRAM now</small></div>
+    <div class="legend">${line("Read from VRAM", fmt(hw.vram_read / GB, 0) + " GB")}${line("Read from RAM, across PCIe", fmt(hw.ram_read / GB, 0) + " GB")}
+      ${line("RAM read rate now", rr != null && rr > 0 ? fmt(rr / GB, 1) + " GB/s" : "0 GB/s")}
+      ${g.mem_util != null && g.mem_util >= 0 ? line("VRAM busy", g.mem_util + "%") : ""}${g.power_w != null && g.power_w >= 0 ? line("GPU power", fmt(g.power_w, 0) + " W") : ""}</div>
+    <div class="note">Counted from the weights each pass of the model reads; the context cache and activations add more.</div>`;
+  if ($("reads").dataset.h !== r) { $("reads").innerHTML = r; $("reads").dataset.h = r; }
+  // temperatures: NVML for the GPU core, Windows for the drives, LibreHardwareMonitor (when running) for the rest
+  const T = [], S = hw.sensors || [];
+  const pick = (kind, re) => S.filter(x => x.kind.startsWith(kind) && (!re || re.test(x.name)));
+  const cpu = pick("amdcpu", /Tctl|Tdie|Package|CCD/).concat(pick("intelcpu", /Package/));
+  if (cpu.length) T.push({ n: "CPU", c: Math.max(...cpu.map(x => x.c)) });
+  if (g.temp_c != null && g.temp_c >= 0) T.push({ n: "GPU core", c: g.temp_c });
+  const vram = pick("gpu-nvidia", /Memory/i);
+  if (vram.length) T.push({ n: "VRAM", c: Math.max(...vram.map(x => x.c)) });
+  const ram = S.filter(x => x.kind === "memory" || /dimm/i.test(x.hw));
+  ram.forEach((x, i) => T.push({ n: ram.length > 1 ? `RAM ${i + 1}` : "RAM", c: x.c, title: `${x.hw} ${x.name}` }));
+  for (const d of hw.drives || []) T.push({ n: d.name.replace(/\s*\[.*\]$/, ""), c: d.temp_c, title: d.name });
+  const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
+  const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
+  const t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "with LibreHardwareMonitor" : "GPU and drives"}</span></div>
+    <div class="temps">${T.map(x => `<div class="temp${cls(x.c)}" title="${x.title || x.n}"><span class="n">${x.n}</span><span class="v">${fmt(x.c, 0)}<small>C</small></span></div>`).join("")}</div>
+    ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start LibreHardwareMonitor with its web server on port 8085"}.</div>` : ""}`;
+  if ($("temps").dataset.h !== t) { $("temps").innerHTML = t; $("temps").dataset.h = t; }
+}
 function renderList() {
   annotate(ALL);
   const s = session();
   const R = s ? s.R : [];
   const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), misses = R.filter(r => r.miss).length;
   const isLive = s && (live.busy || Date.now() / 1e3 - s.end < GAP);
-  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session, started ${clock(s.start).slice(0, 5)}, <b>${plural(R.length, "request")}</b>, <b>${k(sum(R, r => r.gen_tokens))}</b> tokens, <b>${fmt(speedOf(R), 0)}</b> tok/s writing${readSpeed(R) ? `, <b>${k(readSpeed(R))}</b>/s reading` : ""}, <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? `, <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
+  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session, started ${clock(s.start).slice(0, 5)}, <b>${plural(R.length, "request")}</b>, <b>${k(sum(R, r => r.gen_tokens))}</b> tokens, <b>${fmt(speedOf(R), 0)}</b> tok/s writing${readSpeed(R) ? `, prompts read at <b>${k(readSpeed(R))}</b> tok/s` : ""}, <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? `, <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
   let html = "";
   if (live.busy) {
-    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">-</span><span class="mono">${live.gen > 0 ? "done" : "reading..."}</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) : "..."}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
+    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">-</span><span class="mono">${live.gen > 0 ? "done" : dur(live.elapsed_s)}</span><span class="mono rd">${live.gen > 0 ? "-" : readRateNow() ? k(readRateNow()) + " tok/s" : "..."}</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) + " tok/s" : "-"}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
   }
   const rows = R.slice(-14).reverse();
   for (const r of rows) {
@@ -357,7 +402,7 @@ function renderList() {
     if (r.tool_calls) tg.push(`<span class="tg">${plural(r.tool_calls, "tool call")}</span>`);
     if (r.loop) tg.push(`<span class="tg warn">repetition</span>`);
     if (r.finish === "length") tg.push(`<span class="tg warn">cut off</span>`);
-    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${readText(r)}</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "-"}</span><span class="tagz">${tg.join("")}</span></div>`;
+    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${readTime(r)}</span><span class="mono rd">${readRate(r)}</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) + " tok/s" : "-"}</span><span class="tagz">${tg.join("")}</span></div>`;
   }
   if (!html) html = `<div class="empty">Requests show up here as clients send them.</div>`;
   if ($("rows").dataset.h !== html) { $("rows").innerHTML = html; $("rows").dataset.h = html; }
@@ -372,10 +417,12 @@ async function poll() {
   catch (e) { live = { down: true }; $("status").className = "status off"; $("statusText").textContent = "offline"; return; }
   for (const r of d.recent || []) if (r.t > newest) { ALL.push(r); newest = r.t; }
   const nowP = performance.now(), nowS = Date.now() / 1000, was = live;
-  live = d.live || {}; cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || "";
+  live = d.live || {}; cfg = d.config || {}; mem = d.mem || {}; loaded = d.loaded || ""; hw = d.hw || {};
+  if (hw.vram_read != null) { reads.push({ t: nowS0(), v: hw.vram_read, r: hw.ram_read }); while (reads.length > 2 && nowS0() - reads[1].t >= 2) reads.shift(); }
+  if (live.busy && live.reading) { readHist.push({ t: nowS0(), n: live.read || 0 }); while (readHist.length > 2 && nowS0() - readHist[1].t >= 2) readHist.shift(); }
+  else readHist = [];
   const writing = live.busy && live.gen > 0;
   if (writing) {
-    if (prevGen != null && live.gen > prevGen) checks.push({ t: nowS, n: live.gen - prevGen });
     if (prevGen != null && live.gen < prevGen) genHist = [];  // a new answer started
     // the answer's first tokens arrived during the last poll interval: anchor 0 tokens just before them
     if (!genHist.length) genHist.push({ t: nowS - .25, g: 0 });
@@ -390,14 +437,14 @@ async function poll() {
   // between turns of a session (tool calls, prompt reading) the line drops to 0 instead of breaking
   const inSession = live.busy || (live.last_end_s != null && live.last_end_s < 60);
   samples.push({ t: nowS, v: writing && rate != null ? rate : inSession ? 0 : null });
-  samples = samples.filter(p => nowS - p.t <= 125); checks = checks.filter(c => nowS - c.t <= 65);
-  renderHeader(d); renderNow(); renderMem();
+  samples = samples.filter(p => nowS - p.t <= 125);
+  renderHeader(d); renderNow(); renderMem(); renderHw();
   if (!poll.n || poll.n % 4 === 0 || (was.busy !== live.busy)) renderList();
   poll.n = (poll.n || 0) + 1;
 }
 function frame() {
   const nowS = Date.now() / 1000;
-  drawSpeed(nowS); drawChecks(nowS); if ($("link")) drawLink(nowS); tweenBig();
+  drawSpeed(nowS); if ($("link")) drawLink(nowS); tweenBig();
   requestAnimationFrame(frame);
 }
 poll(); setInterval(poll, 250);

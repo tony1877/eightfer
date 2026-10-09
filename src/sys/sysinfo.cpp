@@ -190,6 +190,90 @@ std::string describe_drive(const std::string & path) {
     return out;
 }
 
+std::vector<DriveTemp> drive_temps() {
+    std::vector<DriveTemp> out;
+    for (int i = 0; i < 32; i++) {
+        const std::wstring dev = L"\\\\.\\PhysicalDrive" + std::to_wstring(i);
+        HANDLE h = CreateFileW(dev.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+        STORAGE_PROPERTY_QUERY q{};
+        q.QueryType = PropertyStandardQuery;
+        alignas(8) char buf[1024] = {};
+        DWORD           got       = 0;
+        DriveTemp       d;
+        q.PropertyId = StorageDeviceTemperatureProperty;
+        const bool has_temp = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof(q), buf, sizeof(buf), &got, nullptr) &&
+                              got >= sizeof(STORAGE_TEMPERATURE_DATA_DESCRIPTOR) &&
+                              reinterpret_cast<const STORAGE_TEMPERATURE_DATA_DESCRIPTOR *>(buf)->InfoCount > 0;
+        if (has_temp) {
+            d.temp_c = reinterpret_cast<const STORAGE_TEMPERATURE_DATA_DESCRIPTOR *>(buf)->TemperatureInfo[0].Temperature;
+            q.PropertyId = StorageDeviceProperty;
+            std::memset(buf, 0, sizeof(buf));
+            if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof(q), buf, sizeof(buf), &got, nullptr) &&
+                got >= sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
+                const auto * dd = reinterpret_cast<const STORAGE_DEVICE_DESCRIPTOR *>(buf);
+                if (dd->ProductIdOffset && dd->ProductIdOffset < got) {
+                    d.name = buf + dd->ProductIdOffset;
+                    while (!d.name.empty() && d.name.back() == ' ') {
+                        d.name.pop_back();
+                    }
+                }
+                d.name += std::string(d.name.empty() ? "" : " ") + "[" + bus_name(dd->BusType) + "]";
+            }
+            out.push_back(d);
+        }
+        CloseHandle(h);
+    }
+    return out;
+}
+
+GpuSensors gpu_sensors() {
+    // NVML from the driver (System32\nvml.dll); the handles are resolved once
+    using init_t  = int (*)();
+    using dev_t   = int (*)(unsigned, void **);
+    using temp_t  = int (*)(void *, int, unsigned *);
+    using power_t = int (*)(void *, unsigned *);
+    struct Util { unsigned gpu, memory; };
+    using util_t  = int (*)(void *, Util *);
+    static void *  dev   = nullptr;
+    static temp_t  temp  = nullptr;
+    static power_t power = nullptr;
+    static util_t  util  = nullptr;
+    static bool    tried = false;
+    if (!tried) {
+        tried = true;
+        if (HMODULE lib = LoadLibraryW(L"nvml.dll")) {
+            auto init = reinterpret_cast<init_t>(GetProcAddress(lib, "nvmlInit_v2"));
+            auto get  = reinterpret_cast<dev_t>(GetProcAddress(lib, "nvmlDeviceGetHandleByIndex_v2"));
+            temp      = reinterpret_cast<temp_t>(GetProcAddress(lib, "nvmlDeviceGetTemperature"));
+            power     = reinterpret_cast<power_t>(GetProcAddress(lib, "nvmlDeviceGetPowerUsage"));
+            util      = reinterpret_cast<util_t>(GetProcAddress(lib, "nvmlDeviceGetUtilizationRates"));
+            if (!init || !get || init() != 0 || get(0, &dev) != 0) {
+                dev = nullptr;
+            }
+        }
+    }
+    GpuSensors s;
+    if (!dev) {
+        return s;
+    }
+    s.ok = true;
+    unsigned v = 0;
+    if (temp && temp(dev, 0 /* NVML_TEMPERATURE_GPU */, &v) == 0) {
+        s.temp_c = (int) v;
+    }
+    if (power && power(dev, &v) == 0) {
+        s.power_w = v / 1000.0;
+    }
+    Util u{};
+    if (util && util(dev, &u) == 0) {
+        s.mem_util = (int) u.memory;
+    }
+    return s;
+}
+
 std::vector<std::string> fixed_drives() {
     std::vector<std::string> out;
     wchar_t                  buf[512];
@@ -329,6 +413,14 @@ std::string describe_drive(const std::string &) {
 }
 
 std::vector<std::string> fixed_drives() {
+    return {};
+}
+
+std::vector<DriveTemp> drive_temps() {
+    return {};
+}
+
+GpuSensors gpu_sensors() {
     return {};
 }
 

@@ -112,6 +112,7 @@ Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` pi
 | `--tool-temp T` | 0.6 | temperature inside `<tool_call>` blocks |
 | `--think-budget N`, `--think-after-tool 0\|1`, `--drop-reasoning 0\|1` | 32768 | reasoning cap and handling; a request's own `enable_thinking` or `think_after_tool` overrides `--think-after-tool` |
 | `--sys-cache N`, `--sys-cache-gb G` | 4, 3 | system prompts kept in RAM for new conversations (one per client or agent persona) |
+| `--hw-monitor URL` | http://127.0.0.1:8085 | LibreHardwareMonitor web server for the dashboard's CPU, RAM and VRAM temperatures (`""` = off) |
 | `--threads N` | auto | CPU threads |
 | `--timing-log FILE` | off | per-request JSONL with a decode time breakdown |
 

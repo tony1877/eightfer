@@ -265,6 +265,12 @@ struct Server {
     std::atomic<bool>                live_busy{ false };
     std::atomic<int>                 live_gen{ 0 }, live_prompt{ 0 };
     std::atomic<int64_t>             live_start_ms{ 0 };
+    std::atomic<bool>                live_reading{ false };  // reading the prompt (prefill), not writing yet
+    std::atomic<int>                 live_read_base{ 0 };   // prompt tokens before the current prefill call
+    // hardware sensors for the dashboard, sampled every 2 s by a background thread
+    std::mutex                       hw_mu;
+    json                             hw = json::object();
+    std::string                      hw_url = "http://127.0.0.1:8085";  // LibreHardwareMonitor's web server ("" = off)
     std::string                      live_model;
     std::chrono::system_clock::time_point last_end{};  // end of the previous request (idle time = tools / user)
     // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
@@ -894,7 +900,21 @@ loaded:
     R.n_reused = (int) start;
     const auto         t0 = std::chrono::steady_clock::now();
     std::vector<float> last((size_t) m.n_vocab());
+    // the dashboard shows the prompt being read: live from here, with the tokens read so far
+    S.live_gen       = 0;
+    S.live_prompt    = R.n_prompt;
+    S.live_read_base = (int) start;
+    model::traffic::prefill_done = 0;
+    S.live_reading   = true;
+    S.live_busy      = true;
+    S.live_start_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    struct LiveEnd {  // a request that fails or stops early leaves the live state idle
+        Server & S;
+        ~LiveEnd() { S.live_busy = false; S.live_reading = false; }
+    } live_end{ S };
     auto eval_range = [&](size_t a, size_t b) {
+        S.live_read_base = (int) a;
+        model::traffic::prefill_done = 0;
         if (b > a && !m.prefill(prompt.data() + a, (int) (b - a), last.data(), err)) {
             SL.state_tokens.clear();
             SL.ck_tokens.clear();
@@ -949,6 +969,7 @@ loaded:
     if (!eval_range(start, prompt.size())) return false;
     const auto t1 = std::chrono::steady_clock::now();
     S.live_gen   = 0;
+    S.live_reading = false;
     S.live_busy  = true;
     S.live_prompt = R.n_prompt;
     S.live_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -1480,6 +1501,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--min-p") S->defaults.min_p = (float) std::atof(val().c_str());
         else if (a == "--presence-penalty") S->defaults.presence_penalty = (float) std::atof(val().c_str());
         else if (a == "--unload-router") router_url = val();
+        else if (a == "--hw-monitor") S->hw_url = val();
         else if (a == "--timing-log") S->timing_log = val();
         else if (a == "--tool-temp") S->tool_temp = (float) std::atof(val().c_str());
         else if (a == "--spec") {
@@ -1504,6 +1526,8 @@ int serve(const std::vector<std::string> & args) {
                         "         [--draft-batch N (slots: requests drafted together, default min(slots, 2))]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
+                        "         [--hw-monitor URL (LibreHardwareMonitor web server, for CPU / RAM temperatures;\n"
+                        "          default http://127.0.0.1:8085, \"\" = off)]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
                         "         [--fast-prefill N (read all but the last N prompt tokens without the residual: ~2x prefill)]\n"
                         "         [--tool-temp 0.6 (temperature inside <tool_call> blocks; 0 = the request's)]\n"
@@ -1649,6 +1673,52 @@ int serve(const std::vector<std::string> & args) {
         fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
+    // hardware sensors: GPU (NVML), drive temperatures, and, when LibreHardwareMonitor's web server answers, its
+    // temperature sensors (CPU, memory modules, GPU memory, board); every 2 s, so /stats never waits on them
+    std::thread([sp] {
+        for (;;) {
+            json h = json::object();
+            const sys::GpuSensors g = sys::gpu_sensors();
+            if (g.ok) h["gpu"] = { { "temp_c", g.temp_c }, { "power_w", g.power_w }, { "mem_util", g.mem_util } };
+            h["drives"] = json::array();
+            for (const auto & d : sys::drive_temps()) h["drives"].push_back({ { "name", d.name }, { "temp_c", d.temp_c } });
+            if (!sp->hw_url.empty()) {
+                httplib::Client c(sp->hw_url);
+                c.set_connection_timeout(0, 300000);
+                c.set_read_timeout(1, 0);
+                if (auto r = c.Get("/data.json"); r && r->status == 200) {
+                    // the tree: root > computer > hardware > (sub-hardware or sensor group) > ... > sensors; a sensor
+                    // carries SensorId ("/amdcpu/0/temperature/2"), Type and Value ("45.5 C")
+                    json sensors = json::array();
+                    std::function<void(const json &, int, const std::string &)> walk = [&](const json & n, int depth, const std::string & hw) {
+                        if (!n.is_object()) return;
+                        const std::string id = n.value("SensorId", std::string()), here = depth == 2 ? n.value("Text", std::string()) : hw;
+                        if (!id.empty() && n.value("Type", std::string()) == "Temperature") {
+                            const std::string v = n.value("Value", std::string());
+                            char *            end = nullptr;
+                            const double      t   = std::strtod(v.c_str(), &end);
+                            const size_t      a   = id.find('/', 1);
+                            if (end != v.c_str())
+                                sensors.push_back({ { "kind", id.substr(1, a == std::string::npos ? std::string::npos : a - 1) },
+                                                    { "hw", here }, { "name", n.value("Text", std::string()) }, { "c", t } });
+                        }
+                        if (n.contains("Children") && n["Children"].is_array())
+                            for (const auto & ch : n["Children"]) walk(ch, depth + 1, here);
+                    };
+                    try {
+                        walk(json::parse(r->body), 0, "");
+                        h["sensors"] = sensors;
+                    } catch (...) {}
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lk(sp->hw_mu);
+                sp->hw = std::move(h);
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }).detach();
+
     std::thread idle;
     if (idle_unload > 0) {  // free the model after idle_unload seconds without requests
         idle = std::thread([sp, idle_unload] {
@@ -1718,6 +1788,10 @@ int serve(const std::vector<std::string> & args) {
                 if (r.value("t", 0.0) > since) out["recent"].push_back(r);
             out["live"] = { { "busy", S->live_busy.load() }, { "model", S->live_model }, { "gen", S->live_gen.load() },
                             { "prompt", S->live_prompt.load() }, { "elapsed_s", (now_ms - S->live_start_ms.load()) / 1e3 } };
+            if (S->live_busy && S->live_reading) {  // prompt tokens read so far (cached ones count as read)
+                out["live"]["reading"] = true;
+                out["live"]["read"]    = std::min(S->live_prompt.load(), S->live_read_base.load() + model::traffic::prefill_done.load());
+            }
             if (!S->recent.empty()) out["live"]["last_end_s"] = now_ms / 1e3 - S->recent.back().value("t", 0.0);
         }
         json models = json::array();
@@ -1746,6 +1820,12 @@ int serve(const std::vector<std::string> & args) {
             }
             out["mem"] = mem;
         }
+        {
+            std::lock_guard<std::mutex> lk(S->hw_mu);
+            out["hw"] = S->hw;
+        }
+        out["hw"]["vram_read"] = model::traffic::vram_read.load();  // weight bytes read since start (see traffic.h)
+        out["hw"]["ram_read"]  = model::traffic::ram_read.load();
         if (S->q35) out["config"]["window"] = S->q35->gpu_kv();
         resp.set_header("Cache-Control", "no-store");
         // pages served from this machine or the local network (a client's dashboard, on any LAN device) may read the numbers

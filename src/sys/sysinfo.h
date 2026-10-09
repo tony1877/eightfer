@@ -26,6 +26,22 @@ std::string describe_drive(const std::string & path);
 // Windows: root paths of all fixed drives ("C:\", "D:\", ...). Elsewhere: empty.
 std::vector<std::string> fixed_drives();
 
+// Temperature of each physical drive that reports one (Windows; no admin needed). Elsewhere: empty.
+struct DriveTemp {
+    std::string name;  // product id and bus, e.g. "WD_BLACK SN850X 1000GB [NVMe]"
+    int         temp_c = 0;
+};
+std::vector<DriveTemp> drive_temps();
+
+// NVIDIA GPU 0 through NVML, loaded at run time (ok = false without an NVIDIA driver). -1 = not reported.
+struct GpuSensors {
+    bool   ok       = false;
+    int    temp_c   = -1;
+    double power_w  = -1;
+    int    mem_util = -1;  // % of time the memory was busy over the driver's last sample period
+};
+GpuSensors gpu_sensors();
+
 // Windows 11 parks cores and throttles "background" threads; opt the calling thread out. No-op elsewhere.
 void set_thread_high_perf();
 

@@ -19,6 +19,7 @@
 // rollback(keep) can restore the snapshot and replay only the first `keep` tokens through the recurrence.
 
 #include "model/causal_lm.h"
+#include "model/traffic.h"
 #include "model/gguf_file.h"
 
 #include "ggml-backend.h"
@@ -278,12 +279,14 @@ public:
     bool prefill(const int32_t * tokens, int n, float * logits, std::string & err) override {
         static const int env = std::getenv("E8_PREFILL_CHUNK") ? std::atoi(std::getenv("E8_PREFILL_CHUNK")) : 0;
         const int        chunk = std::max(1, env > 0 ? std::min(env, opt_.n_ubatch) : opt_.n_ubatch);
+        traffic::prefill_done = 0;
         for (int i = 0; i < n; i += chunk) {
             const int m = std::min(chunk, n - i);
             EvalOpts  o;
             o.last_only = true;
             o.residual  = !(fast_keep_ > 0 && i + m <= n - fast_keep_);
             if (!eval(tokens + i, m, o, i + m == n ? logits : nullptr, nullptr, err)) return false;
+            traffic::prefill_done = i + m;
         }
         return true;
     }
