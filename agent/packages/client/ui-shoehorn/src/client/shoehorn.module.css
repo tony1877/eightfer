@@ -1,0 +1,56 @@
+/* Theme-aware: dsh's alias variables for surfaces and text, one brass accent for shoehorn itself. */
+.mark { fill: #d9a54a; }
+.markHole { fill: var(--dsw-alias-bg-base, #08090a); }
+
+.writing { --sh-dot: #d9a54a; }
+.reading { --sh-dot: #5aa9d6; }
+.idle { --sh-dot: var(--dsw-alias-label-tertiary, #8a8f98); }
+.off { --sh-dot: #e5635a; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.25)); border-radius: 999px;
+  background: transparent; color: var(--dsw-alias-label-secondary, inherit);
+  font: 500 12px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; font-variant-numeric: tabular-nums;
+  cursor: pointer; white-space: nowrap;
+}
+.chip:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.1)); color: var(--dsw-alias-label-primary, inherit); }
+.chip.writing { color: var(--dsw-alias-label-primary, inherit); border-color: rgba(217,165,74,.55); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sh-dot); flex: none; }
+.writing .dot { box-shadow: 0 0 0 3px rgba(217,165,74,.2); animation: shBeat 1.2s ease-in-out infinite; }
+.reading .dot { animation: shBeat .7s ease-in-out infinite; }
+.chipText { min-width: 3ch; }
+.chipDim { color: var(--dsw-alias-label-tertiary, #8a8f98); }
+@keyframes shBeat { 50% { opacity: .35; } }
+
+.footer {
+  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 34px; padding: 0 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary, inherit);
+  font: inherit; font-size: 13px; cursor: pointer;
+}
+.footerWide { justify-content: flex-start; }
+.footer:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.1)); color: var(--dsw-alias-label-primary, inherit); }
+.footerIcon { position: relative; display: inline-flex; }
+.footerDot { position: absolute; right: -3px; bottom: -2px; width: 6px; height: 6px; border-radius: 50%; background: var(--sh-dot); }
+
+.backdrop {
+  position: fixed; inset: 0; z-index: 1000; pointer-events: auto;
+  background: var(--dsw-alias-bg-mask-1, rgba(0,0,0,.5)); display: grid; place-items: center; padding: 3vh 3vw;
+  animation: shFade .15s ease both;
+}
+.panel {
+  width: min(1320px, 100%); height: 100%; display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+  border-radius: 12px; border: 1px solid #1d1f23; background: #08090a; box-shadow: 0 24px 80px rgba(0,0,0,.45);
+  animation: shRise .18s cubic-bezier(.2,.7,.2,1) both;
+}
+.bar { display: flex; align-items: center; gap: 12px; padding: 9px 12px 9px 16px; border-bottom: 1px solid #1d1f23; color: #f2f3f5; font-size: 13px; }
+.barTitle { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.barSpacer { flex: 1; }
+.barLink { color: #9ba1ab; text-decoration: none; font-size: 12px; }
+.barLink:hover { color: #f2f3f5; }
+.close { width: 28px; height: 28px; border: 1px solid #1d1f23; border-radius: 6px; background: #0e0f11; color: #9ba1ab; cursor: pointer; }
+.close:hover { color: #f2f3f5; }
+.frame { width: 100%; height: 100%; border: 0; background: #08090a; }
+@keyframes shFade { from { opacity: 0; } }
+@keyframes shRise { from { opacity: 0; transform: translateY(8px) scale(.99); } }
+@media (prefers-reduced-motion: reduce) { .dot, .backdrop, .panel { animation: none !important; } }
