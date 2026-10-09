@@ -1036,7 +1036,8 @@ loaded:
             return d;
         };
         int  next_loop_check = 512;
-        auto dec_p = make_dec();
+        auto   dec_p    = make_dec();
+        double t_server = 0;  // consuming tokens between decode steps (detokenize, stop strings, streaming)
         // the two lanes (sequence slots with a drafter): the model is detached, this request holds neither the model
         // nor the draft lane except while it drafts, verifies, or (rarely) closes the reasoning
         const bool rounds = S.drafter != nullptr;
@@ -1239,14 +1240,18 @@ loaded:
             } else if (!yield() || !dec_p->step(out, err)) {
                 return false;
             }
+            const auto tc0 = std::chrono::steady_clock::now();
             consume();
+            t_server += std::chrono::duration<double>(std::chrono::steady_clock::now() - tc0).count();
             dec_p->set_temp(sp.temp);  // inside or outside a tool call, for the next cycle
         }
         const auto & st = dec_p->stats();
         R.stats         = { { "cycles", st.cycles }, { "draft_s", st.t_draft }, { "verify_s", st.t_verify },
                             { "echo_proposed", st.echo_proposed }, { "echo_kept", st.echo_accepted },
                             { "mtp_proposed", st.mtp_proposed }, { "mtp_kept", st.mtp_accepted },
-                            { "long_cycles", st.long_cycles }, { "reruns", st.reruns } };
+                            { "long_cycles", st.long_cycles }, { "reruns", st.reruns },
+                            { "rollback_s", st.t_rollback }, { "mtp_s", st.t_mtp }, { "beval_s", st.t_beval },
+                            { "snap_s", st.t_snap }, { "rback_s", st.t_rback }, { "pipe_s", st.t_pipe }, { "server_s", t_server } };
         char         b[160];
         snprintf(b, sizeof b, "%lld cycles, %.1f tokens/cycle, draft %.0f / verify %.0f ms per cycle, echo %lld/%lld kept",
                  (long long) st.cycles, st.cycles ? (double) (st.emitted - 1) / st.cycles : 0.0,
