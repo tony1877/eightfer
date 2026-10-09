@@ -1696,9 +1696,19 @@ int serve(const std::vector<std::string> & args) {
         }
         if (S->q35) out["config"]["window"] = S->q35->gpu_kv();
         resp.set_header("Cache-Control", "no-store");
-        // pages served from this machine (the dsh plugin at 127.0.0.1:3080) may read the numbers; nothing else
+        // pages served from this machine or the local network (the dsh plugin, on any LAN client) may read the numbers
         const std::string origin = req.get_header_value("Origin");
-        if (origin.rfind("http://127.0.0.1:", 0) == 0 || origin.rfind("http://localhost:", 0) == 0) {
+        auto lan_origin = [](const std::string & o) {
+            if (o.rfind("http://", 0) != 0) return false;
+            const std::string h = o.substr(7, o.find(':', 7) == std::string::npos ? std::string::npos : o.find(':', 7) - 7);
+            if (h == "localhost" || h.rfind("127.", 0) == 0 || h.rfind("10.", 0) == 0 || h.rfind("192.168.", 0) == 0) return true;
+            if (h.rfind("172.", 0) == 0) {  // 172.16.0.0/12
+                const int b = std::atoi(h.c_str() + 4);
+                return b >= 16 && b <= 31;
+            }
+            return false;
+        };
+        if (lan_origin(origin)) {
             resp.set_header("Access-Control-Allow-Origin", origin);
             resp.set_header("Vary", "Origin");
         }
