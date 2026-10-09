@@ -78,7 +78,7 @@ canvas { display: block; width: 100%; }
 .reqs .top .sum { color: var(--ink2); font-size: 12.5px; }
 .reqs .top .sum b { color: var(--ink); font-weight: 500; }
 .list { overflow-x: auto; }
-.rowh, .r { display: grid; grid-template-columns: 64px 92px 74px 76px 74px 1fr; gap: 12px; padding: 9px 18px; align-items: center; min-width: 640px; }
+.rowh, .r { display: grid; grid-template-columns: 64px 84px 66px 118px 70px 64px 1fr; gap: 12px; padding: 9px 18px; align-items: center; min-width: 720px; }
 .rowh { color: var(--muted); font: 500 11px var(--f-mono); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); }
 .r { border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .r:last-child { border-bottom: 0; }
@@ -138,7 +138,7 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
   <section class="panel reqs">
     <div class="top"><span class="cap">Requests</span><span class="sum" id="sum"></span></div>
     <div class="list">
-      <div class="rowh"><span>Time</span><span>Prompt</span><span>Cached</span><span>Wrote</span><span>tok/s</span><span>Notes</span></div>
+      <div class="rowh"><span>Time</span><span>Prompt</span><span>Cached</span><span>Read</span><span>Wrote</span><span>tok/s</span><span>Notes</span></div>
       <div id="rows"></div>
     </div>
   </section>
@@ -261,6 +261,14 @@ function session() {
   return s;
 }
 const speedOf = R => { const D = R.filter(r => r.gen_tokens >= 16), d = sum(D, r => r.decode_s); return d > 0 ? sum(D, r => r.gen_tokens) / d : null; };
+// prompt reading: the new (uncached) tokens and how fast they were read; a speed only when there were enough of them
+const readText = r => {
+  const fresh = r.prompt_tokens - r.reused_tokens;
+  if (!(r.prefill_s > 0)) return "–";
+  return fresh >= 256 ? `${dur(r.prefill_s)} · ${k(fresh / r.prefill_s)}/s` : dur(r.prefill_s);
+};
+const readSpeed = R => { const B = R.filter(r => r.prompt_tokens - r.reused_tokens >= 256 && r.prefill_s > 0);
+  const s = sum(B, r => r.prefill_s); return s > 0 ? sum(B, r => r.prompt_tokens - r.reused_tokens) / s : null; };
 const lastSpec = () => [...ALL].reverse().find(r => r.spec && r.spec.cycles && r.gen_tokens >= 16);
 
 // ---- DOM
@@ -287,7 +295,7 @@ function renderNow() {
     rows = [["Prompt", k(live.prompt) + " tok"], ["Elapsed", dur(live.elapsed_s)], ["", ""]];
   } else {
     cap = last ? "Last answer" : "Writing speed"; target = last ? last.gen_tokens / last.decode_s : null;
-    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"], ["Prompt", `${k(last.prompt_tokens)} · ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`]] : [["", ""]];
+    rows = last ? [["Tokens", fmt(last.gen_tokens)], ["Finished", dur(Date.now() / 1e3 - last.t) + " ago"], ["Prompt", `${k(last.prompt_tokens)} · ${fmt(pct(last.reused_tokens, last.prompt_tokens), 0)}% cached`], ["Read", readText(last)]] : [["", ""]];
   }
   $("nowCap").textContent = cap;
   const h = rows.filter(r => r[0]).map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join("");
@@ -334,10 +342,10 @@ function renderList() {
   const R = s ? s.R : [];
   const prompt = sum(R, r => r.prompt_tokens), reused = sum(R, r => r.reused_tokens), misses = R.filter(r => r.miss).length;
   const isLive = s && (live.busy || Date.now() / 1e3 - s.end < GAP);
-  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session · started ${clock(s.start).slice(0, 5)} · <b>${plural(R.length, "request")}</b> · <b>${k(sum(R, r => r.gen_tokens))}</b> tokens · <b>${fmt(speedOf(R), 0)}</b> tok/s avg · <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? ` · <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
+  $("sum").innerHTML = s ? `${isLive ? "Current" : "Last"} session · started ${clock(s.start).slice(0, 5)} · <b>${plural(R.length, "request")}</b> · <b>${k(sum(R, r => r.gen_tokens))}</b> tokens · <b>${fmt(speedOf(R), 0)}</b> tok/s writing${readSpeed(R) ? ` · <b>${k(readSpeed(R))}</b>/s reading` : ""} · <b>${fmt(pct(reused, prompt), 0)}%</b> cached${misses ? ` · <b>${plural(misses, "miss", "misses")}</b>` : ""}` : "No requests yet";
   let html = "";
   if (live.busy) {
-    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">–</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) : "…"}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
+    html += `<div class="r live"><span class="mono t">now</span><span class="mono">${k(live.prompt)}</span><span class="mono">–</span><span class="mono">${live.gen > 0 ? "done" : "reading…"}</span><span class="mono">${fmt(live.gen)}</span><span class="mono spd">${live.gen > 0 ? fmt(rate ?? live.gen / Math.max(.1, live.elapsed_s), 0) : "…"}</span><span class="tagz"><span class="tg">${live.gen > 0 ? "writing" : "reading prompt"}</span></span></div>`;
   }
   const rows = R.slice(-14).reverse();
   for (const r of rows) {
@@ -349,7 +357,7 @@ function renderList() {
     if (r.tool_calls) tg.push(`<span class="tg">${plural(r.tool_calls, "tool call")}</span>`);
     if (r.loop) tg.push(`<span class="tg warn">repetition</span>`);
     if (r.finish === "length") tg.push(`<span class="tg warn">cut off</span>`);
-    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</span><span class="tagz">${tg.join("")}</span></div>`;
+    html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${readText(r)}</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "–"}</span><span class="tagz">${tg.join("")}</span></div>`;
   }
   if (!html) html = `<div class="empty">Requests show up here as dsh sends them.</div>`;
   if ($("rows").dataset.h !== html) { $("rows").innerHTML = html; $("rows").dataset.h = html; }
