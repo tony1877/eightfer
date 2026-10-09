@@ -1644,6 +1644,12 @@ int serve(const std::vector<std::string> & args) {
         }
         if (S->q35) out["config"]["window"] = S->q35->gpu_kv();
         resp.set_header("Cache-Control", "no-store");
+        // pages served from this machine (the dsh plugin at 127.0.0.1:3080) may read the numbers; nothing else
+        const std::string origin = req.get_header_value("Origin");
+        if (origin.rfind("http://127.0.0.1:", 0) == 0 || origin.rfind("http://localhost:", 0) == 0) {
+            resp.set_header("Access-Control-Allow-Origin", origin);
+            resp.set_header("Vary", "Origin");
+        }
         resp.set_content(out.dump(), "application/json");
     });
     http.Get("/v1/models", [&](const httplib::Request & req, httplib::Response & resp) {
