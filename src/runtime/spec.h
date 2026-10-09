@@ -63,6 +63,11 @@ public:
     void set_mtp(int n) { mtp_n_ = n > 0 ? n : 0; }
     // echo drafting: propose continuations of earlier occurrences of the last tokens (on by default)
     void set_echo(bool on) { echo_ = on; }
+    // sampling temperature from the next cycle on (> 0 only: a greedy decoder stays greedy); the drafts already made
+    // keep the distribution they were drawn from, so the verify's acceptance stays exact
+    void set_temp(float t) {
+        if (sp_.temp > 0 && t > 0) sp_.temp = t;
+    }
     // the tokens before the first emitted one (the prompt), for echo drafting; prefill() sets it itself
     void set_context(const std::vector<int32_t> & prompt) {
         hist_       = prompt;

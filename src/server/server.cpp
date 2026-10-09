@@ -192,6 +192,7 @@ struct Server {
     common_chat_templates *          tmpl   = nullptr;
     std::string                      alias, api_key;
     int                              spec_k = 12;
+    float                            tool_temp = 0.6f;  // sampling temperature inside <tool_call> blocks (0 = as the request)
     bool                             spec_auto = true;
     int                              mtp = 6;  // most MTP proposals per base pass while drafting (adaptive; 0 = off)
     bool                             echo = true;  // echo drafting (copies from the context)
@@ -402,7 +403,8 @@ struct Result {
     std::string     text;  // completion requests
     std::string     finish = "stop";
     int             n_prompt = 0, n_gen = 0, n_reused = 0, slot = 0;
-    int             side_swap = 0;  // side sequence: 1 = parked the conversation, 2 = resumed the parked one
+    int             side_swap = 0;
+    int             n_tool = 0;     // tokens generated inside <tool_call> blocks (at --tool-temp)  // side sequence: 1 = parked the conversation, 2 = resumed the parked one
     double          t_prompt = 0, t_gen = 0;
 };
 
@@ -889,9 +891,22 @@ loaded:
     size_t hold = 0;  // completion streaming: a stop string may still be forming in the last hold bytes
     for (const std::string & s : stops) hold = std::max(hold, s.empty() ? 0 : s.size() - 1);
     auto last_sent = std::chrono::steady_clock::now();  // streaming: when the last delta went out
+    // tool calls sample cooler: arguments (paths, numbers, copied values) need precision, prose and reasoning keep
+    // the request's temperature. Switched between decode cycles, from the <tool_call> / </tool_call> tokens.
+    const float base_temp = sp.temp;
+    const float tool_temp = body.value("tool_temperature", S.tool_temp);
+    auto special_id = [&](const char * s) {
+        const auto v = common_tokenize(S.vocab, s, false, true);
+        return v.size() == 1 ? v[0] : -1;
+    };
+    const int32_t tc_open = tool_temp > 0 && tool_temp < base_temp ? special_id("<tool_call>") : -1;
+    const int32_t tc_close = tc_open >= 0 ? special_id("</tool_call>") : -1;
     auto consume = [&]() {
         for (; used < out.size() && !done; used++) {
             const int32_t t = out[used];
+            if (t == tc_open) sp.temp = tool_temp;
+            else if (t == tc_close && tc_close >= 0) sp.temp = base_temp;
+            else if (tc_open >= 0 && sp.temp == tool_temp) R.n_tool++;
             if (llama_vocab_is_eog(S.vocab, t)) {
                 done = true;
                 break;
@@ -1186,6 +1201,7 @@ loaded:
                 return false;
             }
             consume();
+            dec_p->set_temp(sp.temp);  // inside or outside a tool call, for the next cycle
         }
         const auto & st = dec_p->stats();
         R.stats         = { { "cycles", st.cycles }, { "draft_s", st.t_draft }, { "verify_s", st.t_verify },
@@ -1236,6 +1252,7 @@ loaded:
                       { "idle_before_s", S.last_end.time_since_epoch().count() == 0 ? -1.0
                                          : std::chrono::duration<double>(t0_sys - S.last_end).count() },
                       { "temp", sp.temp }, { "spec", R.stats } };
+        if (R.n_tool) line["tool_tokens"] = R.n_tool;
         if (R.side_swap) line["side"] = R.side_swap == 1 ? "parked" : "resumed";
         if (chat) {  // shape of the output (sizes and a repetition score, no text)
             auto rep = [](const std::string & s) {  // share of repeated lines (a reasoning loop shows as high)
@@ -1369,6 +1386,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--presence-penalty") S->defaults.presence_penalty = (float) std::atof(val().c_str());
         else if (a == "--unload-router") router_url = val();
         else if (a == "--timing-log") S->timing_log = val();
+        else if (a == "--tool-temp") S->tool_temp = (float) std::atof(val().c_str());
         else if (a == "--spec") {
             const std::string v = val();
             S->spec_auto        = v == "auto";
@@ -1389,6 +1407,7 @@ int serve(const std::vector<std::string> & args) {
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
+                        "         [--tool-temp 0.6 (temperature inside <tool_call> blocks; 0 = the request's)]\n"
                         "         [--timing-log FILE (JSON lines of per-request timings, no content)]\n");
         return 1;
     }
