@@ -216,7 +216,7 @@ struct Server {
     // restored for a new conversation that starts with the same tokens instead of prefilling them again
     model::Qwen35::PrefixSnap        sys_snap;
     std::vector<int32_t>             sys_tokens;
-    const void *                     sys_owner = nullptr;  // the model the snapshot belongs to
+    int                              sys_entry = -1;  // the model entry the snapshot belongs to (it survives an unload: same weights)
     int                              streams = 0;  // requests holding a slot (the model must stay loaded)
     // decode rounds (sequence slots): requests in their decode loop, and the drafted cycles waiting for the verify
     struct Job {
@@ -859,7 +859,7 @@ loaded:
         static const std::vector<int32_t> user_turn = common_tokenize(S.vocab, "<|im_start|>user", false, true);
         auto it = std::search(prompt.begin(), prompt.end(), user_turn.begin(), user_turn.end());
         if (it != prompt.end() && it - prompt.begin() >= 1024) sys_n = (size_t) (it - prompt.begin());
-        if (sys_n > 0 && S.sys_owner == S.q35 && sys_n == S.sys_tokens.size() && std::equal(S.sys_tokens.begin(), S.sys_tokens.end(), prompt.begin())) {
+        if (sys_n > 0 && S.sys_entry == S.active && sys_n == S.sys_tokens.size() && std::equal(S.sys_tokens.begin(), S.sys_tokens.end(), prompt.begin())) {
             std::string e;
             if (S.q35->load_prefix(S.sys_snap, e)) {
                 start = sys_n;
@@ -890,7 +890,7 @@ loaded:
         std::string e;
         if (S.q35->can_snapshot((int) sys_n) && S.q35->save_prefix(S.sys_snap, e)) {
             S.sys_tokens.assign(prompt.begin(), prompt.begin() + (long long) sys_n);
-            S.sys_owner = S.q35;
+            S.sys_entry = S.active;
             fprintf(stderr, "system prompt cache: kept %zu tokens (%.0f MB)\n", sys_n,
                     (double) (S.sys_snap.kv.size() + S.sys_snap.rec.size() + S.sys_snap.mtp.size()) / 1e6);
         } else if (!e.empty()) {
