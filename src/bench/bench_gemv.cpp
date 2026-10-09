@@ -234,7 +234,7 @@ void gemv_gpu(const Options & opt) {
     };
 
     const std::vector<Case> cases = {
-        { GGML_TYPE_IQ4_XS, { 1, 2, 4, 8, 9, 16 } },
+        { GGML_TYPE_IQ4_XS, { 1, 2, 3, 4, 5, 6, 7, 8, 9, 16 } },
         { GGML_TYPE_Q4_K,   { 1, 9 }              },
         { GGML_TYPE_Q8_0,   { 1 }                 },
     };
