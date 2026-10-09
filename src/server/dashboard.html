@@ -160,7 +160,9 @@ tbody tr:hover { background: var(--track); }
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="7" fill="var(--ink)"/><path d="M10 7c0 0 1 13 1 16s2 4 5 4 5-1 5-4 1-16 1-16" fill="none" stroke="var(--brass-hi)" stroke-width="2.6" stroke-linecap="round"/><path d="M12.5 7h7" stroke="var(--brass-hi)" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="brassg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="var(--brass-hi)"/><stop offset="1" stop-color="var(--brass)"/></linearGradient></defs>
+        <path d="M13.2 3h5.6a2.2 2.2 0 0 1 2.2 2.2v5.3c0 2.6 3.4 6 3.4 11.4 0 4.4-4 7.1-8.4 7.1s-8.4-2.7-8.4-7.1c0-5.4 3.4-8.8 3.4-11.4V5.2A2.2 2.2 0 0 1 13.2 3z" fill="url(#brassg)"/>
+        <circle cx="16" cy="7" r="1.6" fill="var(--bg)"/><path d="M11.4 22.5c.6 2.4 2.5 3.6 4.6 3.6" fill="none" stroke="var(--bg)" stroke-width="1.6" stroke-linecap="round" opacity=".55"/></svg>
       <h1>shoehorn</h1>
     </div>
     <div class="chips" id="chips"></div>
@@ -356,13 +358,14 @@ function renderReadout() {
 function renderFit() {
   const m = mem;
   if (!m.vram_total) { $("fitSay").textContent = "Memory figures appear once the server reports them."; $("bars").innerHTML = ""; return; }
-  const vUsed = m.vram_total - m.vram_free, wG = m.weights_gpu || 0, wC = (m.residual || 0) + (m.weights_cpu || 0), kv = m.kv_ram || 0;
+  const vUsed = m.vram_total - m.vram_free, wG = m.weights_gpu || 0, none = !loaded, wC = (m.residual || 0) + (m.weights_cpu || 0), kv = m.kv_ram || 0;
   const vOther = Math.max(0, vUsed - wG), rUsed = m.ram_total - m.ram_avail, rOther = Math.max(0, rUsed - wC - kv);
   const total = wG + wC;
   if (wG) $("fitTitle").textContent = `A ${fmt(total / GiB, 0)} GB model on a ${fmt(m.vram_total / GiB, 0)} GB graphics card`;
   $("fitSay").innerHTML = wG
     ? `Of the model's <b class="mono">${gb(total)} GB</b>, <b class="mono">${gb(wG)} GB</b> sit on the graphics card. The other <b class="mono">${gb(wC)} GB</b> of precision live in system memory and cross PCIe on every check, so the card never has to hold it all.`
-    : `No model is loaded right now. It loads on the next request, in about 40 seconds.`;
+    : `No model is loaded right now: shoehorn hands the GPU back after 30 minutes idle. The next request loads it again in about 40 seconds. What you see in use is the desktop, other apps and shoehorn's own CUDA setup.`;
+  if (none) $("fitTitle").textContent = "Model unloaded, GPU free";
   const bar = (name, totalB, segs) => {
     const free = Math.max(0, totalB - segs.reduce((s, x) => s + x.b, 0));
     const all = [...segs, { c: "f", b: free, l: "free" }];
@@ -372,8 +375,8 @@ function renderFit() {
   };
   const busy = !!live.busy;
   $("bars").innerHTML =
-    bar("Graphics card", m.vram_total, [{ c: "w", b: wG, l: "base weights" }, { c: "k", b: vOther, l: "recent context + working memory" }]) +
-    `<div class="pcie"><svg viewBox="0 0 120 18" aria-hidden="true"><line class="flow${busy ? "" : " idle"}" x1="2" y1="9" x2="118" y2="9"/></svg><span>${busy ? "Residual weights streaming across PCIe" : "PCIe link, quiet until the next request"}</span></div>` +
+    bar("Graphics card", m.vram_total, none ? [{ c: "o", b: vUsed, l: "desktop, other apps, CUDA setup" }] : [{ c: "w", b: wG, l: "base weights" }, { c: "k", b: vOther, l: "recent context + working memory" }]) +
+    (none ? "" : `<div class="pcie"><svg viewBox="0 0 120 18" aria-hidden="true"><line class="flow${busy ? "" : " idle"}" x1="2" y1="9" x2="118" y2="9"/></svg><span>${busy ? "Residual weights streaming across PCIe" : "PCIe link, quiet until the next request"}</span></div>`) +
     bar("System memory", m.ram_total, [{ c: "w", b: wC, l: "residual + embedding weights" }, { c: "k", b: kv, l: "conversation memory" }, { c: "o", b: rOther, l: "everything else on this PC" }]);
   $("bars").querySelectorAll(".seg[data-t]").forEach(el => { el.onmousemove = e => showTip(e, el.dataset.t); el.onmouseleave = hideTip; });
 }
@@ -511,7 +514,7 @@ function render() {
 
 function chips(d) {
   const c = [];
-  if (d.loaded) c.push(`<span class="chip"><b>${d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")}</b></span>`);
+  c.push(d.loaded ? `<span class="chip"><b>${d.loaded.replace(/^qwen3.8-/, "").replace(/-shoehorn$/, "")}</b></span>` : `<span class="chip">model <b>unloaded</b></span>`);
   if (cfg.ctx) c.push(`<span class="chip">context <b>${k(cfg.ctx)}</b></span>`);
   if (cfg.kv) c.push(`<span class="chip">KV <b>${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</b></span>`);
   if (cfg.window) c.push(`<span class="chip">VRAM window <b>${k(cfg.window)}</b></span>`);
