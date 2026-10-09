@@ -1201,6 +1201,109 @@ bool Qwen35::swap_side(std::string & err) {
     return true;
 }
 
+bool Qwen35::save_prefix(PrefixSnap & s, std::string & err) {
+    const int n = n_past_;
+    if (!can_snapshot(n)) {
+        err = "save_prefix: needs the KV in RAM and the whole prefix in the VRAM window";
+        return false;
+    }
+    if (host_valid_ < n && !flush_ring(host_valid_, n, err)) return false;  // RAM rows [0, n) exact
+    s = PrefixSnap{};
+    s.n = n;
+    for (size_t i = 0; i < hk_.size(); i++) {
+        for (ggml_tensor * t : { hk_[i], hv_[i] }) {
+            if (!t) continue;
+            const size_t bytes = t->nb[1] * (size_t) n, o = s.kv.size();
+            s.kv.resize(o + bytes);
+            std::memcpy(s.kv.data() + o, t->data, bytes);
+        }
+    }
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        for (ggml_tensor * t : { conv_state_[il], ssm_state_[il] }) {
+            if (!t) continue;
+            const size_t o = s.rec.size();
+            s.rec.resize(o + ggml_nbytes(t));
+            ggml_backend_tensor_get(t, s.rec.data() + o, 0, ggml_nbytes(t));
+        }
+    }
+    if (mtp_on_) {
+        for (ggml_tensor * t : { mtp_k_, mtp_v_ }) {
+            const size_t o = s.mtp.size();
+            s.mtp.resize(o + ggml_nbytes(t));
+            ggml_backend_tensor_get(t, s.mtp.data() + o, 0, ggml_nbytes(t));
+        }
+        s.mtp_slot_pos = mtp_slot_pos_;
+    }
+    return true;
+}
+
+bool Qwen35::load_prefix(const PrefixSnap & s, std::string & err) {
+    const int n = s.n;
+    if (slots_.empty() || W_ >= n_ctx_ || n <= 0 || n > W_ || dry_pending_) {
+        err = "load_prefix: needs the KV in RAM and the whole prefix in the VRAM window";
+        return false;
+    }
+    if (!ensure_committed(n, err)) return false;
+    const auto & h = hp_;
+    // RAM KV rows
+    size_t off = 0;
+    for (size_t i = 0; i < hk_.size(); i++) {
+        for (ggml_tensor * t : { hk_[i], hv_[i] }) {
+            if (!t) continue;
+            const size_t bytes = t->nb[1] * (size_t) n;
+            if (off + bytes > s.kv.size()) {
+                err = "load_prefix: snapshot is short";
+                return false;
+            }
+            std::memcpy(t->data, s.kv.data() + off, bytes);
+            off += bytes;
+        }
+    }
+    // the VRAM ring from the RAM rows: ring row = the KV heads' rows side by side, position p at ring row Kd_ + p
+    std::vector<uint8_t> buf;
+    for (int64_t il = 0; il < h.n_layer; il++) {
+        if (h.is_recurrent(il)) continue;
+        for (int kv = 0; kv < 2; kv++) {
+            ggml_tensor * rc = (kv ? v_cache_ : k_cache_)[(size_t) il];
+            buf.resize(rc->nb[1] * (size_t) n);
+            for (int64_t j = 0; j < h.n_head_kv; j++) {
+                const ggml_tensor * ht = (kv ? hv_ : hk_)[(size_t) (il * h.n_head_kv + j)];
+                for (int r = 0; r < n; r++) {
+                    std::memcpy(buf.data() + rc->nb[1] * (size_t) r + ht->nb[1] * (size_t) j,
+                                (const uint8_t *) ht->data + ht->nb[1] * (size_t) r, ht->nb[1]);
+                }
+            }
+            ggml_backend_tensor_set(rc, buf.data(), rc->nb[1] * (size_t) Kd_, buf.size());
+        }
+    }
+    off = 0;
+    for (size_t il = 0; il < conv_state_.size(); il++) {
+        for (ggml_tensor * t : { conv_state_[il], ssm_state_[il] }) {
+            if (!t) continue;
+            ggml_backend_tensor_set(t, s.rec.data() + off, 0, ggml_nbytes(t));
+            off += ggml_nbytes(t);
+        }
+    }
+    if (mtp_on_ && !s.mtp.empty()) {
+        ggml_backend_tensor_set(mtp_k_, s.mtp.data(), 0, ggml_nbytes(mtp_k_));
+        ggml_backend_tensor_set(mtp_v_, s.mtp.data() + ggml_nbytes(mtp_k_), 0, ggml_nbytes(mtp_v_));
+        mtp_slot_pos_ = s.mtp_slot_pos;
+    } else {
+        mtp_slot_pos_.assign((size_t) Wm_, -1);
+    }
+    slot_pos_.assign((size_t) W_, -1);
+    for (int p = 0; p < n; p++) slot_pos_[(size_t) p] = p;
+    n_past_     = n;
+    host_valid_ = exact_upto_ = n;
+    sum_upto_ = sum_low_ = 0;  // recomputed from the RAM rows when a sparse eval needs them
+    far_rows_ = far_ws_ = 0;
+    ck_n_past_  = 0;
+    hid_row_    = -1;
+    saved_n_past_ = saved_n_past1_ = 0;
+    recorded_n_ = recorded_full_ = 0;
+    return true;
+}
+
 std::vector<std::vector<ggml_fp16_t>> Qwen35::summarize(const std::vector<ggml_tensor *> & hk, int from, int upto) const {
     // element-wise min/max of each page's keys (from the RAM KV), midpoints as halves, heads in parallel
     const auto &  h  = hp_;

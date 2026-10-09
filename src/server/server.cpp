@@ -211,6 +211,11 @@ struct Server {
         bool                 busy = false;  // a request is using it
     };
     Slot                             park;         // the parked side sequence's tokens (one slot, Qwen35::swap_side)
+    // the system prompt cache: the state after the last cold prompt's head (everything before its first user turn),
+    // restored for a new conversation that starts with the same tokens instead of prefilling them again
+    model::Qwen35::PrefixSnap        sys_snap;
+    std::vector<int32_t>             sys_tokens;
+    const void *                     sys_owner = nullptr;  // the model the snapshot belongs to
     int                              streams = 0;  // requests holding a slot (the model must stay loaded)
     // decode rounds (sequence slots): requests in their decode loop, and the drafted cycles waiting for the verify
     struct Job {
@@ -846,6 +851,25 @@ loaded:
         }
         m.reset();
     }
+    // ---- system prompt cache: a prompt read from scratch starts with the agent's system prompt and tools (every new
+    // conversation does); restore their state if the last cold prompt had the same ones, else snapshot it on the way
+    size_t sys_n = 0;
+    if (start == 0 && S.q35 && chat) {
+        static const std::vector<int32_t> user_turn = common_tokenize(S.vocab, "<|im_start|>user", false, true);
+        auto it = std::search(prompt.begin(), prompt.end(), user_turn.begin(), user_turn.end());
+        if (it != prompt.end() && it - prompt.begin() >= 1024) sys_n = (size_t) (it - prompt.begin());
+        if (sys_n > 0 && S.sys_owner == S.q35 && sys_n == S.sys_tokens.size() && std::equal(S.sys_tokens.begin(), S.sys_tokens.end(), prompt.begin())) {
+            std::string e;
+            if (S.q35->load_prefix(S.sys_snap, e)) {
+                start = sys_n;
+                sys_n = 0;  // nothing to snapshot
+                fprintf(stderr, "system prompt cache: restored %zu tokens\n", start);
+            } else {
+                fprintf(stderr, "system prompt cache: %s\n", e.c_str());
+                m.reset();
+            }
+        }
+    }
     R.n_prompt = (int) prompt.size();
     R.n_reused = (int) start;
     const auto         t0 = std::chrono::steady_clock::now();
@@ -858,6 +882,20 @@ loaded:
         }
         return true;
     };
+    if (sys_n > 0 && sys_n < n_head) {
+        // read up to the end of the system prompt, keep its state, then go on
+        if (!eval_range(0, sys_n)) return false;
+        start = sys_n;
+        std::string e;
+        if (S.q35->can_snapshot((int) sys_n) && S.q35->save_prefix(S.sys_snap, e)) {
+            S.sys_tokens.assign(prompt.begin(), prompt.begin() + (long long) sys_n);
+            S.sys_owner = S.q35;
+            fprintf(stderr, "system prompt cache: kept %zu tokens (%.0f MB)\n", sys_n,
+                    (double) (S.sys_snap.kv.size() + S.sys_snap.rec.size() + S.sys_snap.mtp.size()) / 1e6);
+        } else if (!e.empty()) {
+            fprintf(stderr, "system prompt cache: %s\n", e.c_str());
+        }
+    }
     if (start < n_head) {
         if (!eval_range(start, n_head)) return false;
         start = n_head;

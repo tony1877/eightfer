@@ -202,6 +202,20 @@ public:
     int      side_n_past() const { return side_.n_past; }
     uint64_t side_epoch() const { return side_.kv.epoch; }
 
+    // Prefix snapshot (KV in RAM, the prefix within the VRAM window): the state after the first n positions of the
+    // active sequence, kept in RAM so a later sequence that starts with the same tokens (an agent's system prompt and
+    // tool list) restores it instead of prefilling them. Holds the RAM KV rows, the recurrent state and the MTP ring;
+    // the VRAM ring is rebuilt from the RAM rows and the page summaries are recomputed when needed.
+    struct PrefixSnap {
+        int                  n = 0;
+        std::vector<uint8_t> kv, rec, mtp;
+        std::vector<int>     mtp_slot_pos;
+    };
+    bool can_snapshot(int n) const { return !slots_.empty() && W_ < n_ctx_ && n > 0 && n <= W_ && n_past_ == n && !dry_pending_; }
+    bool save_prefix(PrefixSnap & s, std::string & err);
+    // replaces the active sequence's state (call after reset()); n_past() becomes s.n
+    bool load_prefix(const PrefixSnap & s, std::string & err);
+
     // Joint verify (sequence slots): the sequences of several slots in one pass over the weights (base + residual), so
     // they share the residual's trip over PCIe. Each sequence runs the recurrence from its slot's committed state and
     // attends its slot's RAM KV (sparse, page summaries from RAM); nothing is committed: commit_seq() then keeps a
