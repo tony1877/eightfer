@@ -1,135 +1,141 @@
 # shoehorn
 
-An inference engine for **Qwen3.8-27B** and **Qwen3.8-Flash-Next** on one consumer PC:
-Windows 11, an RTX 5080 16 GB, a Ryzen 7 9800X3D and 32 GB DDR5, plus NVMe/SATA SSDs.
+An inference engine that fits **Qwen3.8-27B** at near-8-bit quality onto a 16 GB GPU, and runs
+**Qwen3.8-Flash-Next** (176B MoE) from NVMe. OpenAI-compatible server, a live dashboard, made for coding agents.
 
-The idea is **8-bit quality at 4-bit residency**. Each weight is stored as a 4-bit base and a 4-bit residual:
+How it works: each weight is stored as a 4-bit base plus a 4-bit residual.
 
-- The base lives in VRAM. It drafts tokens at full GPU speed.
-- The residual lives in system RAM or on NVMe. Base + residual verify the drafts.
+- The base (IQ4_XS, 13.9 GB) lives in VRAM and drafts tokens fast.
+- The residual (Q4_K, 14.4 GB) lives in pinned system RAM. Base + residual check the drafts.
+- Speculative sampling makes the output follow the base + residual distribution exactly (~Q8 quality;
+  IQ4_XS + Q4_K has 0.89x the weight error of Q8_0).
 
-Speculative sampling makes the result lossless relative to the ~Q8 model.
-For the 176B Flash-Next, experts stream from NVMe through a VRAM/RAM heat cache.
-Its 51B n-gram table is read straight from disk at full BF16 precision.
+## Status
 
-- [`docs/DESIGN.md`](docs/DESIGN.md) - design, memory budgets, estimates, milestones.
-- [`docs/SPEED2X.md`](docs/SPEED2X.md) - plan for ~2x decode speed (lossless) and 200k context on both models.
-- [`docs/BITLEVEL.md`](docs/BITLEVEL.md) - bit-level lossless mode: exact BF16 rebuilt from the 4-bit draft's own bits.
-- [`experiments/exact_tail`](experiments/exact_tail) - the bit-exact rebuild (0 mismatches over 204.5M real weights).
-- [`experiments/nested_quant`](experiments/nested_quant) - first measurement on real Qwen3.8-27B weights.
-  An IQ4_XS base plus a Q4_K residual has 0.89x the weight error of Q8_0.
+Working and in daily use on the reference box: Windows 11, RTX 5080 16 GB, Ryzen 7 9800X3D, 32 GB DDR5.
+Measured there (27B, production settings):
 
-Status: **M1 done**. `shoehorn bench` measures the numbers the design depends on; the target box's results are in
-[`bench/results/2026-10-04-rtx5080-9800x3d`](bench/results/2026-10-04-rtx5080-9800x3d/README.md). It doesn't run
-models yet (M2 next).
+| What | Speed |
+|---|---|
+| Decode, code / tool calls | 44-78 tok/s |
+| Decode, explanations | 36-38 tok/s |
+| Decode, prose | 22-28 tok/s |
+| Prefill, 6K prompt | ~1170 tok/s full, 1.6-1.75x that with `--fast-prefill` |
+| 261,776-token prompt | prefill 835 tok/s, decode 24 tok/s at full context, 15.4 GB peak VRAM |
+| Flash-Next | 18.8 tok/s (24 warm) |
+| Agent reliability (`tests/agent_reliability`) | hard set 34/34 |
+
+Where the decode time goes and what was tried: [`docs/DECODE-LIMITS.md`](docs/DECODE-LIMITS.md).
+
+## What is supported
+
+| | Supported | Notes |
+|---|---|---|
+| Models | GGUF architectures `qwen35` (Qwen3.8-27B and fine-tunes) and `qwen4exp` (Flash-Next) | Any other architecture is refused at load. Fine-tunes of these two work. |
+| GPU | NVIDIA, CUDA 12.8+ | Default build targets Blackwell (`120a-real`). Other generations: `-CudaArch 89` (Ada), `86` (Ampere), etc. AMD and Intel GPUs are not supported. |
+| VRAM | 16 GB minimum for the 27B | More VRAM gives a bigger VRAM KV window and room for MTP at long context. The residual always stays in RAM, so more VRAM does **not** yet make decode faster (see below). |
+| RAM | ~32 GB for the 27B | 14.4 GB pinned residual + RAM KV (7-9 GB at 256K). Flash-Next streams experts from NVMe and uses RAM as a cache. |
+| CPU | x86-64 | Default build uses AVX-512 (Zen 4/5, Ice Lake or newer). Any other x86-64 CPU: `-Portable`. |
+| OS | Windows 10/11 | Linux is untested (some code paths exist; the build script is PowerShell). macOS: no. |
+| PCIe | any | Verify speed is bound by host-to-GPU bandwidth: PCIe 5.0 x16 ~54 GB/s gives ~265 ms per verify; PCIe 4.0 roughly doubles it. |
+
+**More VRAM and other models.** On a 24-32 GB card the residual would fit on the GPU and a verify would drop from
+~265 ms to ~30 ms, a large decode speedup. That mode is not implemented yet: today extra VRAM only extends the KV
+window. Other model families need their architecture ported (the layer graph lives in `src/model/`).
 
 ## Build (Windows)
 
-Needs Git, the CUDA Toolkit >= 12.8, and **Visual Studio 2022** Build Tools with the C++ workload.
-CUDA 13.0 does not accept VS 2026 as host compiler. Install the Build Tools if `build.ps1` says they're missing:
+Needs Git, the CUDA Toolkit >= 12.8, and **Visual Studio 2022** Build Tools with the C++ workload
+(CUDA 13.0 does not accept VS 2026 as host compiler):
 
 ```powershell
 winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-Clone to a short path and build. The first build compiles ggml's CUDA kernels and takes several minutes. The build
-enables AVX-512 VNNI/BF16/VBMI for Zen 4/5 and Ice Lake or newer; on an older CPU use `.\scripts\build.ps1 -Portable`.
+Clone to a short path and build. The first build compiles ggml's CUDA kernels and takes several minutes.
 
 ```powershell
 git clone --recurse-submodules --shallow-submodules -b claude/qwen-custom-inference-engine-jhydpg https://github.com/tony1877/shoehorn C:\src\shoehorn
 cd C:\src\shoehorn
-.\scripts\build.ps1
+.\scripts\build.ps1                 # options: -Portable (no AVX-512), -CudaArch <sm>, -NoCuda
 ```
 
-## Bench
+## Quick start (27B)
 
-Close anything holding VRAM first; check with `nvidia-smi`. Then:
+1. **Pack** the model from Hugging Face BF16 safetensors. `--template` is any `qwen35` GGUF of the same model
+   (for the tokenizer and metadata); `--imatrix` is optional but improves the base.
 
-```powershell
-.\build\bin\shoehorn.exe bench 2>&1 | Tee-Object bench.txt
-```
+   ```powershell
+   .\build\bin\shoehorn.exe pack --src D:\hf\Qwen3.8-27B --template D:\gguf\qwen3.8-27b-Q4_K_M.gguf `
+       --out C:\models\q27 --base iq4_xs --res q4_K --imatrix D:\gguf\imatrix.gguf
+   ```
 
-What it does (about 3-5 minutes):
+   This writes `C:\models\q27.base.gguf` and `C:\models\q27.res.gguf`. `--res` can be `q3_K` (less RAM),
+   `q5_K` / `q6_K` (more quality, more RAM and slower verify) or `none`. `--check` verifies the output.
 
-- RAM read bandwidth, then ggml matrix-vector speed on the CPU and the GPU, 1 to 16 tokens per pass.
-- Pins up to 16 GiB of RAM, then measures GPU upload/download speed, alone and while the CPU is also reading RAM.
-- On every fixed drive, writes a 4 GiB temp file to `X:\shoehorn_bench_tmp\`, measures unbuffered reads, and
-  deletes the file.
-- `--disk D:\some\folder` limits the disk test to chosen drives.
-- `shoehorn bench --help` lists all options.
+2. **Serve**:
 
-Kernels come from [ggml](https://github.com/ggml-org/llama.cpp) (MIT), pinned as a submodule at `836d571`.
-The runtime, scheduling, storage tiers and split-precision format are shoehorn's.
+   ```powershell
+   .\build\bin\shoehorn.exe serve C:\models\q27.base.gguf --res C:\models\q27.res.gguf `
+       --port 8090 --alias qwen27 --ctx 262144 --kv q8_0 --kv-v q4_0 --spec auto --fast-prefill 4096
+   ```
 
-## Serving (OpenAI-compatible)
+3. Point any OpenAI-compatible client at `http://127.0.0.1:8090/v1`. Open `http://127.0.0.1:8090/` for the
+   dashboard (decode and prefill speed, accepted drafts, memory, PCIe traffic, per-request history).
 
-```
-shoehorn serve <base.gguf> [--res <res.gguf>] --port 8090 --alias NAME --api-key-file KEYFILE \
-               --chat-template-file TEMPLATE.jinja --ctx 16384 --kv q8_0 --spec auto [--mtp 3]
-```
+Flash-Next needs no packing: serve its GGUF directly (experts stay memory-mapped, a GPU expert cache takes free VRAM).
+Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` picks one, the other is unloaded.
 
-- Qwen3.8-27B: pack it first (`shoehorn pack`), then serve the base with `--res`: base + residual quality,
-  self-speculative decoding. On an RTX 5080 + 9800X3D, short context, 4 benchmark prompts: 27.8 tok/s at temp 1.0
-  and 27.9 greedy (16-47 by prompt), vs 3.1 tok/s for plain base + residual decoding. Two things make it fast:
-  - Long drafts. `--spec auto` picks 1-63 drafts per cycle from the measured acceptance by draft position and the
-    measured verify cost per batch size. From 32 tokens ggml streams the residual to the GPU (~330 ms per verify,
-    flat in the batch size, vs ~900 ms for 16 tokens on the CPU), so runs of 31-50 drafts pay off.
-  - MTP-staged drafts (`--mtp N`, default 3, 0 = off). The model's own MTP block proposes N tokens; one base pass
-    checks them by speculative sampling and adds a token of its own. The kept tokens are exact samples from the base,
-    so they draft for base + residual as before. 13 ms per draft token vs 19 for the base alone.
-  - Echo drafting (`--echo 1`, default). When the last 8 tokens occurred earlier in the context, the tokens that
-    followed them (up to 63) are proposed instead of MTP's: agents re-emit file contents, code and tool arguments.
-    The base checks the copy in one pass like an MTP proposal. Synthetic agent tasks at 256K context (file rewrite,
-    str_replace call, refactor): 8.1 / 29.1 / 22.5 -> 36.3 / 49.4 / 29.8 tok/s, 2.8x end to end; it also fixes
-    drafting once the copied text has left the drafts' VRAM window.
-  - At 256K context MTP now fits beside the RAM KV: proposal checks run "dry" (recurrent state untouched, the kept
-    tokens committed by replay) instead of snapshotting 0.16 GB of state; the output head's residual is staged in
-    VRAM in row pieces (verify compute buffer 0.84 -> 0.23 GB); prompts past the VRAM ring run in 256-token sparse
-    chunks instead of reserving 1.1 GB for exact staging. 256K: decode 18.2 -> 22.7 tok/s on a summary, prose
-    ~13 -> 22 tok/s, prefill 403 -> 456 tok/s, needle recalled, 15.1 GB peak VRAM.
-  - Residual uploads overlap compute ([`patches/ggml-weight-prefetch.patch`](patches/ggml-weight-prefetch.patch),
-    applied by `build.ps1`): ggml's scheduler stages host weights in two VRAM slots from a second CUDA stream, the
-    next layer's residual uploading while the current one computes. A verify costs ~255 ms at any size (was 330 ms
-    from 32 tokens, 275-900 ms on the CPU below), so every verify runs on the GPU and drafts are at least 24 long.
-    Prefill runs in 1024-token batches; with the KV in RAM their attention runs in 256-query sub-chunks, so the
-    residual crosses PCIe once per 1024 tokens. Prefill: 6K prompt 725 -> 1170 tok/s, 64K prompt at 256K context
-    495 -> 952, 261,776 tokens 456 -> 835 tok/s (586 -> 324 s, decode 24.4 tok/s at full context, needle recalled,
-    15.4 GB peak VRAM). Decode, 8 seeds at temp 1.0: prose 28, explain 36-38, code 43-49, reasoning 59 tok/s. Prose stays drafter-bound: the 4-bit base's
-    drafts are kept ~50% of the time, so about half the drafting is wasted (see `gen --repeat`).
-  Output follows the base + residual distribution exactly (speculative sampling at both levels). Greedy output is
-  token-identical to plain decoding up to rounding: verify batches of 16+ tokens can flip a near-tie (k=6 matches
-  plain over 256 tokens).
-- Flash-Next: serve the GGUF directly (experts stay memory-mapped; a GPU expert cache takes free VRAM;
-  18.8 tok/s, 24 warm).
-- Requests and responses follow llama-server: `chat_template_kwargs` (e.g. `enable_thinking`), `reasoning_content`,
-  `tools` / `tool_calls`, streaming with usage and timings in the last chunk.
-- Endpoints: `/v1/chat/completions`, `/v1/completions` (prompt string or token ids, no template), `/v1/models`,
-  `/health`. Sampling: `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `presence_penalty`, `frequency_penalty`
-  (over the generated tokens, applied exactly inside speculative decoding), `stop`, `max_tokens`.
-- Concurrent requests (`--slots N`): two lanes run at once, a drafter (own CUDA stream) drafting some requests together
-  (`--draft-batch`, default min(N, 2)) while the model verifies the others' drafts together; prompts run whole.
-  4 requests at 262K context: 1.63x the throughput of running them one after another (56 vs 35 tok/s; docs/MULTISEQ.md). `--slots N` (27B, KV in RAM) keeps
-  N sequences, so N conversations (an agent and its subagents) keep their prompt caches: a request goes to the slot it
-  extends furthest, else an empty or the least recently used one; slots share `--kv-pool-gb` (default: `--ctx` tokens). A
-  streamed request whose client disconnects stops at the next decode cycle. `tests/server_smoke.ps1` covers all of it.
-- Side sequence (one slot, KV in RAM; on unless `--no-side`): a request that continues neither the conversation nor the
-  parked sequence (a client's session title, a summary) parks the conversation's state in RAM (its VRAM ring rows,
-  recurrent state, page summaries, MTP ring; its own RAM KV region stays) and runs on an empty sequence with the whole
-  window; the conversation's next turn swaps it back. 17K and 30K-token conversations: ~150 ms per swap, the next turn
-  reuses the whole prompt and its output is identical to a run without the side request.
-- Long context (up to the models' 262144): pass `--ctx 262144 --kv q8_0`. When the 27B's KV does not fit in VRAM next
-  to the weights, the full KV (9.1 GB at 256K) lives in RAM and small decode/verify batches use sparse attention:
-  per 64-key page a midpoint key in VRAM ranks pages for the batch's queries, and attention is exact over the top 128
-  pages, the first page and the last 4096 tokens, gathered from RAM. Drafts see the verify's best pages through a
-  VRAM far area plus a ring of recent tokens. Quality: 32K text PPL 2.3301 vs 2.3317 exact; text repeated 48K tokens
-  back 1.0006 vs 1.0004 exact (`E8_SPARSE=0` forces exact attention). 27B with a 261,776-token prompt: prefill
-  403 tok/s (~11 min), decode 18.2 tok/s at full context with long drafts (10.6 with drafts of at most 15, 3.3 with
-  exact attention); needle at position 0 recalled. MTP drafting turns itself off when the KV does not fit in VRAM
-  (its 0.4 GB would come out of the KV window).
-- RAM KV options: its pages take RAM only as positions are written (nothing is cleared up front); `--kv-lock` instead
-  locks all of it in physical memory so it is never paged out. `--kv-v q4_0` stores V at 4 bits (K stays `--kv`):
-  256K KV 9.13 -> 6.98 GB. Measured with q8_0 K: KLD 0.0016 vs q8_0 V over a 64K chunk (RAM KV, sparse), 0.0056 vs
-  llama.cpp Q8 at 512 (0.0021 with q8_0 V), 256K needle recalled. `--kv q4_0` (both): 0.0038 / 0.0083, needle recalled.
-- Flash-Next long prompts are processed layer by layer (65536-token chunks), so each layer's experts are read from
-  disk once per chunk instead of once per 512 tokens: 6K-token prompt 110 tok/s (was 10.7); a 261,776-token prompt
-  prefills at 95 tok/s (46 min) and then decodes at 9.0 tok/s, needle at position 0 recalled.
+## Server flags
+
+| Flag | Default | What |
+|---|---|---|
+| `--res FILE` | none | residual GGUF (27B) |
+| `--host`, `--port` | 127.0.0.1, 8090 | listen address. Use `0.0.0.0` for LAN access, with `--api-key-file`. |
+| `--alias NAME`, `--also ALIAS=PATH[,RES]` | | model names; extra models loaded on demand |
+| `--api-key-file F`, `--chat-template-file F` | | bearer key; Jinja chat template override |
+| `--idle-unload S` | off | free the GPU after S seconds idle (next request reloads) |
+| `--ctx N` | 16384 | context length (up to 262144) |
+| `--kv T`, `--kv-v T` | f16 | KV cache type (`q8_0`, `q4_0`); `--kv-v` sets V separately |
+| `--kv-pool-gb G`, `--kv-lock` | | RAM KV pool size; lock it in physical memory |
+| `--gpu-kv N`, `--gpu-layers N` | auto | VRAM KV window tokens; layers on GPU (Flash-Next) |
+| `--expert-cache-gb G` | auto | Flash-Next GPU expert cache |
+| `--spec auto\|K`, `--mtp N`, `--echo 0\|1` | auto, 3, 1 | draft length; MTP proposals per base pass; copy-from-context drafting |
+| `--ubatch N` | 1024 | prefill batch |
+| `--fast-prefill N` | off | read the prompt with the base only except its last N tokens: 1.6-1.75x prefill, KLD 0.0028 |
+| `--slots N`, `--draft-batch N`, `--no-side` | 1 | concurrent conversations; side slot for title/summary requests |
+| `--temp`, `--top-p`, `--top-k`, `--min-p`, `--presence-penalty` | model defaults | sampling defaults (requests can override) |
+| `--tool-temp T` | 0.6 | temperature inside `<tool_call>` blocks |
+| `--think-budget N`, `--think-after-tool 0\|1`, `--drop-reasoning 0\|1` | 32768 | reasoning cap and handling |
+| `--threads N` | auto | CPU threads |
+| `--timing-log FILE` | off | per-request JSONL with a decode time breakdown |
+
+## Features
+
+- **Self-speculative decoding.** The model's MTP head proposes tokens, the base checks them, base + residual verify
+  up to 63 at once. `--spec auto` picks the draft length from measured acceptance and verify cost. Echo drafting
+  copies repeated text (file contents, tool arguments) from the context.
+- **Long context.** Up to 262K tokens. When the KV does not fit in VRAM it lives in RAM; decode uses exact attention
+  over the top pages plus the last 4096 tokens (32K PPL 2.3301 vs 2.3317 exact; 256K needle recalled).
+- **Prompt caches.** Each conversation reuses its prompt; a side slot keeps title/summary requests from evicting it;
+  the system prompt prefix is kept in RAM and survives idle unloads.
+- **Agent-friendly API.** llama-server compatible: `/v1/chat/completions`, `/v1/completions`, `/v1/models`,
+  `/health`, `/stats`, `/unload`; tools / `tool_calls`, `reasoning_content`, `chat_template_kwargs`, streaming with
+  usage and timings. Client disconnects stop generation.
+- **Dashboard** at `/`, fed by `/stats`.
+
+## Other commands
+
+- `shoehorn bench`: RAM, GPU, PCIe and disk bandwidth (about 3-5 minutes; `--help` for options). Reference results:
+  [`bench/results/2026-10-04-rtx5080-9800x3d`](bench/results/2026-10-04-rtx5080-9800x3d/README.md).
+- `shoehorn ppl`: perplexity / KLD checks used for every quality claim above.
+- `tests/server_smoke.ps1`, `tests/agent_reliability/`: server and agent tests.
+
+## Docs
+
+- [`docs/DESIGN.md`](docs/DESIGN.md): design and memory budgets.
+- [`docs/DECODE-LIMITS.md`](docs/DECODE-LIMITS.md): decode time breakdown and measured dead ends.
+- [`docs/SPEED2X.md`](docs/SPEED2X.md), [`docs/MULTISEQ.md`](docs/MULTISEQ.md), [`docs/BITLEVEL.md`](docs/BITLEVEL.md).
+
+Kernels come from [ggml](https://github.com/ggml-org/llama.cpp) (MIT), pinned as a submodule. The runtime,
+scheduling, storage tiers and split-precision format are shoehorn's.
