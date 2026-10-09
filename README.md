@@ -33,15 +33,18 @@ Where the decode time goes and what was tried: [`docs/DECODE-LIMITS.md`](docs/DE
 |---|---|---|
 | Models | GGUF architectures `qwen35` (Qwen3.8-27B and fine-tunes) and `qwen4exp` (Flash-Next) | Any other architecture is refused at load. Fine-tunes of these two work. |
 | GPU | NVIDIA, CUDA 12.8+ | Default build targets Blackwell (`120a-real`). Other generations: `-CudaArch 89` (Ada), `86` (Ampere), etc. AMD and Intel GPUs are not supported. |
-| VRAM | 16 GB minimum for the 27B | More VRAM gives a bigger VRAM KV window and room for MTP at long context. The residual always stays in RAM, so more VRAM does **not** yet make decode faster (see below). |
+| VRAM | 16 GB minimum for the 27B | More VRAM can hold part or all of the residual (`--res-gpu-gb`), which shortens every verify. |
 | RAM | ~32 GB for the 27B | 14.4 GB pinned residual + RAM KV (7-9 GB at 256K). Flash-Next streams experts from NVMe and uses RAM as a cache. |
 | CPU | x86-64 | Default build uses AVX-512 (Zen 4/5, Ice Lake or newer). Any other x86-64 CPU: `-Portable`. |
 | OS | Windows 10/11 | Linux is untested (some code paths exist; the build script is PowerShell). macOS: no. |
 | PCIe | any | Verify speed is bound by host-to-GPU bandwidth: PCIe 5.0 x16 ~54 GB/s gives ~265 ms per verify; PCIe 4.0 roughly doubles it. |
 
-**More VRAM and other models.** On a 24-32 GB card the residual would fit on the GPU and a verify would drop from
-~265 ms to ~30 ms, a large decode speedup. That mode is not implemented yet: today extra VRAM only extends the KV
-window. Other model families need their architecture ported (the layer graph lives in `src/model/`).
+**More VRAM.** `--res-gpu-gb G` keeps G GB of the residual in VRAM (layer by layer); only the rest crosses PCIe
+on each verify. `--res-gpu-gb auto` takes all free VRAM but 3 GB (KV window, MTP, compute buffers). Output is
+unchanged (greedy text identical). On the 16 GB reference card only ~1 GB fits next to a small KV: verify 259 ->
+251 ms, in proportion to the bytes moved. The whole 14.4 GB residual needs a ~32 GB card; that case is not measured.
+
+**Other models.** Other model families need their architecture ported (the layer graph lives in `src/model/`).
 
 ## Build (Windows)
 
@@ -91,6 +94,7 @@ Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` pi
 | Flag | Default | What |
 |---|---|---|
 | `--res FILE` | none | residual GGUF (27B) |
+| `--res-gpu-gb G\|auto` | 0 | residual kept in VRAM; the rest streams from pinned RAM |
 | `--host`, `--port` | 127.0.0.1, 8090 | listen address. Use `0.0.0.0` for LAN access, with `--api-key-file`. |
 | `--alias NAME`, `--also ALIAS=PATH[,RES]` | | model names; extra models loaded on demand |
 | `--api-key-file F`, `--chat-template-file F` | | bearer key; Jinja chat template override |

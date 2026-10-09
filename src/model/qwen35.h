@@ -118,6 +118,9 @@ struct LoadOptions {
     int       n_threads    = 0;     // CPU threads; 0 = physical cores
     int       n_ubatch     = 1024;  // most tokens per eval() call (prefill batches; one pass over the weights each)
     std::string residual_path;      // `shoehorn pack` .res.gguf; empty = base only
+    double    res_gpu_gb   = 0;     // residual kept in VRAM (layer by layer, up to this many GB); the rest stays in
+                                    // pinned RAM. < 0 = auto: free VRAM minus res_gpu_reserve_gb
+    double    res_gpu_reserve_gb = 3.0;  // auto mode: VRAM left for the KV window, MTP and compute buffers
     int       max_record   = 16;    // most tokens per recorded eval (speculative verify batch)
     bool      mtp          = false; // load the MTP block for drafting (when the GGUF has one and a GPU exists)
     int       mtp_window   = 4096;  // MTP KV ring size
@@ -175,6 +178,7 @@ public:
 
     bool has_residual() const { return !res_.empty(); }
     uint64_t residual_bytes() const { return res_bytes_; }
+    uint64_t residual_gpu_bytes() const { return res_gpu_bytes_; }  // part of residual_bytes() held in VRAM
 
     // Sequence slots: each slot is a sequence of its own (RAM KV region, a part of the VRAM ring and of the MTP ring,
     // recurrent state, page summaries, prompt-reuse checkpoint, KV bookkeeping), so several conversations keep their
@@ -380,6 +384,9 @@ private:
     std::unordered_map<const ggml_tensor *, std::vector<ggml_tensor *>> res_chunks_;  // big residuals in row pieces
     ggml_context *        rctx_ = nullptr;
     ggml_backend_buffer_t rbuf_ = nullptr;
+    ggml_context *        rgctx_ = nullptr;  // residual tensors kept in VRAM (LoadOptions::res_gpu_gb)
+    ggml_backend_buffer_t rgbuf_ = nullptr;
+    uint64_t              res_gpu_bytes_ = 0;
     uint64_t              res_bytes_ = 0;
     bool                  use_res_   = false;  // while building a graph
 

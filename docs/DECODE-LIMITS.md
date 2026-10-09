@@ -30,6 +30,7 @@ Tokens per base pass: code 4.5, prose 1.15 (MTP proposals kept: code 77%, prose 
 
 ## What would move it
 
-- More VRAM (24-32 GB): the residual stays on the GPU, a verify drops from ~265 ms to ~30 ms.
+- More VRAM: `--res-gpu-gb` keeps part or all of the residual on the GPU. Measured with 1 GB on the 5080: verify
+  259 -> 251 ms, in proportion to the bytes no longer crossing PCIe. All of it needs ~32 GB of VRAM.
 - A better draft model for prose than the built-in MTP head (multi-candidate drafting needs exact multi-draft
   rejection sampling to stay lossless; not done).

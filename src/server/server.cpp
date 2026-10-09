@@ -1380,7 +1380,7 @@ int serve(const std::vector<std::string> & args) {
     int  ubatch = 0;  // prompt batch size (0 = the model's default)
     int  fast_prefill = 0;  // > 0: read all but the last N prompt tokens without the residual
     int n_slots = 1, draft_batch = 0;
-    double kv_pool_gb = 0;
+    double kv_pool_gb = 0, res_gpu_gb = 0;
     std::string router_url;
     std::vector<Entry> extra;
     double      cache_gb = -1;
@@ -1417,6 +1417,10 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--no-side") side = false;
         else if (a == "--slots") n_slots = std::max(1, std::atoi(val().c_str()));
         else if (a == "--kv-pool-gb") kv_pool_gb = std::atof(val().c_str());
+        else if (a == "--res-gpu-gb") {  // G, or "auto" (all free VRAM but 3 GB)
+            const std::string v = val();
+            res_gpu_gb          = v == "auto" ? -1 : std::atof(v.c_str());
+        }
         else if (a == "--draft-batch") draft_batch = std::max(1, std::atoi(val().c_str()));
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--expert-cache-gb") cache_gb = std::atof(val().c_str());
@@ -1450,6 +1454,7 @@ int serve(const std::vector<std::string> & args) {
                         "         [--api-key-file F] [--chat-template-file F] [--ctx 16384] [--kv f16|q8_0|q4_0] [--spec auto|K]\n"
                         "         [--kv-v TYPE (V cache type, default: --kv)] [--kv-lock (keep the RAM KV in physical memory)]\n"
                         "         [--slots N (sequences kept, one per conversation)] [--kv-pool-gb G (RAM KV of all slots)]\n"
+                        "         [--res-gpu-gb G|auto (residual kept in VRAM, faster verify; the rest streams from RAM)]\n"
                         "         [--no-side (one slot: no parked side sequence for unrelated requests)]\n"
                         "         [--draft-batch N (slots: requests drafted together, default min(slots, 2))]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
@@ -1519,6 +1524,7 @@ int serve(const std::vector<std::string> & args) {
     o.draft_batch     = n_slots > 1 ? (draft_batch > 0 ? std::min(draft_batch, n_slots) : std::min(n_slots, 2)) : 1;
     S->draft_batch    = o.draft_batch;
     o.residual_path   = res;
+    o.res_gpu_gb      = res_gpu_gb;
     o.expert_cache_gb = cache_gb;
     o.max_record      = n_slots > 1 ? 64 : S->spec_k + 1;  // slots: a joint verify's sequences (VRAM: see qwen35.cpp)
     o.mtp             = S->mtp > 0;
@@ -1689,6 +1695,7 @@ int serve(const std::vector<std::string> & args) {
             }
             if (S->q35) {
                 mem["residual"]   = S->q35->residual_bytes();
+                mem["residual_gpu"] = S->q35->residual_gpu_bytes();
                 mem["kv_ram"]     = S->q35->kv_committed_bytes();
                 mem["side_parked"] = S->q35->has_side() ? S->q35->side_n_past() : 0;
             }

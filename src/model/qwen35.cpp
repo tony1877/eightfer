@@ -220,6 +220,8 @@ Qwen35::~Qwen35() {
         ggml_backend_sched_free(sched_);
     }
     if (rbuf_) ggml_backend_buffer_free(rbuf_);
+    if (rgbuf_) ggml_backend_buffer_free(rgbuf_);
+    if (rgctx_) ggml_free(rgctx_);
     if (pbuf_) ggml_backend_buffer_free(pbuf_);
     if (pctx_) ggml_free(pctx_);
     if (hbuf_) ggml_backend_buffer_free(hbuf_);
@@ -1486,6 +1488,21 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     }
     ggml_init_params ip = { ggml_tensor_overhead() * (size_t) (rf.n_tensors() + 64), nullptr, true };
     rctx_               = ggml_init(ip);
+    // VRAM budget for residual tensors: those go in VRAM in file order (layer by layer) while they fit, and a verify
+    // reads them there instead of over PCIe
+    size_t gpu_budget = 0;
+    if (gpu_ && opt_.res_gpu_gb != 0) {
+        if (opt_.res_gpu_gb > 0) {
+            gpu_budget = (size_t) (opt_.res_gpu_gb * 1e9);
+        } else {
+            size_t vfree = 0, vtotal = 0;
+            ggml_backend_dev_memory(ggml_backend_get_device(gpu_), &vfree, &vtotal);
+            const size_t reserve = (size_t) (opt_.res_gpu_reserve_gb * 1e9);
+            gpu_budget           = vfree > reserve ? vfree - reserve : 0;
+        }
+        if (gpu_budget > 0) rgctx_ = ggml_init(ip);
+    }
+    size_t gpu_used = 0;
     std::vector<std::pair<ggml_tensor *, const ggml_tensor *>> to_load;
     for (int64_t i = 0; i < rf.n_tensors(); i++) {
         const ggml_tensor * m    = rf.tensor(i);
@@ -1500,7 +1517,10 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
             err = std::string("residual shape mismatch for ") + ggml_get_name(m);
             return false;
         }
-        ggml_tensor * r = ggml_dup_tensor(rctx_, m);
+        const size_t  nb     = ggml_nbytes(m);
+        const bool    on_gpu = rgctx_ && gpu_used + nb + 256 <= gpu_budget;
+        if (on_gpu) gpu_used += GGML_PAD(nb, 256);
+        ggml_tensor * r = ggml_dup_tensor(on_gpu ? rgctx_ : rctx_, m);
         ggml_set_name(r, (std::string(ggml_get_name(m)) + ".res").c_str());
         res_[base] = r;
         to_load.emplace_back(r, m);
@@ -1513,26 +1533,40 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     if (gpu_ && !kv_pin) {
         buft = ggml_backend_dev_host_buffer_type(ggml_backend_get_device(gpu_));
     }
+    if (rgctx_ && gpu_used > 0) {
+        rgbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(rgctx_, ggml_backend_get_default_buffer_type(gpu_));
+        if (!rgbuf_) {
+            err = "not enough VRAM for " + std::to_string(gpu_used / 1e9).substr(0, 5) + " GB of residual (lower --res-gpu-gb)";
+            return false;
+        }
+        ggml_backend_buffer_set_usage(rgbuf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        res_gpu_bytes_ = ggml_backend_buffer_get_size(rgbuf_);
+    }
+    const bool any_host = ggml_get_first_tensor(rctx_) != nullptr;
+    if (!any_host) buft = nullptr;
     if (buft) {
         rbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(rctx_, buft);
         if (!rbuf_) {
             fprintf(stderr, "warning: pinned allocation for the residual failed, using pageable RAM\n");
         }
     }
-    if (!rbuf_) {
+    if (!rbuf_ && any_host) {
         rbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(rctx_, ggml_backend_get_default_buffer_type(cpu_));
+        if (!rbuf_) {
+            err = "not enough RAM for the residual";
+            return false;
+        }
     }
-    if (!rbuf_) {
-        err = "not enough RAM for the residual";
-        return false;
+    if (rbuf_) ggml_backend_buffer_set_usage(rbuf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    res_bytes_ = (rbuf_ ? ggml_backend_buffer_get_size(rbuf_) : 0) + res_gpu_bytes_;
+    if (res_gpu_bytes_) {
+        fprintf(stderr, "residual: %.2f GB in VRAM, %.2f GB in RAM\n", res_gpu_bytes_ / 1e9, (res_bytes_ - res_gpu_bytes_) / 1e9);
     }
-    ggml_backend_buffer_set_usage(rbuf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-    res_bytes_ = ggml_backend_buffer_get_size(rbuf_);
     if (!read_tensors(path, rf, to_load, err)) return false;
     // A big batch runs a host weight on the GPU by staging the whole tensor in VRAM. The output head's residual (248K
     // rows, 0.7 GB) would set the verify's VRAM need; as tensors over its row pieces (same memory) it needs a tenth.
     for (auto & [base, r] : res_) {
-        if (r->ne[1] <= kResChunkRows || ggml_n_dims(r) != 2) continue;
+        if (r->ne[1] <= kResChunkRows || ggml_n_dims(r) != 2 || r->buffer != rbuf_) continue;
         auto & parts = res_chunks_[r];
         for (int64_t r0 = 0; r0 < r->ne[1]; r0 += kResChunkRows) {
             ggml_tensor * pt = ggml_new_tensor_2d(rctx_, r->type, r->ne[0], std::min<int64_t>(kResChunkRows, r->ne[1] - r0));
@@ -1557,7 +1591,7 @@ ggml_tensor * Qwen35::mm(ggml_context * ctx, ggml_tensor * w, ggml_tensor * x) {
             // costs one ~250 ms transfer at any batch size, so every residual product goes there: res_on_gpu_)
             static const bool small_ok = std::getenv("E8_NO_SMALL_GEMM") == nullptr;
             ggml_tensor *     r        = it->second;
-            if (small_ok && !res_gpu_all() && kernels::q4k_small_supported(r, x)) {
+            if (small_ok && !res_gpu_all() && r->buffer == rbuf_ && kernels::q4k_small_supported(r, x)) {
                 y = ggml_add(ctx, y, kernels::q4k_mul_mat_small(ctx, r, x));
             } else if (auto ch = res_chunks_.find(r); ch != res_chunks_.end()) {
                 // row pieces of a big residual (see load_residual), each staged in VRAM on its own

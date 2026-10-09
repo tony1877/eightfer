@@ -99,6 +99,7 @@ int gen(const std::vector<std::string> & args) {
     int mtp    = 6;  // most MTP proposals per round (adaptive below that)
     bool echo  = true;
     bool kv_q8 = false;
+    double res_gpu_gb = 0;
     bool                  compare = false, profile = false, adaptive = false;
     int                   repeat  = 1;
     bool                  pipe    = false;
@@ -123,6 +124,7 @@ int gen(const std::vector<std::string> & args) {
         else if (a == "--gpu-layers") gpu_layers = std::atoi(val().c_str());
         else if (a == "--ctx") n_ctx = std::atoi(val().c_str());
         else if (a == "--gpu-kv") gpu_kv = std::atoi(val().c_str());
+        else if (a == "--res-gpu-gb") { const std::string v = val(); res_gpu_gb = v == "auto" ? -1 : std::atof(v.c_str()); }
         else if (a == "--kv") kv_q8 = val() == "q8_0";
         else if (a == "--threads") threads = std::atoi(val().c_str());
         else if (a == "--compare") compare = true;
@@ -152,6 +154,7 @@ int gen(const std::vector<std::string> & args) {
     if (kv_q8) o.kv_type = GGML_TYPE_Q8_0;
     o.n_threads     = threads;
     o.residual_path = res;
+    o.res_gpu_gb    = res_gpu_gb;
     o.max_record    = std::max(k + 1, 128);  // echo proposals (64) and tree verifies (up to 128 tokens)
     o.mtp           = k > 0 && mtp > 0;
     if (const char * ub = std::getenv("E8_UBATCH")) o.n_ubatch = std::atoi(ub);
