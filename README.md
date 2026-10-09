@@ -110,7 +110,8 @@ Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` pi
 | `--slots N`, `--draft-batch N`, `--no-side` | 1 | concurrent conversations; side slot for title/summary requests |
 | `--temp`, `--top-p`, `--top-k`, `--min-p`, `--presence-penalty` | model defaults | sampling defaults (requests can override) |
 | `--tool-temp T` | 0.6 | temperature inside `<tool_call>` blocks |
-| `--think-budget N`, `--think-after-tool 0\|1`, `--drop-reasoning 0\|1` | 32768 | reasoning cap and handling |
+| `--think-budget N`, `--think-after-tool 0\|1`, `--drop-reasoning 0\|1` | 32768 | reasoning cap and handling; a request's own `enable_thinking` or `think_after_tool` overrides `--think-after-tool` |
+| `--sys-cache N`, `--sys-cache-gb G` | 4, 3 | system prompts kept in RAM for new conversations (one per client or agent persona) |
 | `--threads N` | auto | CPU threads |
 | `--timing-log FILE` | off | per-request JSONL with a decode time breakdown |
 

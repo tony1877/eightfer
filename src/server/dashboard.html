@@ -359,7 +359,7 @@ function renderList() {
     if (r.finish === "length") tg.push(`<span class="tg warn">cut off</span>`);
     html += `<div class="r${fresh && renderList.ready ? " enter" : ""}"><span class="mono t">${clock(r.t).slice(0, 5)}</span><span class="mono">${k(r.prompt_tokens)}</span><span class="mono">${fmt(pct(r.reused_tokens, r.prompt_tokens), 0)}%</span><span class="mono">${readText(r)}</span><span class="mono">${fmt(r.gen_tokens)}</span><span class="mono spd">${r.gen_tokens >= 16 ? fmt(r.gen_tokens / r.decode_s, 0) : "-"}</span><span class="tagz">${tg.join("")}</span></div>`;
   }
-  if (!html) html = `<div class="empty">Requests show up here as dsh sends them.</div>`;
+  if (!html) html = `<div class="empty">Requests show up here as clients send them.</div>`;
   if ($("rows").dataset.h !== html) { $("rows").innerHTML = html; $("rows").dataset.h = html; }
   renderList.ready = true;
   $("foot").textContent = s && !isLive ? `Last activity ${dur(Date.now() / 1e3 - s.end)} ago` : "";

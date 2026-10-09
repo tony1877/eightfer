@@ -212,11 +212,20 @@ struct Server {
         bool                 busy = false;  // a request is using it
     };
     Slot                             park;         // the parked side sequence's tokens (one slot, Qwen35::swap_side)
-    // the system prompt cache: the state after the last cold prompt's head (everything before its first user turn),
-    // restored for a new conversation that starts with the same tokens instead of prefilling them again
-    model::Qwen35::PrefixSnap        sys_snap;
-    std::vector<int32_t>             sys_tokens;
-    int                              sys_entry = -1;  // the model entry the snapshot belongs to (it survives an unload: same weights)
+    // the system prompt cache: the state after a cold prompt's head (everything before its first user turn), restored
+    // for a new conversation that starts with the same tokens instead of prefilling them again. Several entries
+    // (--sys-cache N, least recently used goes first), so clients with different system prompts (two harnesses, an
+    // agent and its subagents) do not evict each other.
+    struct SysEntry {
+        model::Qwen35::PrefixSnap snap;
+        std::vector<int32_t>      tokens;
+        int                       entry = -1;  // the model entry the snapshot belongs to (it survives an unload: same weights)
+        uint64_t                  used  = 0;
+    };
+    std::vector<SysEntry>            sys_cache;
+    int                              sys_cache_max = 4;
+    double                           sys_cache_gb  = 3.0;  // RAM cap of all entries (least recently used dropped first)
+    uint64_t                         sys_clock     = 0;
     int                              streams = 0;  // requests holding a slot (the model must stay loaded)
     // decode rounds (sequence slots): requests in their decode loop, and the drafted cycles waiting for the verify
     struct Job {
@@ -624,13 +633,16 @@ loaded:
     in.chat_template_kwargs["reasoning_effort"] = "\"medium\"";
     auto et = in.chat_template_kwargs.find("enable_thinking");
     if (et != in.chat_template_kwargs.end()) in.enable_thinking = et->second == "true";
-    if (after_tool && !tool_trouble && !S.think_after_tool) {
+    // a client that sets enable_thinking itself, or think_after_tool, decides; otherwise the server default applies
+    const bool think_after_tool = et != in.chat_template_kwargs.end() ? in.enable_thinking
+                                                                       : body.value("think_after_tool", S.think_after_tool);
+    if (after_tool && !tool_trouble && !think_after_tool) {
         // the turn after a tool result: act on it without a reasoning pass (agent loops)
         in.enable_thinking                        = false;
         in.chat_template_kwargs["enable_thinking"] = "false";
     }
     if (body.contains("thinking") && body["thinking"].is_object() && body["thinking"].value("type", "") == "disabled") {
-        // DeepSeek-style switch (dsh sends it): no reasoning block
+        // DeepSeek / Anthropic-style switch: no reasoning block
         in.enable_thinking                        = false;
         in.chat_template_kwargs["enable_thinking"] = "false";
     }
@@ -853,15 +865,22 @@ loaded:
         m.reset();
     }
     // ---- system prompt cache: a prompt read from scratch starts with the agent's system prompt and tools (every new
-    // conversation does); restore their state if the last cold prompt had the same ones, else snapshot it on the way
+    // conversation does); restore their state if a cached cold prompt had the same ones, else snapshot it on the way
     size_t sys_n = 0;
     if (start == 0 && S.q35 && chat) {
         static const std::vector<int32_t> user_turn = common_tokenize(S.vocab, "<|im_start|>user", false, true);
         auto it = std::search(prompt.begin(), prompt.end(), user_turn.begin(), user_turn.end());
         if (it != prompt.end() && it - prompt.begin() >= 1024) sys_n = (size_t) (it - prompt.begin());
-        if (sys_n > 0 && S.sys_entry == S.active && sys_n == S.sys_tokens.size() && std::equal(S.sys_tokens.begin(), S.sys_tokens.end(), prompt.begin())) {
+        decltype(S.sys_cache.data()) hit = nullptr;
+        if (sys_n > 0) {
+            for (auto & c : S.sys_cache) {
+                if (c.entry == S.active && sys_n == c.tokens.size() && std::equal(c.tokens.begin(), c.tokens.end(), prompt.begin())) hit = &c;
+            }
+        }
+        if (hit) {
             std::string e;
-            if (S.q35->load_prefix(S.sys_snap, e)) {
+            hit->used = ++S.sys_clock;
+            if (S.q35->load_prefix(hit->snap, e)) {
                 start = sys_n;
                 sys_n = 0;  // nothing to snapshot
                 fprintf(stderr, "system prompt cache: restored %zu tokens\n", start);
@@ -888,11 +907,33 @@ loaded:
         if (!eval_range(0, sys_n)) return false;
         start = sys_n;
         std::string e;
-        if (S.q35->can_snapshot((int) sys_n) && S.q35->save_prefix(S.sys_snap, e)) {
-            S.sys_tokens.assign(prompt.begin(), prompt.begin() + (long long) sys_n);
-            S.sys_entry = S.active;
-            fprintf(stderr, "system prompt cache: kept %zu tokens (%.0f MB)\n", sys_n,
-                    (double) (S.sys_snap.kv.size() + S.sys_snap.rec.size() + S.sys_snap.mtp.size()) / 1e6);
+        decltype(S.sys_cache.data()) slot = nullptr;
+        if (S.sys_cache_max > 0 && S.q35->can_snapshot((int) sys_n)) {
+            if ((int) S.sys_cache.size() < S.sys_cache_max) slot = &S.sys_cache.emplace_back();
+            else slot = &*std::min_element(S.sys_cache.begin(), S.sys_cache.end(),
+                                           [](const auto & a, const auto & b) { return a.used < b.used; });
+        }
+        if (slot && S.q35->save_prefix(slot->snap, e)) {
+            slot->tokens.assign(prompt.begin(), prompt.begin() + (long long) sys_n);
+            slot->entry = S.active;
+            slot->used  = ++S.sys_clock;
+            auto bytes  = [](const auto & c) { return (double) (c.snap.kv.size() + c.snap.rec.size() + c.snap.mtp.size()); };
+            for (;;) {  // over the RAM cap: drop the least recently used other entries
+                double total = 0;
+                for (const auto & c : S.sys_cache) total += bytes(c);
+                if (total <= S.sys_cache_gb * 1e9 || S.sys_cache.size() <= 1) break;
+                auto lru = S.sys_cache.end();
+                for (auto c = S.sys_cache.begin(); c != S.sys_cache.end(); ++c) {
+                    if (&*c != slot && (lru == S.sys_cache.end() || c->used < lru->used)) lru = c;
+                }
+                const auto used = slot->used;
+                S.sys_cache.erase(lru);
+                for (auto & c : S.sys_cache) if (c.used == used) slot = &c;  // erase moved it
+            }
+            double total = 0;
+            for (const auto & c : S.sys_cache) total += bytes(c);
+            fprintf(stderr, "system prompt cache: kept %zu tokens (%.0f MB; %zu entries, %.0f MB)\n", sys_n,
+                    bytes(*slot) / 1e6, S.sys_cache.size(), total / 1e6);
         } else if (!e.empty()) {
             fprintf(stderr, "system prompt cache: %s\n", e.c_str());
         }
@@ -1429,6 +1470,8 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--echo") S->echo = std::atoi(val().c_str()) != 0;
         else if (a == "--drop-reasoning") S->drop_reasoning = std::atoi(val().c_str()) != 0;
         else if (a == "--think-after-tool") S->think_after_tool = std::atoi(val().c_str()) != 0;
+        else if (a == "--sys-cache") S->sys_cache_max = std::atoi(val().c_str());
+        else if (a == "--sys-cache-gb") S->sys_cache_gb = std::atof(val().c_str());
         else if (a == "--think-budget") S->think_budget = std::atoi(val().c_str());
         else if (a == "--idle-unload") idle_unload = std::atoi(val().c_str());
         else if (a == "--temperature" || a == "--temp") S->defaults.temp = (float) std::atof(val().c_str());
@@ -1456,6 +1499,8 @@ int serve(const std::vector<std::string> & args) {
                         "         [--slots N (sequences kept, one per conversation)] [--kv-pool-gb G (RAM KV of all slots)]\n"
                         "         [--res-gpu-gb G|auto (residual kept in VRAM, faster verify; the rest streams from RAM)]\n"
                         "         [--no-side (one slot: no parked side sequence for unrelated requests)]\n"
+                        "         [--sys-cache N (system prompts kept in RAM for new conversations, default 4; 0 = off)]\n"
+                        "         [--sys-cache-gb G (RAM cap of those, default 3)]\n"
                         "         [--draft-batch N (slots: requests drafted together, default min(slots, 2))]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
@@ -1703,7 +1748,7 @@ int serve(const std::vector<std::string> & args) {
         }
         if (S->q35) out["config"]["window"] = S->q35->gpu_kv();
         resp.set_header("Cache-Control", "no-store");
-        // pages served from this machine or the local network (the dsh plugin, on any LAN client) may read the numbers
+        // pages served from this machine or the local network (a client's dashboard, on any LAN device) may read the numbers
         const std::string origin = req.get_header_value("Origin");
         auto lan_origin = [](const std::string & o) {
             if (o.rfind("http://", 0) != 0) return false;
