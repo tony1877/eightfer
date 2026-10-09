@@ -82,7 +82,7 @@ def main():
             cw.writerow([it, q, rnd.choice(["", "ok", 'said "fine", later', "x,y"])])
         w(f"csv/q{i}.csv", buf.getvalue())
     add("csv", "Across csv\\q0.csv, csv\\q1.csv and csv\\q2.csv, what is the total qty of rows whose item is exactly `basil` (not `basil, fresh`)? Fields are quoted CSV.", answer=str(totals["basil"]))
-    add("csv", "Across the same three CSV files, what is the total qty of rows whose item is exactly `basil, fresh`?", answer=str(totals["basil, fresh"]))
+    add("csv", "Across csv\q0.csv, csv\q1.csv and csv\q2.csv, what is the total qty of rows whose item is exactly `basil, fresh`?", answer=str(totals["basil, fresh"]))
 
     # 5. whole-word counting
     words = ["error", "errors", "ERROR", "terror", "Error:", "error_code", "no error here", "mirror"]
@@ -169,7 +169,7 @@ def main():
     # 12. a failing background job
     T.append({"kind": "background", "text": "Start as a background job (do not wait): Start-Sleep 6; Set-Content out\\job.txt 'half'; exit 3",
               "effect": {"file": "out/job.txt", "line": "half"}, "answer": "done"})
-    late = {"kind": "background", "text": "Wait for that background job to finish. What exit code did it report?", "answer": "3"}
+    late = {"kind": "background", "text": "Wait for the background job you started for out\job.txt to finish. What exit code did it report?", "answer": "3"}
 
     rnd.shuffle(T)
     bg = next(i for i, t in enumerate(T) if t["kind"] == "background")
