@@ -91,15 +91,16 @@ const PAGES = [{ path: '/dashboard', label: 'Dashboard' }, { path: '/sensors', l
 export function ShoehornOverlay() {
   const open = useOpen()
   const [page, setPage] = useState<string>(PAGES[0].path)
+  // both pages load with the app and stay loaded, only hidden while the popup is closed or the other tab is shown,
+  // so they keep polling and their charts and history are there when opened
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
-  if (!open) return null
   return (
-    <div className={css.backdrop} onClick={() => setOpen(false)}>
+    <div className={css.backdrop} style={open ? undefined : { display: 'none' }} onClick={() => setOpen(false)}>
       <div className={css.panel} role="dialog" aria-label="shoehorn dashboard" onClick={e => e.stopPropagation()}>
         <div className={css.bar}>
           <span className={css.barTitle}><Mark size={15} /> shoehorn</span>
@@ -115,7 +116,10 @@ export function ShoehornOverlay() {
           <a className={css.barLink} href={`${SHOEHORN_URL}${page}`} target="_blank" rel="noreferrer">Open in a tab</a>
           <button type="button" className={css.close} aria-label="Close" onClick={() => setOpen(false)}>x</button>
         </div>
-        <iframe className={css.frame} src={`${SHOEHORN_URL}${page}`} title={`shoehorn ${page.slice(1)}`} />
+        {PAGES.map(p => (
+          <iframe key={p.path} className={css.frame} src={`${SHOEHORN_URL}${p.path}`} title={`shoehorn ${p.label.toLowerCase()}`}
+            style={p.path === page ? undefined : { display: 'none' }} />
+        ))}
       </div>
     </div>
   )
