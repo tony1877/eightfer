@@ -52,6 +52,11 @@ void set_thread_high_perf();
 int run_process(const std::vector<std::string> & args, const std::string & log_path, const std::atomic<bool> & cancel,
                 std::string & err);
 
+// Shows the system's open dialog on this machine's desktop (Windows: Explorer's picker, on top of other windows) for a
+// folder, or a file matching `pattern` (e.g. "*.gguf"; empty = any), starting in `start` when it exists. Returns the
+// chosen path, or empty when cancelled. Blocks until the dialog closes. Elsewhere: empty.
+std::string pick_path(bool folder, const std::string & title, const std::string & start, const std::string & pattern);
+
 // Full path of the running executable (empty if unknown).
 std::string self_exe();
 

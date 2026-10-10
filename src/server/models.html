@@ -85,6 +85,9 @@ pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg);
 .files label input { width: auto; }
 .files label .s { color: var(--muted); margin-left: auto; }
 .keybar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pathbox { display: flex; gap: 6px; min-width: 0; }
+.pathbox input { flex: 1; }
+.pathbox button { flex: none; }
 .keybar input { max-width: 340px; }
 </style>
 </head>
@@ -112,9 +115,9 @@ pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg);
     <div class="err" id="modelsErr"></div>
     <details id="addBox"><summary>Add a GGUF already on disk</summary>
       <div class="form" style="margin-top:10px">
-        <label>Name (what clients ask for)<input id="addAlias" placeholder="my-model"></label>
-        <label>GGUF file<input id="addPath" placeholder="E:\models\model.gguf"></label>
-        <label class="wide">Residual file (optional, for a packed pair)<input id="addRes" placeholder="E:\models\model.res.gguf"></label>
+        <label>Name (what clients ask for)<input id="addAlias" placeholder="from the file, e.g. qwen3.8-27b-q4_k_m-shoehorn"></label>
+        <label>GGUF file<input id="addPath" data-pick="file:*.gguf" placeholder="E:\models\model.gguf"></label>
+        <label class="wide">Residual file (optional, for a packed pair)<input id="addRes" data-pick="file:*.gguf" placeholder="E:\models\model.res.gguf"></label>
       </div>
       <div class="actions" style="margin-top:10px"><button class="pri" id="addGo">Add</button><span class="err" id="addErr"></span></div>
     </details>
@@ -134,7 +137,7 @@ pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg);
       <div class="mhead" style="margin-top:6px"><b id="pickTitle"></b><span class="mono" id="pickNote"></span></div>
       <div class="files" id="pickFiles"></div>
       <div class="form" style="margin-top:10px">
-        <label class="wide">Download folder (a subfolder per repo is made inside)<input id="dlDir" placeholder="choose a folder, e.g. E:\hf"></label>
+        <label class="wide">Download folder (a subfolder per repo is made inside)<input id="dlDir" data-pick="folder" placeholder="choose a folder, e.g. E:\hf"></label>
       </div>
       <div class="actions" style="margin-top:10px"><button class="pri" id="pullGo">Download</button><span class="mono note" id="pickSum"></span><span class="err" id="pullErr"></span></div>
     </div>
@@ -143,15 +146,15 @@ pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg);
   <section class="panel" id="packPanel">
     <div class="mhead"><b>Pack for shoehorn</b><span class="mono">safetensors (qwen3_5) to a 4-bit base + residual pair</span></div>
     <div class="form">
-      <label class="wide">Source folder (the downloaded safetensors)<input id="pkSrc" placeholder="E:\hf\Qwen__Qwen3.8-27B"></label>
-      <label class="wide">Template GGUF (any qwen35 GGUF of the same model: tokenizer and metadata)<input id="pkTmpl" placeholder="E:\gguf\qwen3.8-27b-Q4_K_M.gguf"></label>
-      <label>Output folder<input id="pkDir" placeholder="choose a folder, e.g. E:\shoehorn"></label>
-      <label>Output name<input id="pkName" placeholder="qwen27"></label>
+      <label class="wide">Source folder (the downloaded safetensors)<input id="pkSrc" data-pick="folder" placeholder="E:\hf\Qwen__Qwen3.8-27B"></label>
+      <label class="wide">Template GGUF (any qwen35 GGUF of the same model: tokenizer and metadata)<input id="pkTmpl" data-pick="file:*.gguf" placeholder="E:\gguf\qwen3.8-27b-Q4_K_M.gguf"></label>
+      <label>Output folder<input id="pkDir" data-pick="folder" placeholder="choose a folder, e.g. E:\shoehorn"></label>
+      <label>Output name<input id="pkName" placeholder="from the source, e.g. qwen3.8-27b"></label>
       <label>Base type (in VRAM)<select id="pkBase"></select></label>
       <label>Residual type (in RAM)<select id="pkRes"></select></label>
       <div class="wide note" id="pkFit">Pick a source folder to see how big the pair will be.</div>
-      <label>Model name (what clients ask for)<input id="pkAlias" placeholder="qwen3.8-27b-shoehorn"></label>
-      <label>imatrix (optional, improves the base)<input id="pkImat" placeholder="E:\gguf\imatrix.gguf"></label>
+      <label>Model name (what clients ask for)<input id="pkAlias" placeholder="from the source, e.g. qwen3.8-27b-shoehorn"></label>
+      <label>imatrix (optional, improves the base)<input id="pkImat" data-pick="file:*.gguf;*.dat" placeholder="E:\gguf\imatrix.gguf"></label>
       <label class="wide" style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="pkUnload" checked style="width:auto"> Unload the model while packing (packing reads tens of GB)</label>
     </div>
     <div class="actions"><button class="pri" id="packGo">Pack</button><span class="err" id="packErr"></span></div>
@@ -236,6 +239,7 @@ async function pollState() {
     $(id).classList.toggle("need", !$(id).value);
   }
   for (const id of ["addGo", "pullGo", "packGo"]) $(id).disabled = !can;
+  for (const b of document.querySelectorAll("button.browse")) b.hidden = !state.can_pick;
 }
 document.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
@@ -244,7 +248,7 @@ document.addEventListener("click", async e => {
     else if (b.hasAttribute("data-unload")) { busy.load = "-"; await api("/models/unload", {}); }
     else if (b.dataset.remove) { if (confirm(`Remove ${b.dataset.remove} from the list? The files stay on disk.`)) await api("/models/remove", { alias: b.dataset.remove }); }
     else if (b.dataset.cancel) await api("/models/cancel", { id: +b.dataset.cancel });
-    else if (b.dataset.packsrc) { $("pkSrc").value = b.dataset.packsrc; inspectSrc(); $("pkName").value ||= b.dataset.packsrc.split(/[\\/]/).pop().replace(/^.*__/, ""); $("packPanel").scrollIntoView({ behavior: "smooth" }); }
+    else if (b.dataset.packsrc) { $("pkSrc").value = b.dataset.packsrc; inspectSrc(); namesFromSrc(); $("packPanel").scrollIntoView({ behavior: "smooth" }); }
     else if (b.dataset.addgguf) { $("addBox").open = true; $("addPath").value = b.dataset.addgguf + "\\"; $("addPath").focus(); }
     else return;
   } catch (err) { $("modelsErr").textContent = err.message; }
@@ -310,6 +314,41 @@ $("pullGo").onclick = async () => {
   try { await api("/models/pull", { repo: pick.repo, files, dir: $("dlDir").value.trim() }); $("pick").hidden = true; pollState(); }
   catch (err) { $("pullErr").textContent = err.message; }
 };
+
+// ---- Browse buttons: the system's picker on the server's desktop fills the field (which stays editable). Only on the
+// server's machine (can_pick); from another device the path is typed.
+for (const inp of document.querySelectorAll("input[data-pick]")) {
+  const box = document.createElement("span"); box.className = "pathbox";
+  inp.replaceWith(box); box.append(inp);
+  const b = document.createElement("button"); b.type = "button"; b.textContent = "Browse"; b.className = "browse"; b.hidden = true;
+  box.append(b);
+  b.onclick = async () => {
+    const kind = inp.dataset.pick, folder = kind === "folder", v = inp.value.trim();
+    const start = folder ? v : v.replace(/[\\/][^\\/]*$/, "");
+    b.disabled = true; b.textContent = "Choosing...";
+    try {
+      const r = await api("/models/pick", { folder, start, title: inp.closest("label")?.firstChild?.textContent?.trim() || "", pattern: folder ? "" : kind.slice(5) });
+      if (r.path) { inp.value = r.path; inp.dispatchEvent(new Event("input")); inp.dispatchEvent(new Event("change")); }
+    } catch (e) { alert(e.message); }
+    b.disabled = false; b.textContent = "Browse";
+  };
+}
+
+// ---- model names: derived from what was pulled, plus -shoehorn, until the field is edited by hand
+const baseName = p => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop().replace(/^.*__/, "")    // Owner__Repo folder -> Repo
+  .replace(/\.gguf$/i, "").replace(/-\d{5}-of-\d{5}$/, "").toLowerCase();
+function autoName(id, value) {
+  const f = $(id);
+  if (f.dataset.auto === "0" && f.value) return;
+  f.value = value; f.dataset.auto = "1";
+}
+for (const id of ["pkName", "pkAlias", "addAlias"]) $(id).addEventListener("input", () => { $(id).dataset.auto = "0"; });
+function namesFromSrc() {
+  const b = baseName($("pkSrc").value.trim());
+  if (b) { autoName("pkName", b.replace(/-shoehorn$/, "")); autoName("pkAlias", b.replace(/-shoehorn$/, "") + "-shoehorn"); }
+}
+$("pkSrc").addEventListener("input", namesFromSrc);
+$("addPath").addEventListener("input", () => { const b = baseName($("addPath").value.trim()); if (b) autoName("addAlias", b.replace(/-shoehorn$/, "") + "-shoehorn"); });
 
 // ---- pack: types and what they cost. Bits per weight are ggml's block sizes. The token embedding stays in RAM at
 // BF16; everything else is quantized to the base type in VRAM, and the big matrices also get a residual in RAM. On the

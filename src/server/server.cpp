@@ -2072,6 +2072,7 @@ int serve(const std::vector<std::string> & args) {
             for (auto it = S->jobs.rbegin(); it != S->jobs.rend(); ++it) out["jobs"].push_back(job_json(**it));
             out["dirs"] = S->models_cfg.value("dirs", json::object());
         }
+        out["can_pick"]   = local(req);
         out["can_change"] = local(req) || S->api_key.empty() || req.get_header_value("Authorization") == "Bearer " + S->api_key;
         out["key_needed"] = !local(req) && !S->api_key.empty();
         resp.set_header("Cache-Control", "no-store");
@@ -2130,6 +2131,14 @@ int serve(const std::vector<std::string> & args) {
                 if (ms[k].value("alias", std::string()) == alias) ms.erase(k--);
         save_models(*S);
         resp.set_content(json{ { "success", true } }.dump(), "application/json");
+    });
+    // the system's folder / file picker, shown on this machine's desktop (so only for pages opened on this machine)
+    http.Post("/models/pick", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!local(req)) return fail(resp, "the picker opens on the server's screen: use it there, or type the path", 403);
+        const json b = body_of(req);
+        const std::string path = sys::pick_path(b.value("folder", true), b.value("title", std::string()), b.value("start", std::string()),
+                                                b.value("pattern", std::string()));
+        resp.set_content(json{ { "path", path } }.dump(), "application/json");
     });
     http.Get("/models/inspect", [&](const httplib::Request & req, httplib::Response & resp) {  // a pack source's size
         const std::string dir = req.get_param_value("path");

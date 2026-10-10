@@ -58,6 +58,10 @@ static std::string cpu_brand() {
 #include <windows.h>
 #include <shellapi.h>
 #include <winioctl.h>
+#include <shobjidl.h>
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace e8::sys {
 
@@ -402,6 +406,52 @@ int run_process(const std::vector<std::string> & args, const std::string & log_p
     return code;
 }
 
+std::string pick_path(bool folder, const std::string & title, const std::string & start, const std::string & pattern) {
+    std::string out;
+    // COM wants a single-threaded apartment of its own: run the dialog on a fresh thread
+    std::thread([&] {
+        if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) return;
+        IFileOpenDialog * dlg = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+            DWORD opt = 0;
+            dlg->GetOptions(&opt);
+            dlg->SetOptions(opt | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
+            if (!title.empty()) dlg->SetTitle(widen(title).c_str());
+            const std::wstring pat = widen(pattern);
+            if (!folder && !pat.empty()) {
+                COMDLG_FILTERSPEC spec[] = { { pat.c_str(), pat.c_str() }, { L"All files", L"*.*" } };
+                dlg->SetFileTypes(2, spec);
+            }
+            IShellItem * dir = nullptr;
+            if (!start.empty() && SUCCEEDED(SHCreateItemFromParsingName(widen(start).c_str(), nullptr, IID_PPV_ARGS(&dir)))) {
+                dlg->SetFolder(dir);
+                dir->Release();
+            }
+            // an invisible topmost owner puts the dialog in front of the browser
+            HWND owner = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, nullptr, nullptr);
+            if (owner) {
+                ShowWindow(owner, SW_SHOWNOACTIVATE);
+                SetForegroundWindow(owner);
+            }
+            if (SUCCEEDED(dlg->Show(owner))) {
+                IShellItem * item = nullptr;
+                if (SUCCEEDED(dlg->GetResult(&item))) {
+                    PWSTR p = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                        out = narrow(p);
+                        CoTaskMemFree(p);
+                    }
+                    item->Release();
+                }
+            }
+            if (owner) DestroyWindow(owner);
+            dlg->Release();
+        }
+        CoUninitialize();
+    }).join();
+    return out;
+}
+
 std::string self_exe() {
     wchar_t p[MAX_PATH * 4];
     const DWORD n = GetModuleFileNameW(nullptr, p, (DWORD) (sizeof(p) / sizeof(p[0])));
@@ -550,6 +600,10 @@ int run_process(const std::vector<std::string> &, const std::string &, const std
 }
 
 std::string self_exe() {
+    return {};
+}
+
+std::string pick_path(bool, const std::string &, const std::string &, const std::string &) {
     return {};
 }
 
