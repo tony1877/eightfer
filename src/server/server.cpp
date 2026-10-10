@@ -296,6 +296,10 @@ struct Server {
     std::vector<std::shared_ptr<ModelJob>> jobs;
     int                              next_job = 1;
     size_t                           fixed_entries = 0;            // entries from the command line (not removable)
+    // the Settings page: the command line to start again with, and the settings file over it
+    std::vector<std::string>         cmdline, args;                // as started / with the settings applied
+    std::string                      settings_file;
+    json                             settings = json::object();
     std::string                      live_model;
     std::chrono::system_clock::time_point last_end{};  // end of the previous request (idle time = tools / user)
     // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
@@ -1556,7 +1560,63 @@ json timings(const Result & R) {
 
 } // namespace
 
-int serve(const std::vector<std::string> & args) {
+// Flags the Settings page may change (saved in ~/.shoehorn/settings.json, applied over the command line at start).
+// Paths, host, port and the API key are not here: changing them would cut off the clients and the page itself.
+struct SettingOpt {
+    const char * flag, * def, * group, * help, * choices;  // choices: "a|b|c" or "" (free value)
+};
+const SettingOpt kSettings[] = {
+    { "--ctx", "16384", "Context and memory", "Context window in tokens (prompt + answer).", "" },
+    { "--kv", "f16", "Context and memory", "K cache type (q8_0 halves the RAM of f16, quality unchanged in tests).", "f16|q8_0|q4_0" },
+    { "--kv-v", "", "Context and memory", "V cache type (empty: same as K).", "|f16|q8_0|q4_0" },
+    { "--idle-unload", "0", "Context and memory", "Free the GPU after this many idle seconds (0 = keep the model loaded).", "" },
+    { "--sys-cache", "4", "Context and memory", "System prompts kept in RAM for new conversations (0 = off).", "" },
+    { "--sys-cache-gb", "3", "Context and memory", "RAM cap of the system prompt cache, GB.", "" },
+    { "--res-gpu-gb", "0", "Context and memory", "Residual kept in VRAM, GB, or auto (faster verify; on 16 GB only about 1 GB fits).", "" },
+    { "--spec", "auto", "Speed", "Speculative decoding: auto, or a fixed draft length.", "" },
+    { "--fast-prefill", "0", "Speed", "Read all but the last N prompt tokens without the residual (about 1.7x prefill; KLD 0.0028).", "" },
+    { "--ubatch", "1024", "Speed", "Prompt batch size in tokens.", "" },
+    { "--think-budget", "32768", "Reasoning", "Hard cap on reasoning tokens (0 = off).", "" },
+    { "--think-after-tool", "0", "Reasoning", "Reason on the turn after a tool result (a request's own setting wins).", "0|1" },
+    { "--tool-temp", "0.6", "Sampling defaults", "Temperature inside tool calls (0 = the request's).", "" },
+    { "--temperature", "1.0", "Sampling defaults", "Temperature for requests that set none.", "" },
+    { "--top-p", "0.95", "Sampling defaults", "Top-p for requests that set none.", "" },
+    { "--top-k", "20", "Sampling defaults", "Top-k for requests that set none.", "" },
+    { "--min-p", "0", "Sampling defaults", "Min-p for requests that set none.", "" },
+    { "--presence-penalty", "0", "Sampling defaults", "Presence penalty for requests that set none.", "" },
+};
+
+int serve(const std::vector<std::string> & args_in) {
+    // The Settings page's flags (~/.shoehorn/settings.json, or --settings PATH) go after the command line's, so they
+    // win (the last occurrence of a flag counts). --wait-pid N: a restart, wait for the old process to free the port.
+    std::vector<std::string> cmdline;  // the command line without --wait-pid, to start again with
+    std::string              settings_file;
+    int                      wait_for = 0;
+    for (size_t i = 0; i < args_in.size(); i++) {
+        if (args_in[i] == "--wait-pid" && i + 1 < args_in.size()) { wait_for = std::atoi(args_in[++i].c_str()); continue; }
+        if (args_in[i] == "--settings" && i + 1 < args_in.size()) settings_file = args_in[i + 1];
+        cmdline.push_back(args_in[i]);
+    }
+    if (wait_for > 0) sys::wait_pid(wait_for, 60000);
+    if (settings_file.empty()) {
+        const char * home = std::getenv("USERPROFILE") ? std::getenv("USERPROFILE") : std::getenv("HOME");
+        if (home) settings_file = sys::join_path(sys::join_path(home, ".shoehorn"), "settings.json");
+    }
+    json settings = json::object();
+    std::vector<std::string> args = cmdline;
+    try {
+        const std::string txt = settings_file.empty() ? std::string() : read_file(settings_file);
+        if (!txt.empty()) settings = json::parse(txt);
+    } catch (const std::exception & ex) {
+        fprintf(stderr, "%s: %s (ignored)\n", settings_file.c_str(), ex.what());
+    }
+    if (settings.contains("flags") && settings["flags"].is_object()) {
+        for (const auto & o : kSettings) {
+            if (!settings["flags"].contains(o.flag) || !settings["flags"][o.flag].is_string()) continue;
+            args.push_back(o.flag);
+            args.push_back(settings["flags"][o.flag].get<std::string>());
+        }
+    }
     std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16", kv_v;
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
@@ -1569,6 +1629,10 @@ int serve(const std::vector<std::string> & args) {
     std::vector<Entry> extra;
     double      cache_gb = -1;
     auto        S = std::make_unique<Server>();
+    S->cmdline       = cmdline;
+    S->args          = args;
+    S->settings_file = settings_file;
+    S->settings      = settings;
     for (size_t i = 2; i < args.size(); i++) {
         const std::string & a   = args[i];
         auto                val = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : std::string(); };
@@ -1631,7 +1695,8 @@ int serve(const std::vector<std::string> & args) {
             const std::string v = val();
             S->spec_auto        = v == "auto";
             S->spec_k           = S->spec_auto ? runtime::SpecDecoder::kMaxK : std::max(1, std::min(runtime::SpecDecoder::kMaxK, std::atoi(v.c_str())));
-        } else if (model_path.empty() && a[0] != '-') model_path = a;
+        } else if (a == "--settings") val();  // read above
+        else if (model_path.empty() && a[0] != '-') model_path = a;
         else {
             fprintf(stderr, "unknown option: %s\n", a.c_str());
             return 1;
@@ -2131,6 +2196,80 @@ int serve(const std::vector<std::string> & args) {
                 if (ms[k].value("alias", std::string()) == alias) ms.erase(k--);
         save_models(*S);
         resp.set_content(json{ { "success", true } }.dump(), "application/json");
+    });
+    // ---- the Settings page: the editable flags with their current values, saved to the settings file; applying
+    // restarts the server (a new process with the same command line, which waits for this one to exit)
+    http.Get("/settings", [](const httplib::Request &, httplib::Response & resp) {
+        static const char * page =
+#include "settings.inc"
+            ;
+        resp.set_content(page, "text/html; charset=utf-8");
+    });
+    http.Get("/settings/state", [&](const httplib::Request & req, httplib::Response & resp) {
+        json fields = json::array();
+        for (const auto & o : kSettings) {
+            std::string value = o.def, from = "default";
+            for (size_t i = 2; i + 1 < S->cmdline.size(); i++)
+                if (S->cmdline[i] == o.flag) { value = S->cmdline[i + 1]; from = "start command"; }
+            const json & fl = S->settings.contains("flags") ? S->settings["flags"] : json::object();
+            if (fl.is_object() && fl.contains(o.flag) && fl[o.flag].is_string()) { value = fl[o.flag].get<std::string>(); from = "settings"; }
+            fields.push_back({ { "flag", o.flag }, { "value", value }, { "default", o.def }, { "from", from }, { "group", o.group },
+                               { "help", o.help }, { "choices", o.choices } });
+        }
+        std::string host_v = "127.0.0.1", port_v = "8090";
+        for (size_t i = 2; i + 1 < S->args.size(); i++) {
+            if (S->args[i] == "--host") host_v = S->args[i + 1];
+            if (S->args[i] == "--port") port_v = S->args[i + 1];
+        }
+        resp.set_header("Cache-Control", "no-store");
+        resp.set_content(json{ { "fields", fields }, { "host", host_v }, { "port", port_v }, { "api_key", !S->api_key.empty() },
+                               { "settings_file", S->settings_file }, { "models_file", S->models_file },
+                               { "can_change", local(req) || S->api_key.empty() || req.get_header_value("Authorization") == "Bearer " + S->api_key } }.dump(),
+                         "application/json");
+    });
+    auto restart = [&]() {  // after the response has gone out: start the new process, then leave
+        std::thread([sp = S.get()] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            std::vector<std::string> a = { sys::self_exe() };
+            a.insert(a.end(), sp->cmdline.begin() + 1, sp->cmdline.end());  // [0] is the program name
+            a.insert(a.end(), { "--wait-pid", std::to_string(sys::self_pid()) });
+            std::string err;
+            if (!sys::spawn_detached(a, err)) {
+                fprintf(stderr, "restart: %s\n", err.c_str());
+                return;
+            }
+            fprintf(stderr, "restarting with the new settings\n");
+            fflush(stderr);
+            std::_Exit(0);
+        }).detach();
+    };
+    http.Post("/settings/apply", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        const json b = body_of(req);
+        if (!b.contains("flags") || !b["flags"].is_object()) return fail(resp, "need flags");
+        json flags = json::object();
+        for (auto & [k, v] : b["flags"].items()) {
+            const auto * o = std::find_if(std::begin(kSettings), std::end(kSettings), [&](const SettingOpt & x) { return k == x.flag; });
+            if (o == std::end(kSettings)) return fail(resp, "not a setting: " + k);
+            if (!v.is_string()) return fail(resp, k + " needs a text value");
+            const std::string val = v.get<std::string>();
+            if (val.find_first_of(" \t\"") != std::string::npos) return fail(resp, k + ": no spaces or quotes");
+            if (!val.empty() || std::string(o->choices).rfind("|", 0) == 0) flags[k] = val;  // empty = back to the start command / default
+        }
+        S->settings["flags"] = flags;
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(S->settings_file).parent_path(), ec);
+        std::ofstream f(S->settings_file, std::ios::binary | std::ios::trunc);
+        f << S->settings.dump(2);
+        f.close();
+        if (!f) return fail(resp, "cannot write " + S->settings_file, 500);
+        resp.set_content(json{ { "success", true }, { "restarting", b.value("restart", true) } }.dump(), "application/json");
+        if (b.value("restart", true)) restart();
+    });
+    http.Post("/settings/restart", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        resp.set_content(json{ { "success", true } }.dump(), "application/json");
+        restart();
     });
     // the system's folder / file picker, shown on this machine's desktop (so only for pages opened on this machine)
     http.Post("/models/pick", [&](const httplib::Request & req, httplib::Response & resp) {

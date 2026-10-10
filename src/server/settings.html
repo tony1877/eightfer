@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>shoehorn settings</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2308090a'/%3E%3Cpath d='M13.2 4h5.6a2 2 0 0 1 2 2v5c0 2.5 3.2 5.7 3.2 10.8 0 4.2-3.8 6.7-8 6.7s-8-2.5-8-6.7c0-5.1 3.2-8.3 3.2-10.8V6a2 2 0 0 1 2-2z' fill='%23d9a54a'/%3E%3Ccircle cx='16' cy='7.6' r='1.5' fill='%2308090a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Settings: the serve flags that can change while the setup stays the same, saved to the settings file and applied by
+   restarting the server. Each shows where its value comes from: the start command, this page, or the default. */
+:root {
+  color-scheme: dark;
+  --bg: #08090a; --panel: #0e0f11; --raise: #141518; --line: #1d1f23; --line2: #2a2d32;
+  --ink: #f2f3f5; --ink2: #9ba1ab; --muted: #5f6570;
+  --accent: #d9a54a; --read: #6cb6e0; --good: #4cc38a; --warn: #e2b04a; --bad: #ec6a5e;
+  --f-ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.5 var(--f-ui); padding: 0 24px; -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 18px 48px; display: grid; gap: 16px; }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.word { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.word svg { width: 18px; height: 18px; }
+header .sp { flex: 1; }
+.crumbs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--ink2); font: 12px var(--f-mono); }
+.crumbs span + span::before { content: "/"; color: var(--line2); margin-right: 6px; }
+nav { display: flex; gap: 4px; }
+nav a { font: 12px var(--f-mono); color: var(--ink2); text-decoration: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
+nav a.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+nav a:hover { color: var(--ink); }
+.status { display: inline-flex; align-items: center; gap: 7px; font: 12px var(--f-mono); color: var(--ink2); padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.status.writing { color: var(--ink); } .status.writing i { background: var(--accent); animation: beat 1.2s ease-in-out infinite; }
+.status.reading i { background: var(--read); animation: beat .7s ease-in-out infinite; }
+.status.off i { background: var(--bad); }
+@keyframes beat { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 4px; }
+.mhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.mhead b { font-weight: 500; font-size: 13px; }
+.mhead .mono { font: 12px var(--f-mono); color: var(--ink2); }
+.set { display: grid; grid-template-columns: 170px minmax(0, 1fr) 200px; gap: 6px 16px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); }
+.set:first-of-type { border-top: 0; }
+@media (max-width: 760px) { .set { grid-template-columns: 1fr; } }
+.set .f { font: 12.5px var(--f-mono); }
+.set .h { color: var(--ink2); font-size: 12px; }
+.set .from { font: 11px var(--f-mono); color: var(--muted); margin-left: 6px; }
+.set .from.settings { color: var(--accent); }
+.set.changed .f { color: var(--accent); }
+input, select { font: 12.5px var(--f-mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line2); border-radius: 6px; padding: 6px 9px; width: 100%; min-width: 0; }
+input:focus, select:focus { outline: 1px solid var(--accent); }
+.ro { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 6px 16px; font-size: 12.5px; }
+.ro span:nth-child(odd) { font: 12.5px var(--f-mono); color: var(--ink2); }
+.ro span:nth-child(even) { font: 12.5px var(--f-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { position: sticky; bottom: 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 18px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; }
+button { font: 12px var(--f-mono); color: var(--ink); background: var(--raise); border: 1px solid var(--line2); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--ink2); }
+button:disabled { color: var(--muted); cursor: default; }
+button.pri { background: var(--accent); color: #08090a; border-color: var(--accent); }
+button.pri:disabled { background: var(--raise); color: var(--muted); border-color: var(--line2); }
+.note { color: var(--muted); font-size: 12px; }
+.err { color: var(--bad); font-size: 12px; }
+.ok { color: var(--good); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="word">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.2 2h3.6c.7 0 1.2.5 1.2 1.2v3.4c0 1.6 2.1 3.8 2.1 7.1 0 2.8-2.5 4.3-5.1 4.3s-5.1-1.5-5.1-4.3c0-3.3 2.1-5.5 2.1-7.1V3.2C7 2.5 7.5 2 8.2 2z" fill="none" stroke="var(--accent)" stroke-width="1.4"/><circle cx="10" cy="4.6" r=".9" fill="var(--accent)"/></svg>
+      shoehorn
+    </div>
+    <div class="crumbs" id="crumbs"></div>
+    <span class="sp"></span>
+    <nav><a href="/dashboard">Dashboard</a><a href="/sensors">Sensors</a><a href="/models">Models</a><a href="/settings" class="on">Settings</a></nav>
+    <span class="status" id="status"><i></i><span id="statusText">connecting</span></span>
+  </header>
+  <div id="groups"></div>
+  <section class="panel">
+    <div class="mhead"><b>Fixed by the start command</b><span class="mono">changing these would cut off the clients</span></div>
+    <div class="ro" id="fixed"></div>
+  </section>
+  <div class="bar">
+    <button class="pri" id="apply" disabled>Save and restart</button>
+    <button id="reset" disabled>Undo changes</button>
+    <span id="msg" class="note">Restarting unloads the model; the next request loads it again.</span>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+// inside the dsh popup, which has its own tabs: no second row of page links
+if (window.top !== window) document.querySelector("nav").style.display = "none";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const set = (id, h) => { if ($(id).dataset.h !== h) { $(id).innerHTML = h; $(id).dataset.h = h; } };
+const KEY = "shoehorn-api-key";
+const key = () => { try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; } };
+let state = null, restarting = false, sawDown = false;  // after Apply: wait for the old server to go away, then the new one
+
+async function pollStats() {
+  try {
+    const d = await (await fetch("/stats?since=1e12", { cache: "no-store" })).json();
+    const cfg = d.config || {}, k = v => v >= 1e3 ? Math.round(v / 1e3) + "K" : String(v), c = [];
+    c.push(`<span>${d.loaded ? esc(d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")) : "no model loaded"}</span>`);
+    if (cfg.ctx) c.push(`<span>ctx ${k(cfg.ctx)}</span>`);
+    if (cfg.kv) c.push(`<span>kv ${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</span>`);
+    if (cfg.window && d.loaded) c.push(`<span>vram window ${k(cfg.window)}</span>`);
+    set("crumbs", c.join(""));
+    const live = d.live || {}, writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+    $("status").className = "status" + (writing ? " writing" : reading ? " reading" : "");
+    $("statusText").textContent = writing ? "writing" : reading ? "reading prompt" : d.loaded ? "idle" : "idle, model unloaded";
+    if (restarting && sawDown) { restarting = sawDown = false; $("msg").className = "ok"; $("msg").textContent = "Restarted with the new settings."; load(); }
+  } catch (e) { if (restarting) sawDown = true; $("status").className = "status off"; $("statusText").textContent = restarting ? "restarting" : "offline"; }
+}
+
+async function load() {
+  const h = key() ? { Authorization: "Bearer " + key() } : {};
+  state = await (await fetch("/settings/state", { headers: h, cache: "no-store" })).json();
+  const groups = {};
+  for (const f of state.fields) (groups[f.group] ||= []).push(f);
+  let html = "";
+  for (const [g, list] of Object.entries(groups)) {
+    html += `<section class="panel" style="margin-bottom:16px"><div class="mhead"><b>${esc(g)}</b></div>`;
+    for (const f of list) {
+      const ch = f.choices ? f.choices.split("|") : null;
+      const ctl = ch ? `<select data-flag="${esc(f.flag)}">${ch.map(c => `<option value="${esc(c)}"${c === f.value ? " selected" : ""}>${c === "" ? "same as --kv" : esc(c)}</option>`).join("")}</select>`
+                     : `<input data-flag="${esc(f.flag)}" value="${esc(f.value)}" placeholder="${esc(f.default)}" spellcheck="false">`;
+      html += `<div class="set" data-row="${esc(f.flag)}"><span class="f">${esc(f.flag)}<span class="from ${f.from === "settings" ? "settings" : ""}">${esc(f.from)}</span></span>
+        <span class="h">${esc(f.help)}${f.default !== "" ? ` Default ${esc(f.default)}.` : ""}</span>${ctl}</div>`;
+    }
+    html += `</section>`;
+  }
+  $("groups").innerHTML = html;
+  set("fixed", [["--host", state.host], ["--port", state.port], ["API key", state.api_key ? "set" : "none"],
+    ["Settings file", state.settings_file], ["Models file", state.models_file]].map(([a, b]) => `<span>${esc(a)}</span><span title="${esc(b)}">${esc(b)}</span>`).join(""));
+  for (const c of document.querySelectorAll("[data-flag]")) { c.addEventListener("input", dirty); c.addEventListener("change", dirty); c.disabled = !state.can_change; }
+  dirty();
+}
+function changes() {
+  const out = {};
+  for (const f of state.fields) {
+    const c = document.querySelector(`[data-flag="${CSS.escape(f.flag)}"]`);
+    if (c && c.value.trim() !== f.value) out[f.flag] = c.value.trim();
+  }
+  return out;
+}
+function dirty() {
+  const ch = changes(), n = Object.keys(ch).length;
+  for (const r of document.querySelectorAll("[data-row]")) r.classList.toggle("changed", r.dataset.row in ch);
+  $("apply").disabled = !n || !state.can_change; $("reset").disabled = !n;
+  if (!restarting) { $("msg").className = "note"; $("msg").textContent = !state.can_change ? "Read only from this device (the API key is set on the Models page)." : n ? `${n} change${n > 1 ? "s" : ""}. Restarting unloads the model; the next request loads it again.` : "Restarting unloads the model; the next request loads it again."; }
+}
+$("reset").onclick = () => load();
+$("apply").onclick = async () => {
+  // the file keeps every value set on this page; the start command and defaults fill the rest
+  const flags = {};
+  for (const f of state.fields) if (f.from === "settings") flags[f.flag] = f.value;
+  Object.assign(flags, changes());
+  for (const f of state.fields) if (flags[f.flag] !== undefined && flags[f.flag] === f.default && f.from !== "start command") delete flags[f.flag];
+  $("apply").disabled = true;
+  try {
+    const h = { "Content-Type": "application/json" }; if (key()) h.Authorization = "Bearer " + key();
+    const r = await fetch("/settings/apply", { method: "POST", headers: h, body: JSON.stringify({ flags }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    restarting = true; sawDown = false; $("msg").className = "note"; $("msg").textContent = "Saved. Restarting...";
+  } catch (e) { $("msg").className = "err"; $("msg").textContent = e.message; $("apply").disabled = false; }
+};
+pollStats(); load();
+setInterval(pollStats, 1000);
+</script>
+</body>
+</html>

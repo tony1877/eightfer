@@ -57,6 +57,16 @@ int run_process(const std::vector<std::string> & args, const std::string & log_p
 // chosen path, or empty when cancelled. Blocks until the dialog closes. Elsewhere: empty.
 std::string pick_path(bool folder, const std::string & title, const std::string & start, const std::string & pattern);
 
+// Waits up to `ms` for process `pid` to exit (returns true when it has, or does not exist).
+bool wait_pid(int pid, int ms);
+
+// Starts args[0] with args[1..] detached from this process, sharing this process's stdout / stderr (so its output
+// goes to the same log). Returns false (err says why) if it could not start. Windows only.
+bool spawn_detached(const std::vector<std::string> & args, std::string & err);
+
+// This process's id.
+int self_pid();
+
 // Full path of the running executable (empty if unknown).
 std::string self_exe();
 

@@ -88,6 +88,9 @@ cd C:\src\shoehorn
    `/sensors` shows temperatures, voltages and GPU power; `/models` loads and unloads models, searches and downloads
    from Hugging Face (supported architectures only), packs a download into a base + residual pair and adds it without
    a restart. Changes there are allowed from the server's machine, or from the LAN with the API key.
+   `/settings` edits the serve flags that can change without cutting off clients (context, KV types, idle unload,
+   prompt cache, speed and sampling defaults); they are saved to `~/.shoehorn/settings.json`, applied over the start
+   command, and take effect by restarting the server from the page (a new process with the same command line).
 
 Flash-Next needs no packing: serve its GGUF directly (experts stay memory-mapped, a GPU expert cache takes free VRAM).
 Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` picks one, the other is unloaded.

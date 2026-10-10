@@ -406,6 +406,58 @@ int run_process(const std::vector<std::string> & args, const std::string & log_p
     return code;
 }
 
+bool wait_pid(int pid, int ms) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD) pid);
+    if (!h) return true;  // gone already
+    const bool done = WaitForSingleObject(h, (DWORD) ms) == WAIT_OBJECT_0;
+    CloseHandle(h);
+    return done;
+}
+
+bool spawn_detached(const std::vector<std::string> & args, std::string & err) {
+    std::wstring cmd;
+    for (const auto & a : args) {  // same quoting as run_process
+        const std::wstring w = widen(a);
+        if (!cmd.empty()) cmd += L' ';
+        if (!w.empty() && w.find_first_of(L" \t\"") == std::wstring::npos) {
+            cmd += w;
+            continue;
+        }
+        cmd += L'"';
+        size_t bs = 0;
+        for (wchar_t c : w) {
+            if (c == L'\\') { bs++; continue; }
+            cmd.append(c == L'"' ? bs * 2 + 1 : bs, L'\\');
+            bs = 0;
+            cmd += c;
+        }
+        cmd.append(bs * 2, L'\\');
+        cmd += L'"';
+    }
+    STARTUPINFOW si{};
+    si.cb         = sizeof(si);
+    si.dwFlags    = STARTF_USESTDHANDLES;
+    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+    for (HANDLE h : { si.hStdOutput, si.hStdError })  // the log handles must be inheritable for the child to share them
+        if (h && h != INVALID_HANDLE_VALUE) SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(0);
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &si, &pi)) {
+        err = "cannot start " + args[0] + " (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+int self_pid() {
+    return (int) GetCurrentProcessId();
+}
+
 std::string pick_path(bool folder, const std::string & title, const std::string & start, const std::string & pattern) {
     std::string out;
     // COM wants a single-threaded apartment of its own: run the dialog on a fresh thread
@@ -605,6 +657,19 @@ std::string self_exe() {
 
 std::string pick_path(bool, const std::string &, const std::string &, const std::string &) {
     return {};
+}
+
+bool wait_pid(int, int) {
+    return true;
+}
+
+bool spawn_detached(const std::vector<std::string> &, std::string & err) {
+    err = "restarting is implemented on Windows only";
+    return false;
+}
+
+int self_pid() {
+    return 0;
 }
 
 void set_thread_high_perf() {}
