@@ -315,9 +315,10 @@ $("pullGo").onclick = async () => {
 // BF16; everything else is quantized to the base type in VRAM, and the big matrices also get a residual in RAM. On the
 // 27B (iq4_xs + q4_K) this estimates 13.1 GiB of VRAM weights and 13.9 GiB of residual, against 13.0 and 13.6 GiB
 // measured. VRAM headroom (context window, MTP, buffers) is taken from the loaded model, else 3 GiB.
-const BPW = { iq3_xxs: 3.0625, iq3_s: 3.4375, q3_K: 3.4375, iq4_xs: 4.25, q4_K: 4.5, q5_K: 5.5, q6_K: 6.5625, q8_0: 8.5 };
-const fill = (id, list, def) => { $(id).innerHTML = list.map(t => `<option value="${t}"${t === def ? " selected" : ""}>${t}${BPW[t] ? ` (${BPW[t]} bits)` : ""}</option>`).join(""); };
-fill("pkBase", ["iq3_xxs", "iq3_s", "q3_K", "iq4_xs", "q4_K", "q5_K", "q6_K", "q8_0"], "iq4_xs");
+const BPW = { iq3_xxs: 3.0625, iq3_s: 3.4375, q3_K: 3.4375, iq4_xs: 4.25, q4_K: 4.5, q5_K: 5.5, q6_K: 6.5625, q8_0: 8.5, f16: 16, bf16: 16 };
+const FULL = t => t === "f16" || t === "bf16";  // full precision: the base is the model, a residual would be zeros
+const fill = (id, list, def) => { $(id).innerHTML = list.map(t => `<option value="${t}"${t === def ? " selected" : ""}>${t}${BPW[t] ? ` (${BPW[t]} bits${FULL(t) ? ", full precision" : ""})` : ""}</option>`).join(""); };
+fill("pkBase", ["iq3_xxs", "iq3_s", "q3_K", "iq4_xs", "q4_K", "q5_K", "q6_K", "q8_0", "bf16", "f16"], "iq4_xs");
 fill("pkRes", ["q3_K", "q4_K", "q5_K", "q6_K", "q8_0", "none"], "q4_K");
 let srcBytes = 0, srcEmbed = 0, memInfo = {};
 async function inspectSrc() {
@@ -330,6 +331,9 @@ async function inspectSrc() {
   fit();
 }
 function fit() {
+  const full = FULL($("pkBase").value);  // a 16-bit base needs no residual
+  if (full) $("pkRes").value = "none";
+  $("pkRes").disabled = full;
   const GiB = 1073741824, g = b => fmt(b / GiB, 1) + " GiB";
   if (!srcBytes) { $("pkFit").innerHTML = $("pkSrc").value.trim() ? "No .safetensors files in that folder." : "Pick a source folder to see how big the pair will be."; return; }
   const params = srcBytes / 2, big = params - srcEmbed;
@@ -340,7 +344,7 @@ function fit() {
   const iq = /^iq/.test($("pkBase").value) && !$("pkImat").value.trim() ? " iq types are best with an imatrix." : "";
   $("pkFit").innerHTML = `${fmt(params / 1e9, 1)}B parameters. Base about <b style="color:${vOk ? "var(--ink)" : "var(--bad)"}">${g(base)}</b>`
     + (vram ? ` of ${g(vram)} usable VRAM` : "") + (vOk ? "" : " (does not fit this GPU)")
-    + (res ? `, residual about <b style="color:${rOk ? "var(--ink)" : "var(--warn)"}">${g(res)}</b> in RAM${ram ? ` (${g(ram)} installed)` : ""}${rOk ? "" : " (leaves little RAM for the context)"}` : ", no residual: the base alone, not lossless")
+    + (res ? `, residual about <b style="color:${rOk ? "var(--ink)" : "var(--warn)"}">${g(res)}</b> in RAM${ram ? ` (${g(ram)} installed)` : ""}${rOk ? "" : " (leaves little RAM for the context)"}` : (full ? ", no residual needed: the base is the full-precision model" : ", no residual: the base alone, not lossless"))
     + "." + iq;
 }
 $("pkSrc").addEventListener("change", inspectSrc);

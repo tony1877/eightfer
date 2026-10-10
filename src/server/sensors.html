@@ -53,8 +53,16 @@ nav a:hover { color: var(--ink); }
 .temp .v small { font: 400 12px var(--f-mono); color: var(--ink2); margin-left: 2px; }
 .temp.warm .v { color: var(--warn); } .temp.hot .v { color: var(--bad); }
 .note { color: var(--muted); font-size: 12px; }
-footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px 24px; flex-wrap: wrap; }
-footer .about { font: 12px var(--f-ui); max-width: 640px; }
+footer { display: flex; }
+.live { display: inline-flex; align-items: center; gap: 8px; font: 12px var(--f-mono); color: var(--ink2); padding: 5px 11px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+.live i { width: 7px; height: 7px; border-radius: 50%; background: var(--good, #4cc38a); box-shadow: 0 0 0 3px rgba(76,195,138,.15); animation: beat 2s ease-in-out infinite; }
+.live.off i { background: var(--bad); box-shadow: 0 0 0 3px rgba(236,106,94,.15); animation: none; }
+.live b { color: var(--ink); font-weight: 500; }
+.lim { display: inline-flex; gap: 6px; }
+.lim span { font: 11px var(--f-mono); letter-spacing: .04em; border: 1px solid; border-radius: 4px; padding: 1px 7px; }
+.lim .w { color: var(--warn); border-color: rgba(226,176,74,.35); background: rgba(226,176,74,.06); }
+.lim .c { color: var(--bad); border-color: rgba(236,106,94,.35); background: rgba(236,106,94,.06); }
 </style>
 </head>
 <body>
@@ -72,11 +80,7 @@ footer .about { font: 12px var(--f-ui); max-width: 640px; }
   <section class="panel" id="temps"></section>
   <section class="panel" id="volts"></section>
   <section class="panel" id="power"></section>
-  <footer>
-    <span class="about">NVIDIA's driver reports only the GPU core voltage; the memory modules' own voltages (their PMIC) are
-      not read. CPU VDDIO is the memory supply on the CPU side.</span>
-    <span id="foot">connecting</span>
-  </footer>
+  <footer><span class="live" id="live"><i></i><span id="foot">connecting</span></span></footer>
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -108,7 +112,7 @@ function render(hw) {
   const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
   const tc = x => tile(x.n, fmt(x.c, 0), "C", cls(x.c), x.title || x.n);
   const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
-  set("temps", `<div class="mhead"><b>Temperatures</b><span class="mono">amber from 70 C, red from 85 C</span></div>
+  set("temps", `<div class="mhead"><b>Temperatures</b><span class="lim"><span class="w">WARN 70 C</span><span class="c">CRIT 85 C</span></span></div>
     ${grid(T, tc)}${grid(D, tc)}
     ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by the sensor server" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`);
   // voltages: GPU core from NVIDIA's driver, the board's rails as named and scaled by shoehorn-hwmon's board map (the
@@ -125,7 +129,7 @@ function render(hw) {
   const P = [];
   if (g.power_w != null && g.power_w >= 0) P.push(tile("GPU power", fmt(g.power_w, 0), "W"));
   if (g.mem_util != null && g.mem_util >= 0) P.push(tile("VRAM busy", fmt(g.mem_util, 0), "%"));
-  set("power", `<div class="mhead"><b>GPU load</b><span class="mono">NVIDIA driver</span></div>${P.length ? grid(P, x => x) : `<div class="note">No NVIDIA GPU found.</div>`}`);
+  set("power", `<div class="mhead"><b>GPU load</b></div>${P.length ? grid(P, x => x) : `<div class="note">No NVIDIA GPU found.</div>`}`);
 }
 async function poll() {
   try {
@@ -141,8 +145,8 @@ async function poll() {
     const live = d.live || {}, writing = live.busy && live.gen > 0, reading = live.busy && !writing;
     $("status").className = "status" + (writing ? " writing" : reading ? " reading" : "");
     $("statusText").textContent = writing ? "writing" : reading ? "reading prompt" : d.loaded ? "idle" : "idle, model unloaded";
-    $("foot").textContent = "live, updated every second (the sensors themselves refresh every 2 s)";
-  } catch (e) { $("foot").textContent = "offline"; $("status").className = "status off"; $("statusText").textContent = "offline"; }
+    $("live").className = "live"; $("foot").innerHTML = `<b>Live</b> &middot; sensors every 2 s`;
+  } catch (e) { $("live").className = "live off"; $("foot").innerHTML = "<b>Offline</b>"; $("status").className = "status off"; $("statusText").textContent = "offline"; }
 }
 poll(); setInterval(poll, 1000);
 </script>
