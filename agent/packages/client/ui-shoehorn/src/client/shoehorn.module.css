@@ -46,6 +46,10 @@
 .bar { display: flex; align-items: center; gap: 12px; padding: 9px 12px 9px 16px; border-bottom: 1px solid #1d1f23; color: #f2f3f5; font-size: 13px; }
 .barTitle { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
 .barSpacer { flex: 1; }
+.tabs { display: inline-flex; gap: 4px; margin-left: 12px; }
+.tab { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; color: #9ba1ab; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.tab:hover { color: #f2f3f5; }
+.tabOn { color: #f2f3f5; border-color: #1d1f23; background: #0e0f11; }
 .barLink { color: #9ba1ab; text-decoration: none; font-size: 12px; }
 .barLink:hover { color: #f2f3f5; }
 .close { width: 28px; height: 28px; border: 1px solid #1d1f23; border-radius: 6px; background: #0e0f11; color: #9ba1ab; cursor: pointer; }

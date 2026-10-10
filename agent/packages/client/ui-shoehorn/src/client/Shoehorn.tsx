@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import styles from './shoehorn.module.css'
 import { getOpen, getState, setOpen, SHOEHORN_URL, subscribe, subscribeOpen, type ShoehornState } from './store.ts'
 
@@ -25,6 +25,9 @@ const css = {
   off: styles['off'] ?? '',
   panel: styles['panel'] ?? '',
   reading: styles['reading'] ?? '',
+  tab: styles['tab'] ?? '',
+  tabOn: styles['tabOn'] ?? '',
+  tabs: styles['tabs'] ?? '',
   writing: styles['writing'] ?? '',
 }
 
@@ -81,9 +84,13 @@ export function ShoehornFooterButton({ wide }: { wide?: boolean }) {
   )
 }
 
-/** Frame-wide overlay with the shoehorn dashboard, opened from the chip or the sidebar. */
+/** shoehorn's two pages: the model dashboard and the hardware sensors. */
+const PAGES = [{ path: '/dashboard', label: 'Dashboard' }, { path: '/sensors', label: 'Sensors' }] as const
+
+/** Frame-wide overlay with the shoehorn dashboard and sensors pages, opened from the chip or the sidebar. */
 export function ShoehornOverlay() {
   const open = useOpen()
+  const [page, setPage] = useState<string>(PAGES[0].path)
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
@@ -96,11 +103,19 @@ export function ShoehornOverlay() {
       <div className={css.panel} role="dialog" aria-label="shoehorn dashboard" onClick={e => e.stopPropagation()}>
         <div className={css.bar}>
           <span className={css.barTitle}><Mark size={15} /> shoehorn</span>
+          <span className={css.tabs} role="tablist">
+            {PAGES.map(p => (
+              <button key={p.path} type="button" role="tab" aria-selected={page === p.path}
+                className={page === p.path ? `${css.tab} ${css.tabOn}` : css.tab} onClick={() => { setPage(p.path) }}>
+                {p.label}
+              </button>
+            ))}
+          </span>
           <span className={css.barSpacer} />
-          <a className={css.barLink} href={`${SHOEHORN_URL}/dashboard`} target="_blank" rel="noreferrer">Open in a tab</a>
+          <a className={css.barLink} href={`${SHOEHORN_URL}${page}`} target="_blank" rel="noreferrer">Open in a tab</a>
           <button type="button" className={css.close} aria-label="Close" onClick={() => setOpen(false)}>x</button>
         </div>
-        <iframe className={css.frame} src={`${SHOEHORN_URL}/dashboard`} title="shoehorn dashboard" />
+        <iframe className={css.frame} src={`${SHOEHORN_URL}${page}`} title={`shoehorn ${page.slice(1)}`} />
       </div>
     </div>
   )

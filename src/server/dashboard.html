@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: a quiet console. Header, a hero row (live number | scrolling speed chart), three memory panels (GPU | PCIe | RAM), the hardware row (memory reads | temperatures), then the request list. Dark only, 1px hairlines, one brass accent. */
+/* Layout: a quiet console. Header, a hero row (live number | scrolling speed chart), three memory panels (GPU | PCIe | RAM), memory reads, then the request list. Temperatures and voltages are on /sensors. Dark only, 1px hairlines, one brass accent. */
 :root {
   color-scheme: dark;
   --bg: #08090a; --panel: #0e0f11; --raise: #141518; --line: #1d1f23; --line2: #2a2d32;
@@ -54,18 +54,11 @@ canvas { display: block; width: 100%; }
 #speed { height: 190px; }
 .prog { height: 6px; border-radius: 3px; background: var(--raise); overflow: hidden; }
 .prog i { display: block; height: 100%; background: var(--read); transition: width .3s linear; }
-.hw { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-@media (max-width: 900px) { .hw { grid-template-columns: 1fr; } }
-.hw .mcell + .mcell { border-left: 1px solid var(--line); }
-@media (max-width: 900px) { .hw .mcell + .mcell { border-left: 0; border-top: 1px solid var(--line); } }
-.temps { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 10px 16px; }
-@media (max-width: 520px) { .temps { --cols: 2 !important; } }
-.temps + .temps { padding-top: 10px; border-top: 1px solid var(--line); }
-.temp { display: grid; gap: 2px; min-width: 0; }
-.temp .n { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.temp .v { font: 500 20px var(--f-ui); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.temp .v small { font: 400 12px var(--f-mono); color: var(--ink2); margin-left: 2px; }
-.temp.warm .v { color: var(--warn); } .temp.hot .v { color: var(--bad); }
+.hw { display: grid; }
+nav { display: flex; gap: 4px; }
+nav a { font: 12px var(--f-mono); color: var(--ink2); text-decoration: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
+nav a.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+nav a:hover { color: var(--ink); }
 .note { color: var(--muted); font-size: 12px; }
 
 .mem { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -121,6 +114,7 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
     </div>
     <div class="crumbs" id="crumbs"></div>
     <span class="sp"></span>
+    <nav><a href="/dashboard" class="on">Dashboard</a><a href="/sensors">Sensors</a></nav>
     <span class="status" id="status"><i></i><span id="statusText">connecting</span></span>
   </header>
 
@@ -146,7 +140,6 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
 
   <section class="panel hw">
     <div class="mcell" id="reads"></div>
-    <div class="mcell" id="temps"></div>
   </section>
 
   <section class="panel reqs">
@@ -347,7 +340,7 @@ function renderMem() {
       <div><span>Check takes</span><span class="mono">${perCheckS ? fmt(perCheckS * 1000, 0) + " ms" : "-"}</span></div></div>`;
   if ($("pcie").dataset.h !== p) { $("pcie").innerHTML = p; $("pcie").dataset.h = p; }
 }
-// ---- hardware: weight bytes read (counted per pass of the model, see traffic.h) and temperatures
+// ---- memory reads: weight bytes read, counted per pass of the model (see traffic.h)
 const GB = 1e9;
 function rateOf(key) {
   if (reads.length < 2) return null;
@@ -356,50 +349,14 @@ function rateOf(key) {
 }
 function renderHw() {
   if (hw.vram_read == null) return;
-  const vr = rateOf("v"), rr = rateOf("r"), g = hw.gpu || {};
+  const vr = rateOf("v"), rr = rateOf("r");
   const line = (l, v) => `<div><span>${l}</span><span class="mono">${v}</span></div>`;
   const r = `<div class="mhead"><b>Memory reads</b><span class="mono">model weights, since start</span></div>
     <div class="mval">${vr != null && vr > 0 ? fmt(vr / GB, 0) : "0"}<small>GB/s from VRAM now</small></div>
     <div class="legend">${line("Read from VRAM", fmt(hw.vram_read / GB, 0) + " GB")}${line("Read from RAM, across PCIe", fmt(hw.ram_read / GB, 0) + " GB")}
-      ${line("RAM read rate now", rr != null && rr > 0 ? fmt(rr / GB, 1) + " GB/s" : "0 GB/s")}
-      ${g.mem_util != null && g.mem_util >= 0 ? line("VRAM busy", g.mem_util + "%") : ""}${g.power_w != null && g.power_w >= 0 ? line("GPU power", fmt(g.power_w, 0) + " W") : ""}</div>
+      ${line("RAM read rate now", rr != null && rr > 0 ? fmt(rr / GB, 1) + " GB/s" : "0 GB/s")}</div>
     <div class="note">Counted from the weights each pass of the model reads; the context cache and activations add more.</div>`;
   if ($("reads").dataset.h !== r) { $("reads").innerHTML = r; $("reads").dataset.h = r; }
-  // temperatures: NVML for the GPU core, Windows for the drives, LibreHardwareMonitor (when running) for the rest
-  const T = [], S = (hw.sensors || []).filter(x => x.c != null), V = (hw.sensors || []).filter(x => x.v != null);
-  const pick = (kind, re) => S.filter(x => x.kind.startsWith(kind) && (!re || re.test(x.name)));
-  const cpu = pick("amdcpu", /Tctl|Tdie|Package|CCD/).concat(pick("intelcpu", /Package/));
-  if (cpu.length) T.push({ n: "CPU", c: Math.max(...cpu.map(x => x.c)) });
-  if (g.temp_c != null && g.temp_c >= 0) T.push({ n: "GPU core", c: g.temp_c });
-  const board = pick("lpc", /^Motherboard$/);
-  if (board.length) T.push({ n: "Motherboard", c: board[0].c, title: board[0].hw });
-  const vram = pick("gpu-nvidia", /Memory/i);
-  if (vram.length) T.push({ n: "VRAM", c: Math.max(...vram.map(x => x.c)) });
-  const ram = S.filter(x => x.kind === "memory" && /^DIMM/i.test(x.name));  // not the limit / resolution entries
-  ram.forEach((x, i) => T.push({ n: ram.length > 1 ? `RAM ${i + 1}` : "RAM", c: x.c, title: `${x.hw} ${x.name}` }));
-  const D = (hw.drives || []).map(d => ({ n: d.name.replace(/\s*\[.*\]$/, "").replace(/_/g, " "), c: d.temp_c, title: d.name }));
-  const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
-  // tiles in even rows: up to 5 columns, a count that divides the tile count (6 -> 3, 4 -> 4, 5 -> 5), else balanced rows
-  const cols = n => { for (let c = Math.min(n, 5); c >= 3; c--) if (n % c === 0) return c; return Math.ceil(n / Math.ceil(n / 5)); };
-  const grid = (A, f) => A.length ? `<div class="temps" style="--cols:${cols(A.length)}">${A.map(f).join("")}</div>` : "";
-  const tc = x => `<div class="temp${cls(x.c)}" title="${x.title || x.n}"><span class="n">${x.n}</span><span class="v">${fmt(x.c, 0)}<small>C</small></span></div>`;
-  const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
-  let t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "all sensors" : "GPU and drives"}</span></div>
-    ${grid(T, tc)}${grid(D, tc)}
-    ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`;
-  // voltages: GPU core from NVIDIA's driver, the board's named rails (named and scaled by shoehorn-hwmon's board map;
-  // the CPU's per-core VID is left out: it stays at ~0.3 V under load). No sensor reports VRAM or the modules' own
-  // (PMIC) voltages; CPU VDDIO is the memory interface supply on the CPU side.
-  const pickV = (kind, re) => V.filter(x => x.kind.startsWith(kind) && re.test(x.name));
-  const rails = (kind, list) => list.flatMap(([re, n]) => { const r = pickV(kind, re); return r.length ? [{ n, v: r[0].v }] : []; });
-  const VA = rails("gpu-nvidia", [[/Core Voltage/i, "GPU core"]]).concat(rails("lpc", [[/^Vcore$/, "CPU core"], [/^CPU SoC$/, "CPU SoC"],
-    [/^CPU VDDIO Memory$/, "CPU VDDIO (memory)"], [/^CPU VDD_MISC$/, "CPU VDD_MISC"], [/^1\.8V PLL$/, "1.8 V PLL"]]));
-  const VB = rails("lpc", [[/^Chipset 1 VDD$/, "Chipset 1"], [/^Chipset 2 VDD$/, "Chipset 2"], [/^\+12V$/, "+12 V rail"], [/^\+5V$/, "+5 V rail"],
-    [/^\+3\.3V$/, "+3.3 V rail"]]);
-  const vt = x => `<div class="temp"><span class="n">${x.n}</span><span class="v">${fmt(x.v, x.v < 2 ? 3 : 2)}<small>V</small></span></div>`;
-  if (VA.length + VB.length) t += `<div class="mhead" style="margin-top:6px"><b>Voltages</b><span class="mono">VRAM and DIMM voltages not reported</span></div>
-    ${grid(VA, vt)}${grid(VB, vt)}`;
-  if ($("temps").dataset.h !== t) { $("temps").innerHTML = t; $("temps").dataset.h = t; }
 }
 function renderList() {
   annotate(ALL);

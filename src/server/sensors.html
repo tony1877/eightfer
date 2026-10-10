@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>shoehorn sensors</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2308090a'/%3E%3Cpath d='M13.2 4h5.6a2 2 0 0 1 2 2v5c0 2.5 3.2 5.7 3.2 10.8 0 4.2-3.8 6.7-8 6.7s-8-2.5-8-6.7c0-5.1 3.2-8.3 3.2-10.8V6a2 2 0 0 1 2-2z' fill='%23d9a54a'/%3E%3Ccircle cx='16' cy='7.6' r='1.5' fill='%2308090a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* The hardware next to the model: temperatures, voltages and power, from /stats "hw" (NVML, the drives, and
+   shoehorn-hwmon / LibreHardwareMonitor when one runs). Same look as the dashboard. */
+:root {
+  color-scheme: dark;
+  --bg: #08090a; --panel: #0e0f11; --raise: #141518; --line: #1d1f23; --line2: #2a2d32;
+  --ink: #f2f3f5; --ink2: #9ba1ab; --muted: #5f6570;
+  --accent: #d9a54a; --warn: #e2b04a; --bad: #ec6a5e;
+  --f-ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.5 var(--f-ui); padding: 0 24px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 18px 48px; display: grid; gap: 16px; }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.word { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.word svg { width: 18px; height: 18px; }
+header .sp { flex: 1; }
+nav { display: flex; gap: 4px; }
+nav a { font: 12px var(--f-mono); color: var(--ink2); text-decoration: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
+nav a.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+nav a:hover { color: var(--ink); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 12px; }
+.mhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.mhead b { font-weight: 500; font-size: 13px; }
+.mhead .mono { font-size: 12px; color: var(--ink2); }
+.temps { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 10px 16px; }
+.temps + .temps { padding-top: 10px; border-top: 1px solid var(--line); }
+@media (max-width: 520px) { body { padding: 0 16px; } .temps { --cols: 2 !important; } }
+.temp { display: grid; gap: 2px; min-width: 0; }
+.temp .n { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.temp .v { font: 500 20px var(--f-ui); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.temp .v small { font: 400 12px var(--f-mono); color: var(--ink2); margin-left: 2px; }
+.temp.warm .v { color: var(--warn); } .temp.hot .v { color: var(--bad); }
+.note { color: var(--muted); font-size: 12px; }
+footer { color: var(--muted); font: 11.5px var(--f-mono); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="word">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.2 2h3.6c.7 0 1.2.5 1.2 1.2v3.4c0 1.6 2.1 3.8 2.1 7.1 0 2.8-2.5 4.3-5.1 4.3s-5.1-1.5-5.1-4.3c0-3.3 2.1-5.5 2.1-7.1V3.2C7 2.5 7.5 2 8.2 2z" fill="none" stroke="var(--accent)" stroke-width="1.4"/><circle cx="10" cy="4.6" r=".9" fill="var(--accent)"/></svg>
+      shoehorn
+    </div>
+    <span class="sp"></span>
+    <nav><a href="/dashboard">Dashboard</a><a href="/sensors" class="on">Sensors</a></nav>
+  </header>
+  <section class="panel" id="temps"></section>
+  <section class="panel" id="volts"></section>
+  <section class="panel" id="power"></section>
+  <footer id="foot">connecting</footer>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 0) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const set = (id, h) => { if ($(id).dataset.h !== h) { $(id).innerHTML = h; $(id).dataset.h = h; } };
+// tiles in even rows: up to 5 columns, a count that divides the tile count (6 -> 3, 4 -> 4, 5 -> 5), else balanced rows
+const cols = n => { for (let c = Math.min(n, 5); c >= 3; c--) if (n % c === 0) return c; return Math.ceil(n / Math.ceil(n / 5)); };
+const grid = (A, f) => A.length ? `<div class="temps" style="--cols:${cols(A.length)}">${A.map(f).join("")}</div>` : "";
+const tile = (n, v, unit, cls = "", title = n) => `<div class="temp${cls}" title="${title}"><span class="n">${n}</span><span class="v">${v}<small>${unit}</small></span></div>`;
+
+function render(hw) {
+  const g = hw.gpu || {}, all = hw.sensors || [];
+  const S = all.filter(x => x.c != null), V = all.filter(x => x.v != null);
+  // temperatures: NVML for the GPU core, Windows for the drives, the sensor server for the rest
+  const pick = (kind, re) => S.filter(x => x.kind.startsWith(kind) && (!re || re.test(x.name)));
+  const T = [];
+  const cpu = pick("amdcpu", /Tctl|Tdie|Package|CCD/).concat(pick("intelcpu", /Package/));
+  if (cpu.length) T.push({ n: "CPU", c: Math.max(...cpu.map(x => x.c)) });
+  if (g.temp_c != null && g.temp_c >= 0) T.push({ n: "GPU core", c: g.temp_c });
+  const board = pick("lpc", /^Motherboard$/);
+  if (board.length) T.push({ n: "Motherboard", c: board[0].c, title: board[0].hw });
+  const vram = pick("gpu-nvidia", /Memory/i);
+  if (vram.length) T.push({ n: "VRAM", c: Math.max(...vram.map(x => x.c)) });
+  const ram = S.filter(x => x.kind === "memory" && /^DIMM/i.test(x.name));  // not the limit / resolution entries
+  ram.forEach((x, i) => T.push({ n: ram.length > 1 ? `RAM ${i + 1}` : "RAM", c: x.c, title: `${x.hw} ${x.name}` }));
+  const D = (hw.drives || []).map(d => ({ n: d.name.replace(/\s*\[.*\]$/, "").replace(/_/g, " "), c: d.temp_c, title: d.name }));
+  const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
+  const tc = x => tile(x.n, fmt(x.c, 0), "C", cls(x.c), x.title || x.n);
+  const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
+  set("temps", `<div class="mhead"><b>Temperatures</b><span class="mono">amber from 70 C, red from 85 C</span></div>
+    ${grid(T, tc)}${grid(D, tc)}
+    ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by the sensor server" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`);
+  // voltages: GPU core from NVIDIA's driver, the board's rails as named and scaled by shoehorn-hwmon's board map (the
+  // CPU's per-core VID is left out: it stays near 0.3 V under load)
+  const pickV = (kind, re) => V.filter(x => x.kind.startsWith(kind) && re.test(x.name));
+  const rails = (kind, list) => list.flatMap(([re, n]) => { const r = pickV(kind, re); return r.length ? [{ n, v: r[0].v }] : []; });
+  const VA = rails("gpu-nvidia", [[/Core Voltage/i, "GPU core"]]).concat(rails("lpc", [[/^Vcore$/, "CPU core"], [/^CPU SoC$/, "CPU SoC"],
+    [/^CPU VDDIO Memory$/, "CPU VDDIO (memory)"], [/^CPU VDD_MISC$/, "CPU VDD_MISC"], [/^1\.8V PLL$/, "1.8 V PLL"]]));
+  const VB = rails("lpc", [[/^Chipset 1 VDD$/, "Chipset 1"], [/^Chipset 2 VDD$/, "Chipset 2"], [/^\+12V$/, "+12 V rail"], [/^\+5V$/, "+5 V rail"],
+    [/^\+3\.3V$/, "+3.3 V rail"]]);
+  const vt = x => tile(x.n, fmt(x.v, x.v < 2 ? 3 : 2), "V");
+  set("volts", `<div class="mhead"><b>Voltages</b><span class="mono">VRAM and DIMM voltages not reported</span></div>
+    ${VA.length + VB.length ? grid(VA, vt) + grid(VB, vt) : `<div class="note">No voltage sensors: start shoehorn-hwmon (tools/hwmon).</div>`}
+    <div class="note">NVIDIA's driver reports only the GPU core voltage; the memory modules' own voltages (their PMIC) are
+      not read. CPU VDDIO is the memory supply on the CPU side.</div>`);
+  const P = [];
+  if (g.power_w != null && g.power_w >= 0) P.push(tile("GPU power", fmt(g.power_w, 0), "W"));
+  if (g.mem_util != null && g.mem_util >= 0) P.push(tile("VRAM busy", fmt(g.mem_util, 0), "%"));
+  set("power", `<div class="mhead"><b>GPU load</b><span class="mono">NVIDIA driver</span></div>${P.length ? grid(P, x => x) : `<div class="note">No NVIDIA GPU found.</div>`}`);
+}
+async function poll() {
+  try {
+    const d = await (await fetch("/stats?since=1e12", { cache: "no-store" })).json();
+    render(d.hw || {});
+    $("foot").textContent = "live, updated every second (the sensors themselves refresh every 2 s)";
+  } catch (e) { $("foot").textContent = "offline"; }
+}
+poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>

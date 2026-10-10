@@ -1772,6 +1772,12 @@ int serve(const std::vector<std::string> & args) {
             ;
         resp.set_content(page, "text/html; charset=utf-8");
     });
+    http.Get("/sensors", [](const httplib::Request &, httplib::Response & resp) {  // temperatures, voltages, power
+        static const char * page =
+#include "sensors.inc"
+            ;
+        resp.set_content(page, "text/html; charset=utf-8");
+    });
     // /stats?since=T: only the timing lines after T (the dashboard polls with its newest line's t)
     http.Get("/favicon.ico", [](const httplib::Request &, httplib::Response & resp) {  // the dashboard's mark
         resp.set_header("Cache-Control", "max-age=86400");
