@@ -130,7 +130,18 @@ rest at the same time.
 DMA alone. The old CPU kernel, `src/kernels/q4k_small.cpp`, was too slow (275-900 ms for all of R), so the GPU took
 everything (commit 1dc7deb).
 
-**Steps.**
+**Result 2026-10-10: gate failed, dropped.** ggml's repacked Q4_K kernels (`bench --only cpu`, 16 threads)
+already reach about 1.25 TMAC/s, a quarter of peak, and are compute-bound from N = 24 on:
+
+| N | 16 | 24 | 32 | 48 | 64 |
+|---|---|---|---|---|---|
+| GB/s of R | 36.6 | 22.8 | 20.2 | 14.0 | 10.7 |
+
+With the CPU reading, DMA falls to 36.5 GB/s, so a CPU slice pays only above about 21 GB/s. Verifies run at
+N >= 25 (`choose_k` drafts at least 24), so the best case is about +3% at N = 24 and a loss beyond it. The existing
+`q4k_small` kernel is slower still (20 GB/s at 16 columns).
+
+**Steps (not done).**
 1. **Kernel.** A new VNNI kernel that reads native Q4_K and uses q8_1 activations (the same as the GPU, so results
    differ only in summation order).
    - Bench at N = 1-24, 7-8 threads, sustained for 60 s.
@@ -152,7 +163,21 @@ not only on full accepts.
 recursive rejection sampling. They were slower only because branches were drafted one after another (draft time
 396 -> 671 ms). Batched and overlapped with the verify, that cost mostly disappears.
 
-**Steps.**
+**Result 2026-10-10, a smaller variant: dropped.** `E8_DRAFT_ALT=1` (off by default) tests the first MTP
+proposal's runner-up in the same base pass, as a second sequence, using exact recursive rejection sampling. Results
+over 6 seeds at temp 1.0 with `--spec auto`, 384 tokens:
+
+| | Alternatives kept | Tokens/cycle | Draft ms/cycle | tok/s |
+|---|---|---|---|---|
+| prose | 197 of 558 | 16.33 -> 16.99 | 762 -> 848 | 14.80 -> 14.29 |
+| explain | 91 of 188 | 21.05 -> 21.78 | 638 -> 681 | 21.37 -> 21.22 |
+| code | 66 of 140 | 23.52 -> 24.74 | 567 -> 637 | 25.72 -> 25.05 |
+
+Draft rounds fall about 10%, but each two-sequence base pass costs about 20% more than a single one: the tree eval
+copies the recurrent state per sequence. One row alone costs much less (n = 1 -> 7 is +12%). Branching only pays
+once a multi-sequence base pass costs about as much as one sequence with the same number of rows.
+
+**Steps (full version, not done).**
 1. Drive tree branches through `draft_lockstep`, one working recurrent state per branch.
 2. Choose branch points where rejections actually happen. MTP disagreement predicts the verifier's rejections
    (commit d6013df); base confidence alone predicts them poorly (only 18% hits).

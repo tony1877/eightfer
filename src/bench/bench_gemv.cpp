@@ -185,9 +185,10 @@ void gemv_cpu(const Options & opt, const sys::Info & si) {
         { GGML_TYPE_IQ4_XS, def,    threads, { 1 }    },
     };
     if (repack) {
-        cases.push_back({ GGML_TYPE_Q4_K, repack, threads, { 1, 9 } });
+        // verify sizes too (choose_k drafts at least 24): what a CPU slice of the residual could sustain
+        cases.push_back({ GGML_TYPE_Q4_K, repack, threads, { 1, 9, 16, 24, 32, 48, 64 } });
         if (si.logical_cores > threads) {
-            cases.push_back({ GGML_TYPE_Q4_K, repack, si.logical_cores, { 9 } });
+            cases.push_back({ GGML_TYPE_Q4_K, repack, si.logical_cores, { 9, 16, 24, 32, 48, 64 } });
         }
     }
 
