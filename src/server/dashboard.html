@@ -371,7 +371,7 @@ function renderHw() {
   if (g.temp_c != null && g.temp_c >= 0) T.push({ n: "GPU core", c: g.temp_c });
   const vram = pick("gpu-nvidia", /Memory/i);
   if (vram.length) T.push({ n: "VRAM", c: Math.max(...vram.map(x => x.c)) });
-  const ram = S.filter(x => x.kind === "memory" || /dimm/i.test(x.hw));
+  const ram = S.filter(x => x.kind === "memory" && /^DIMM/i.test(x.name));  // not the limit / resolution entries
   ram.forEach((x, i) => T.push({ n: ram.length > 1 ? `RAM ${i + 1}` : "RAM", c: x.c, title: `${x.hw} ${x.name}` }));
   for (const d of hw.drives || []) T.push({ n: d.name.replace(/\s*\[.*\]$/, ""), c: d.temp_c, title: d.name });
   const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
