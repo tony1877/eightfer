@@ -369,6 +369,8 @@ function renderHw() {
   const cpu = pick("amdcpu", /Tctl|Tdie|Package|CCD/).concat(pick("intelcpu", /Package/));
   if (cpu.length) T.push({ n: "CPU", c: Math.max(...cpu.map(x => x.c)) });
   if (g.temp_c != null && g.temp_c >= 0) T.push({ n: "GPU core", c: g.temp_c });
+  const board = pick("lpc", /^Motherboard$/);
+  if (board.length) T.push({ n: "Motherboard", c: board[0].c, title: board[0].hw });
   const vram = pick("gpu-nvidia", /Memory/i);
   if (vram.length) T.push({ n: "VRAM", c: Math.max(...vram.map(x => x.c)) });
   const ram = S.filter(x => x.kind === "memory" && /^DIMM/i.test(x.name));  // not the limit / resolution entries
@@ -376,9 +378,9 @@ function renderHw() {
   for (const d of hw.drives || []) T.push({ n: d.name.replace(/\s*\[.*\]$/, ""), c: d.temp_c, title: d.name });
   const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
   const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
-  const t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "with LibreHardwareMonitor" : "GPU and drives"}</span></div>
+  const t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "all sensors" : "GPU and drives"}</span></div>
     <div class="temps">${T.map(x => `<div class="temp${cls(x.c)}" title="${x.title || x.n}"><span class="n">${x.n}</span><span class="v">${fmt(x.c, 0)}<small>C</small></span></div>`).join("")}</div>
-    ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start LibreHardwareMonitor with its web server on port 8085"}.</div>` : ""}`;
+    ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`;
   if ($("temps").dataset.h !== t) { $("temps").innerHTML = t; $("temps").dataset.h = t; }
 }
 function renderList() {
