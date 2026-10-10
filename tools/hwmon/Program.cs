@@ -1,7 +1,7 @@
-// shoehorn-hwmon: reads the temperature sensors through LibreHardwareMonitorLib every 2 s and serves them as
+// shoehorn-hwmon: reads the temperature and voltage sensors through LibreHardwareMonitorLib every 2 s and serves them as
 // /data.json on 127.0.0.1 (port 8085, or the first argument), in the tree shape of LibreHardwareMonitor's own web
 // server: root > computer > hardware > sensors, each sensor with SensorId, Type, Text and Value. Sub-hardware sensors
-// are listed under their hardware. Only temperatures are served; nothing listens beyond this machine.
+// are listed under their hardware. Only temperatures and voltages are served; nothing listens beyond this machine.
 
 using System.Globalization;
 using System.Net;
@@ -35,13 +35,14 @@ void Sample()
         {
             foreach (ISensor s in h.Sensors)
             {
-                if (s.SensorType != SensorType.Temperature || s.Value is not float v) continue;
+                if (s.SensorType is not (SensorType.Temperature or SensorType.Voltage) || s.Value is not float v) continue;
+                bool volt = s.SensorType == SensorType.Voltage;
                 sensors.Add(new Dictionary<string, object>
                 {
                     ["Text"] = s.Name,
                     ["SensorId"] = s.Identifier.ToString(),
-                    ["Type"] = "Temperature",
-                    ["Value"] = v.ToString("0.0", CultureInfo.InvariantCulture) + " C",
+                    ["Type"] = volt ? "Voltage" : "Temperature",
+                    ["Value"] = v.ToString(volt ? "0.000" : "0.0", CultureInfo.InvariantCulture) + (volt ? " V" : " C"),
                 });
             }
         }

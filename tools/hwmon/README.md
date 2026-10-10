@@ -1,6 +1,6 @@
 # shoehorn-hwmon
 
-A windowless helper that reads the temperature sensors through
+A windowless helper that reads the temperature and voltage sensors through
 [LibreHardwareMonitorLib](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (MPL-2.0) every 2 s and
 serves them as `/data.json` on `127.0.0.1:8085`, the format of LibreHardwareMonitor's own web server, so
 `shoehorn serve --hw-monitor` reads either. It needs administrator rights (CPU, memory module and board sensors go

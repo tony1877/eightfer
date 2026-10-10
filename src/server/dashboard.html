@@ -364,7 +364,7 @@ function renderHw() {
     <div class="note">Counted from the weights each pass of the model reads; the context cache and activations add more.</div>`;
   if ($("reads").dataset.h !== r) { $("reads").innerHTML = r; $("reads").dataset.h = r; }
   // temperatures: NVML for the GPU core, Windows for the drives, LibreHardwareMonitor (when running) for the rest
-  const T = [], S = hw.sensors || [];
+  const T = [], S = (hw.sensors || []).filter(x => x.c != null), V = (hw.sensors || []).filter(x => x.v != null);
   const pick = (kind, re) => S.filter(x => x.kind.startsWith(kind) && (!re || re.test(x.name)));
   const cpu = pick("amdcpu", /Tctl|Tdie|Package|CCD/).concat(pick("intelcpu", /Package/));
   if (cpu.length) T.push({ n: "CPU", c: Math.max(...cpu.map(x => x.c)) });
@@ -378,9 +378,20 @@ function renderHw() {
   for (const d of hw.drives || []) T.push({ n: d.name.replace(/\s*\[.*\]$/, ""), c: d.temp_c, title: d.name });
   const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
   const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
-  const t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "all sensors" : "GPU and drives"}</span></div>
+  let t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "all sensors" : "GPU and drives"}</span></div>
     <div class="temps">${T.map(x => `<div class="temp${cls(x.c)}" title="${x.title || x.n}"><span class="n">${x.n}</span><span class="v">${fmt(x.c, 0)}<small>C</small></span></div>`).join("")}</div>
     ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`;
+  // voltages: the readings that are labeled and plausible (this board's Vcore channel reads ~2.2 V, so the CPU's own
+  // requested voltage is shown instead); none are reported for VRAM or the memory modules
+  const VV = [], pickV = (kind, re) => V.filter(x => x.kind.startsWith(kind) && re.test(x.name));
+  const gv = pickV("gpu-nvidia", /Core Voltage/i), vid = pickV("amdcpu", /VID/).concat(pickV("intelcpu", /VID|Core/));
+  if (gv.length) VV.push({ n: "GPU core", v: gv[0].v });
+  if (vid.length) VV.push({ n: "CPU core, requested", v: Math.max(...vid.map(x => x.v)) });
+  for (const [re, n] of [[/^\+12V$/, "+12 V rail"], [/^\+5V$/, "+5 V rail"], [/^\+3\.3V$/, "+3.3 V rail"]]) {
+    const r = pickV("lpc", re); if (r.length) VV.push({ n, v: r[0].v });
+  }
+  if (VV.length) t += `<div class="mhead" style="margin-top:6px"><b>Voltages</b><span class="mono">VRAM and RAM not reported</span></div>
+    <div class="temps">${VV.map(x => `<div class="temp"><span class="n">${x.n}</span><span class="v">${fmt(x.v, x.v < 2 ? 3 : 2)}<small>V</small></span></div>`).join("")}</div>`;
   if ($("temps").dataset.h !== t) { $("temps").innerHTML = t; $("temps").dataset.h = t; }
 }
 function renderList() {

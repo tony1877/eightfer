@@ -1674,7 +1674,7 @@ int serve(const std::vector<std::string> & args) {
         return 1;
     }
     // hardware sensors: GPU (NVML), drive temperatures, and, when LibreHardwareMonitor's web server answers, its
-    // temperature sensors (CPU, memory modules, GPU memory, board); every 2 s, so /stats never waits on them
+    // temperature and voltage sensors (CPU, memory modules, GPU memory, board); every 2 s, so /stats never waits on them
     std::thread([sp] {
         for (;;) {
             json h = json::object();
@@ -1693,14 +1693,16 @@ int serve(const std::vector<std::string> & args) {
                     std::function<void(const json &, int, const std::string &)> walk = [&](const json & n, int depth, const std::string & hw) {
                         if (!n.is_object()) return;
                         const std::string id = n.value("SensorId", std::string()), here = depth == 2 ? n.value("Text", std::string()) : hw;
-                        if (!id.empty() && n.value("Type", std::string()) == "Temperature") {
+                        const std::string type = n.value("Type", std::string());
+                        if (!id.empty() && (type == "Temperature" || type == "Voltage")) {
                             const std::string v = n.value("Value", std::string());
                             char *            end = nullptr;
                             const double      t   = std::strtod(v.c_str(), &end);
                             const size_t      a   = id.find('/', 1);
                             if (end != v.c_str())
                                 sensors.push_back({ { "kind", id.substr(1, a == std::string::npos ? std::string::npos : a - 1) },
-                                                    { "hw", here }, { "name", n.value("Text", std::string()) }, { "c", t } });
+                                                    { "hw", here }, { "name", n.value("Text", std::string()) },
+                                                    { type == "Voltage" ? "v" : "c", t } });
                         }
                         if (n.contains("Children") && n["Children"].is_array())
                             for (const auto & ch : n["Children"]) walk(ch, depth + 1, here);
