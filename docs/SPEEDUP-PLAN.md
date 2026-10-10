@@ -136,6 +136,31 @@ judged by the base's distribution.
 
 **Gate:** MTP kept 41.6% -> at least 50% on held-out prompts, and prose tok/s up at least 8%.
 
+**Pilot results (2026-10-10).**
+- mtpdump on the 40 pilot conversations: 20,395 tokens at about 1,890 tok/s (`E:\shoehorn\mtp\pilot.bin`,
+  214 MB). The base's top-1 equals the next token 71.9% of the time, and the next token is in its top 20 98.7% of
+  the time.
+- PyTorch 2.11 (cu128) is in `experiments/mtp_distill/.venv`. `mtp.py` holds the port, the offline acceptance
+  metric (sum min(p_base, q_mtp) under top_k 20 / top_p 0.95, first step) and a trainer. The output head is cached
+  as `E:\shoehorn\mtp\head_bf16.pt`.
+- The port checks out. The stock 4-bit head's held-out first-step acceptance is 0.749 (base + residual: 0.7515).
+  That is the design's assumed 0.75; with steps 2-3 decaying, it matches the engine's 41.6-44.8% per proposal.
+- Training on 32 conversations (about 16K positions, lr 2e-5, 3 epochs) overfits:
+
+  | | Train | Held-out |
+  |---|---|---|
+  | Epoch 1 | 0.744 | 0.7505 |
+  | Epoch 2 | 0.830 | 0.7466 |
+  | Epoch 3 | 0.849 | 0.7440 |
+
+  So no gain can be seen at this data size.
+
+**Next:**
+1. A 1M-token corpus (H100 session), then retrain.
+2. Train the chained steps 2-3: feed the head's own `hn` as the next h, the training-time test. The first step is
+   already at 0.75; most of the gap to the engine's 41.6% is in steps 2-3.
+3. Only then export and measure through the server.
+
 ## 3. Fused base pass (megakernel-lite)
 
 **Idea.** Remove launch and small-kernel time from the base pass. A pass takes 19.5 ms against a floor of about
