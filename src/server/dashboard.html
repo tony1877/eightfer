@@ -387,17 +387,18 @@ function renderHw() {
   let t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "all sensors" : "GPU and drives"}</span></div>
     ${grid(T, tc)}${grid(D, tc)}
     ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`;
-  // voltages: the readings that are labeled and plausible (this board's Vcore channel reads ~2.2 V, so the CPU's own
-  // requested voltage is shown instead); none are reported for VRAM or the memory modules
-  const VV = [], pickV = (kind, re) => V.filter(x => x.kind.startsWith(kind) && re.test(x.name));
-  const gv = pickV("gpu-nvidia", /Core Voltage/i), vid = pickV("amdcpu", /VID/).concat(pickV("intelcpu", /VID|Core/));
-  if (gv.length) VV.push({ n: "GPU core", v: gv[0].v });
-  if (vid.length) VV.push({ n: "CPU core, requested", v: Math.max(...vid.map(x => x.v)) });
-  for (const [re, n] of [[/^\+12V$/, "+12 V rail"], [/^\+5V$/, "+5 V rail"], [/^\+3\.3V$/, "+3.3 V rail"]]) {
-    const r = pickV("lpc", re); if (r.length) VV.push({ n, v: r[0].v });
-  }
-  if (VV.length) t += `<div class="mhead" style="margin-top:6px"><b>Voltages</b><span class="mono">VRAM and RAM not reported</span></div>
-    ${grid(VV, x => `<div class="temp"><span class="n">${x.n}</span><span class="v">${fmt(x.v, x.v < 2 ? 3 : 2)}<small>V</small></span></div>`)}`;
+  // voltages: GPU core from NVIDIA's driver, the board's named rails (named and scaled by shoehorn-hwmon's board map;
+  // the CPU's per-core VID is left out: it stays at ~0.3 V under load). No sensor reports VRAM or the modules' own
+  // (PMIC) voltages; CPU VDDIO is the memory interface supply on the CPU side.
+  const pickV = (kind, re) => V.filter(x => x.kind.startsWith(kind) && re.test(x.name));
+  const rails = (kind, list) => list.flatMap(([re, n]) => { const r = pickV(kind, re); return r.length ? [{ n, v: r[0].v }] : []; });
+  const VA = rails("gpu-nvidia", [[/Core Voltage/i, "GPU core"]]).concat(rails("lpc", [[/^Vcore$/, "CPU core"], [/^CPU SoC$/, "CPU SoC"],
+    [/^CPU VDDIO Memory$/, "CPU VDDIO (memory)"], [/^CPU VDD_MISC$/, "CPU VDD_MISC"], [/^1\.8V PLL$/, "1.8 V PLL"]]));
+  const VB = rails("lpc", [[/^Chipset 1 VDD$/, "Chipset 1"], [/^Chipset 2 VDD$/, "Chipset 2"], [/^\+12V$/, "+12 V rail"], [/^\+5V$/, "+5 V rail"],
+    [/^\+3\.3V$/, "+3.3 V rail"]]);
+  const vt = x => `<div class="temp"><span class="n">${x.n}</span><span class="v">${fmt(x.v, x.v < 2 ? 3 : 2)}<small>V</small></span></div>`;
+  if (VA.length + VB.length) t += `<div class="mhead" style="margin-top:6px"><b>Voltages</b><span class="mono">VRAM and DIMM voltages not reported</span></div>
+    ${grid(VA, vt)}${grid(VB, vt)}`;
   if ($("temps").dataset.h !== t) { $("temps").innerHTML = t; $("temps").dataset.h = t; }
 }
 function renderList() {

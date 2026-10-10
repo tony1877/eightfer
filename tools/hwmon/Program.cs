@@ -21,6 +21,26 @@ var computer = new Computer
 };
 computer.Open();
 
+// Board voltage maps LibreHardwareMonitorLib lacks: sensor name -> (new name, factor on the library's value; 0 = drop).
+// ROG CROSSHAIR X670E GENE (NCT6799D): the library lists the inputs raw ("This is wrong" on Vcore and VTT). The
+// dividers of ASUS's ROG CROSSHAIR X870E HERO / APEX map (same input layout, matched to HWiNFO in the library) fit
+// it: the 1.8 V PLL reads 1.80 V and both chipsets their nominal 1.05 V.
+var boardMaps = new Dictionary<string, Dictionary<string, (string Name, double Factor)>>
+{
+    ["ROG CROSSHAIR X670E GENE"] = new()
+    {
+        ["Vcore"] = ("Vcore", 151.0 / 136 / 2),  // the library already doubled it
+        ["Voltage #6"] = ("CPU VDD_MISC", 91.0 / 82),
+        ["Voltage #7"] = ("CPU SoC", 91.0 / 82),
+        ["CPU Termination"] = ("", 0),
+        ["Voltage #11"] = ("Chipset 1 VDD", 2),
+        ["Voltage #12"] = ("Chipset 2 VDD", 2),
+        ["Voltage #13"] = ("Chipset Standby", 1),
+        ["Voltage #14"] = ("CPU VDDIO Memory", 91.0 / 82),
+        ["Voltage #15"] = ("1.8V PLL", 53.0 / 36),
+    },
+};
+
 byte[] body = "{}"u8.ToArray();
 var gate = new object();
 
@@ -37,9 +57,17 @@ void Sample()
             {
                 if (s.SensorType is not (SensorType.Temperature or SensorType.Voltage) || s.Value is not float v) continue;
                 bool volt = s.SensorType == SensorType.Voltage;
+                string name = s.Name;
+                var map = volt ? boardMaps.FirstOrDefault(b => Clean(hw.Name).Contains(b.Key, StringComparison.OrdinalIgnoreCase)).Value : null;
+                if (map != null && map.TryGetValue(name, out var m))
+                {
+                    if (m.Factor == 0) continue;
+                    name = m.Name;
+                    v = (float) (v * m.Factor);
+                }
                 sensors.Add(new Dictionary<string, object>
                 {
-                    ["Text"] = s.Name,
+                    ["Text"] = name,
                     ["SensorId"] = s.Identifier.ToString(),
                     ["Type"] = volt ? "Voltage" : "Temperature",
                     ["Value"] = v.ToString(volt ? "0.000" : "0.0", CultureInfo.InvariantCulture) + (volt ? " V" : " C"),
