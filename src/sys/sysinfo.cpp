@@ -458,6 +458,18 @@ int self_pid() {
     return (int) GetCurrentProcessId();
 }
 
+CpuSample cpu_sample() {
+    auto u = [](const FILETIME & f) { return ((uint64_t) f.dwHighDateTime << 32) | f.dwLowDateTime; };
+    FILETIME  idle, kern, user, c, e, pk, pu;
+    CpuSample s;
+    if (GetSystemTimes(&idle, &kern, &user)) {  // kernel time includes idle time
+        s.total = u(kern) + u(user);
+        s.busy  = s.total - u(idle);
+    }
+    if (GetProcessTimes(GetCurrentProcess(), &c, &e, &pk, &pu)) s.self = u(pk) + u(pu);
+    return s;
+}
+
 std::string pick_path(bool folder, const std::string & title, const std::string & start, const std::string & pattern) {
     std::string out;
     // COM wants a single-threaded apartment of its own: run the dialog on a fresh thread
@@ -670,6 +682,10 @@ bool spawn_detached(const std::vector<std::string> &, std::string & err) {
 
 int self_pid() {
     return 0;
+}
+
+CpuSample cpu_sample() {
+    return {};
 }
 
 void set_thread_high_perf() {}

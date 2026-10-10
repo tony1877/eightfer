@@ -552,6 +552,8 @@ struct Result {
     std::string     finish = "stop";
     int             n_prompt = 0, n_gen = 0, n_reused = 0, slot = 0;
     int             side_swap = 0;
+    int             n_lcp = 0;      // the longest prefix of this prompt the server held (slot state, checkpoint or parked
+                                    // side sequence): lcp - reused tokens were cached but read again (a real cache miss)
     int             n_tool = 0;     // tokens generated inside <tool_call> blocks (at --tool-temp)  // side sequence: 1 = parked the conversation, 2 = resumed the parked one
     double          t_prompt = 0, t_gen = 0;
 };
@@ -974,6 +976,15 @@ loaded:
         }
     }
 
+    {
+        auto lcp = [&](const std::vector<int32_t> & t) {
+            const size_t n = std::min(t.size(), prompt.size());
+            size_t       i = 0;
+            while (i < n && t[i] == prompt[i]) i++;
+            return i;
+        };
+        R.n_lcp = (int) std::max({ lcp(SL.state_tokens), lcp(SL.ck_tokens), lcp(S.park.state_tokens), lcp(S.park.ck_tokens) });
+    }
     size_t start = 0;
     if (extends(SL.state_tokens) && (int) SL.state_tokens.size() == m.n_past()) {
         start = SL.state_tokens.size();
@@ -1480,7 +1491,7 @@ loaded:
                                           std::chrono::duration<double>(R.t_prompt + R.t_gen));
         json line = { { "t", (double) std::chrono::duration_cast<std::chrono::milliseconds>(now_sys.time_since_epoch()).count() / 1e3 },
                       { "model", S.entries[(size_t) S.active].alias }, { "kind", chat ? "chat" : "completion" },
-                      { "prompt_tokens", R.n_prompt }, { "reused_tokens", R.n_reused }, { "slot", R.slot }, { "prefill_s", R.t_prompt },
+                      { "prompt_tokens", R.n_prompt }, { "reused_tokens", R.n_reused }, { "cached_prefix", R.n_lcp }, { "slot", R.slot }, { "prefill_s", R.t_prompt },
                       { "gen_tokens", R.n_gen }, { "decode_s", R.t_gen }, { "finish", R.finish },
                       { "idle_before_s", S.last_end.time_since_epoch().count() == 0 ? -1.0
                                          : std::chrono::duration<double>(t0_sys - S.last_end).count() },
@@ -2340,6 +2351,7 @@ int serve(const std::vector<std::string> & args_in) {
             httplib::Headers hd;
             if (!sp->api_key.empty()) hd.emplace("Authorization", "Bearer " + sp->api_key);
             json results = json::array();
+            const sys::CpuSample cpu0 = sys::cpu_sample();  // other programs' CPU during the run (see below)
             auto call = [&](const std::string & name, const std::string & text, int max_tokens, std::string & err) -> json {
                 json body = { { "model", model }, { "messages", json::array({ { { "role", "user" }, { "content", text } } }) },
                               { "max_tokens", max_tokens }, { "temperature", 0 }, { "seed", 1 } };
@@ -2373,7 +2385,14 @@ int serve(const std::vector<std::string> & args_in) {
             results.push_back({ { "test", "prefill" }, { "kind", "prefill" }, { "tok_s", tm.value("prompt_per_second", 0.0) },
                                 { "tokens", tm.value("prompt_n", 0) } });
             j->done_n++;
-            const json run = { { "t", now_s() }, { "model", model }, { "results", results } };
+            // other programs compete for the memory bandwidth the residual crosses on every verify (measured: two
+            // threads copying memory took verify from 265 to 581 ms per cycle), so a busy PC gives low decode numbers;
+            // their CPU share during the run is a rough sign of it
+            const sys::CpuSample cpu1 = sys::cpu_sample();
+            const double other = cpu1.total > cpu0.total
+                ? 100.0 * (double) ((cpu1.busy - cpu0.busy) - std::min(cpu1.busy - cpu0.busy, cpu1.self - cpu0.self)) / (double) (cpu1.total - cpu0.total)
+                : 0.0;
+            const json run = { { "t", now_s() }, { "model", model }, { "results", results }, { "other_cpu_pct", other } };
             json runs = json::array();
             try {
                 const std::string txt = read_file(file);

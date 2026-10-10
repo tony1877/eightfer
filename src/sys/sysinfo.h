@@ -64,6 +64,13 @@ bool wait_pid(int pid, int ms);
 // goes to the same log). Returns false (err says why) if it could not start. Windows only.
 bool spawn_detached(const std::vector<std::string> & args, std::string & err);
 
+// CPU time counters (100 ns units, Windows): all cores' total and busy time, and this process's busy time. Two samples
+// give the share of the machine other programs used in between. Zero elsewhere.
+struct CpuSample {
+    uint64_t total = 0, busy = 0, self = 0;
+};
+CpuSample cpu_sample();
+
 // This process's id.
 int self_pid();
 

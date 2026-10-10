@@ -265,7 +265,10 @@ function annotate(R) {
     prevEnd = Math.max(prevEnd, r.t);
     r.isSide = r.side === "parked" || r.side == null && main != null && main.prompt_tokens > 4000 && r.prompt_tokens < main.prompt_tokens * 0.4 && r.reused_tokens < 256;
     const fresh = r.prompt_tokens - r.reused_tokens;
-    r.miss = !r.isSide && main != null && main.prompt_tokens > 2000 && r.prompt_tokens >= main.prompt_tokens * 0.8 && fresh > Math.max(2000, r.prompt_tokens * 0.5);
+    // a miss: the server held at least 2K tokens of this prompt but read them again (cached_prefix, logged since
+    // 2026-10-10); older lines fall back to guessing from the prompt sizes
+    r.miss = r.cached_prefix != null ? r.cached_prefix - r.reused_tokens >= 2048
+      : !r.isSide && main != null && main.prompt_tokens > 2000 && r.prompt_tokens >= main.prompt_tokens * 0.8 && fresh > Math.max(2000, r.prompt_tokens * 0.5);
     r.loop = (r.reasoning_repeat || 0) > .3 || (r.content_repeat || 0) > .3;
     r.warmup = r.gen_tokens <= 2 && r.prompt_tokens < 300;
     if (!r.isSide && !r.warmup) main = r;
@@ -395,6 +398,11 @@ async function pollBench() {
   const prev = [...runs].reverse().slice(1).find(r => r.model === last.model);
   const ago = Date.now() / 1e3 - last.t;
   $("benchWhen").textContent = `${last.model.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")}, ${dur(ago)} ago${prev ? ", vs " + clock(prev.t).slice(0, 5) + " " + new Date(prev.t * 1000).toLocaleDateString() : ""}`;
+  // other programs on the PC compete for the RAM bandwidth every verify uses: say so when they were busy
+  const busy = last.other_cpu_pct != null && last.other_cpu_pct >= 12;  // normal background here: about 7%; two memory-copy threads: 12.5%
+  if (!benchRunning && !(job && job.status === "failed")) $("benchMsg").textContent = last.other_cpu_pct == null ? $("benchMsg").textContent
+    : busy ? `Other programs used ${fmt(last.other_cpu_pct, 0)}% of the CPU during this run: they compete for the RAM bandwidth every verify uses, so decode numbers may be low. Run again on a quiet PC.`
+    : `Other programs used ${fmt(last.other_cpu_pct, 1)}% of the CPU during the run (a rough sign of competing RAM traffic; above 12% is flagged).`;
   const h = last.results.map(r => {
     const p = prev && prev.results.find(x => x.test === r.test), d = p && p.tok_s ? 100 * (r.tok_s / p.tok_s - 1) : null;
     const noise = r.kind === "prefill" ? 3 : 10, cls = d == null || Math.abs(d) < noise ? "" : d > 0 ? " up" : " down";
