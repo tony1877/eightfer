@@ -55,6 +55,18 @@ canvas { display: block; width: 100%; }
 .prog { height: 6px; border-radius: 3px; background: var(--raise); overflow: hidden; }
 .prog i { display: block; height: 100%; background: var(--read); transition: width .3s linear; }
 .hw { display: grid; }
+.bench .bgrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px 16px; }
+@media (max-width: 760px) { .bench .bgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.bench .bt { display: grid; gap: 2px; }
+.bench .bt .n { color: var(--ink2); font-size: 12px; }
+.bench .bt .v { font: 500 20px var(--f-ui); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.bench .bt .v small { font: 400 12px var(--f-mono); color: var(--ink2); margin-left: 3px; }
+.bench .bt .d { font: 11.5px var(--f-mono); color: var(--muted); }
+.bench .bt .d.up { color: var(--good); } .bench .bt .d.down { color: var(--bad); }
+.bench .brow { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.bench button { font: 12px var(--f-mono); color: #08090a; background: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.bench button:disabled { color: var(--muted); background: var(--raise); border-color: var(--line2); cursor: default; }
+.bench .note { color: var(--muted); font-size: 12px; }
 nav { display: flex; gap: 4px; }
 nav a { font: 12px var(--f-mono); color: var(--ink2); text-decoration: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
 nav a.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
@@ -140,6 +152,14 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
 
   <section class="panel hw">
     <div class="mcell" id="reads"></div>
+  </section>
+
+  <section class="panel bench">
+    <div class="mcell">
+      <div class="mhead"><b>Speed check</b><span class="mono" id="benchWhen"></span></div>
+      <div class="bgrid" id="bench"></div>
+      <div class="brow"><button id="benchGo">Run speed check</button><span class="mono note" id="benchMsg">Four answers (code, reasoning, prose, explain; greedy, 512 tokens) and one 6K-token prompt, about a minute. Compared with the last run on the same model; decode differences under 10% are normal run-to-run noise.</span></div>
+    </div>
   </section>
 
   <section class="panel reqs">
@@ -360,6 +380,40 @@ function renderHw() {
     <div class="note">Counted from the weights each pass of the model reads; the context cache and activations add more.</div>`;
   if ($("reads").dataset.h !== r) { $("reads").innerHTML = r; $("reads").dataset.h = r; }
 }
+// ---- speed check: the last run against the previous one on the same model. Measured run to run on the same build:
+// decode up to about 10% apart after a fresh start (code 47.7 vs 52.7 tok/s), prefill within 1.5%. Smaller changes are grey.
+let benchRunning = false;
+async function pollBench() {
+  let b;
+  try { b = await (await fetch("/bench/state", { cache: "no-store" })).json(); } catch (e) { return; }
+  const runs = b.runs || [], last = runs[runs.length - 1], job = b.job;
+  benchRunning = job && job.status === "running";
+  $("benchGo").disabled = benchRunning;
+  $("benchGo").textContent = benchRunning ? `Running ${job.done_n} of ${job.total_n}...` : "Run speed check";
+  if (job && job.status === "failed") $("benchMsg").textContent = "Failed: " + job.error;
+  if (!last) { const h = `<div class="note" style="grid-column:1/-1">No runs yet.</div>`; if ($("bench").dataset.h !== h) { $("bench").innerHTML = h; $("bench").dataset.h = h; } return; }
+  const prev = [...runs].reverse().slice(1).find(r => r.model === last.model);
+  const ago = Date.now() / 1e3 - last.t;
+  $("benchWhen").textContent = `${last.model.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")}, ${dur(ago)} ago${prev ? ", vs " + clock(prev.t).slice(0, 5) + " " + new Date(prev.t * 1000).toLocaleDateString() : ""}`;
+  const h = last.results.map(r => {
+    const p = prev && prev.results.find(x => x.test === r.test), d = p && p.tok_s ? 100 * (r.tok_s / p.tok_s - 1) : null;
+    const noise = r.kind === "prefill" ? 3 : 10, cls = d == null || Math.abs(d) < noise ? "" : d > 0 ? " up" : " down";
+    return `<div class="bt"><span class="n">${r.test}${r.kind === "prefill" ? " (reading)" : ""}</span><span class="v">${fmt(r.tok_s, r.kind === "prefill" ? 0 : 1)}<small>tok/s</small></span>
+      <span class="d${cls}">${d == null ? "first run" : (d >= 0 ? "+" : "") + fmt(d, 1) + "% vs " + fmt(p.tok_s, r.kind === "prefill" ? 0 : 1)}</span></div>`;
+  }).join("");
+  if ($("bench").dataset.h !== h) { $("bench").innerHTML = h; $("bench").dataset.h = h; }
+}
+$("benchGo").onclick = async () => {
+  $("benchGo").disabled = true; $("benchMsg").textContent = "Starting...";
+  let key = ""; try { key = localStorage.getItem("shoehorn-api-key") || ""; } catch (e) {}
+  try {
+    const r = await fetch("/bench/run", { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, key ? { Authorization: "Bearer " + key } : {}), body: "{}" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    $("benchMsg").textContent = "Running: the model answers four prompts, then reads a long one.";
+  } catch (e) { $("benchMsg").textContent = e.message; $("benchGo").disabled = false; }
+  pollBench();
+};
 function renderList() {
   annotate(ALL);
   const s = session();
@@ -427,6 +481,7 @@ function frame() {
   requestAnimationFrame(frame);
 }
 poll(); setInterval(poll, 250);
+pollBench(); setInterval(pollBench, 2000);
 requestAnimationFrame(frame);
 addEventListener("load", () => renderMem());
 </script>

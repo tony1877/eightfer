@@ -94,9 +94,17 @@ $cuda = if ($NoCuda) { 'OFF' } else { 'ON' }
 $on  = if ($Portable) { 'OFF' } else { 'ON' }
 $isa = @("-DGGML_AVX512_VNNI=$on", "-DGGML_AVX512_BF16=$on", "-DGGML_AVX512_VBMI=$on")
 if (-not $Portable) { $isa += '-DGGML_AVX512=ON' }  # -Portable leaves AVX-512F to ggml's own detection
-cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DSHOEHORN_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch" @isa
-if ($LASTEXITCODE -ne 0) { Fail 'cmake configure failed (see above)' }
-cmake --build $build --config Release
-if ($LASTEXITCODE -ne 0) { Fail 'build failed (see above)' }
+# scripts\watchdog.ps1 leaves the server alone while this file exists (the build replaces shoehorn.exe)
+$pause = Join-Path $HOME '.shoehorn\watchdog.pause'
+New-Item -ItemType Directory -Force (Split-Path $pause) | Out-Null
+Set-Content -LiteralPath $pause 'build.ps1'
+try {
+    cmake -S $root -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DSHOEHORN_CUDA=$cuda" "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch" @isa
+    if ($LASTEXITCODE -ne 0) { Fail 'cmake configure failed (see above)' }
+    cmake --build $build --config Release
+    if ($LASTEXITCODE -ne 0) { Fail 'build failed (see above)' }
+} finally {
+    Remove-Item -LiteralPath $pause -ErrorAction SilentlyContinue
+}
 
 Write-Host "Built: $(Join-Path $build 'bin\shoehorn.exe')" -ForegroundColor Green

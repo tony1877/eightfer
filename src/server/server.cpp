@@ -300,6 +300,7 @@ struct Server {
     std::vector<std::string>         cmdline, args;                // as started / with the settings applied
     std::string                      settings_file;
     json                             settings = json::object();
+    int                              port = 8090;  // for the speed check, which calls this server's own API
     std::string                      live_model;
     std::chrono::system_clock::time_point last_end{};  // end of the previous request (idle time = tools / user)
     // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
@@ -1620,7 +1621,7 @@ int serve(const std::vector<std::string> & args_in) {
     std::string model_path, res, host = "127.0.0.1", key_file, tmpl_file, kv = "f16", kv_v;
     int         port = 8090, n_ctx = 16384, gpu_layers = 999, threads = 0;
     int gpu_kv = -1, idle_unload = 0;
-    bool kv_lock = false, side = true;
+    bool kv_lock = false, side = true, preload = false;
     int  ubatch = 0;  // prompt batch size (0 = the model's default)
     int  fast_prefill = 0;  // > 0: read all but the last N prompt tokens without the residual
     int n_slots = 1, draft_batch = 0;
@@ -1629,7 +1630,7 @@ int serve(const std::vector<std::string> & args_in) {
     std::vector<Entry> extra;
     double      cache_gb = -1;
     auto        S = std::make_unique<Server>();
-    S->cmdline       = cmdline;
+    S->cmdline       = cmdline;  // (S->port is set once the flags are read)
     S->args          = args;
     S->settings_file = settings_file;
     S->settings      = settings;
@@ -1696,6 +1697,7 @@ int serve(const std::vector<std::string> & args_in) {
             S->spec_auto        = v == "auto";
             S->spec_k           = S->spec_auto ? runtime::SpecDecoder::kMaxK : std::max(1, std::min(runtime::SpecDecoder::kMaxK, std::atoi(v.c_str())));
         } else if (a == "--settings") val();  // read above
+        else if (a == "--preload") preload = true;
         else if (model_path.empty() && a[0] != '-') model_path = a;
         else {
             fprintf(stderr, "unknown option: %s\n", a.c_str());
@@ -1713,7 +1715,8 @@ int serve(const std::vector<std::string> & args_in) {
                         "         [--sys-cache-gb G (RAM cap of those, default 3)]\n"
                         "         [--draft-batch N (slots: requests drafted together, default min(slots, 2))]\n"
                         "         [--gpu-layers N] [--expert-cache-gb G] [--threads N] [--mtp N (0 = off)]\n"
-                        "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
+                        "         [--idle-unload SEC (load on demand, free after SEC idle)] [--preload (load at start anyway)]\n"
+                        "         [--unload-router URL]\n"
                         "         [--hw-monitor URL (LibreHardwareMonitor web server, for CPU / RAM temperatures;\n"
                         "          default http://127.0.0.1:8085, \"\" = off)]\n"
                         "         [--models-file PATH (models added from the Models page, default ~/.shoehorn/models.json)]\n"
@@ -1758,6 +1761,7 @@ int serve(const std::vector<std::string> & args_in) {
         e.tmpls = common_chat_templates_init(e.vocab_model, tmpl_file.empty() ? "" : read_file(tmpl_file));
     }
     S->fixed_entries = S->entries.size();
+    S->port = port;
     // the models added from the Models page earlier (a missing file only skips that model)
     if (S->models_file.empty()) {
         const char * home = std::getenv("USERPROFILE") ? std::getenv("USERPROFILE") : std::getenv("HOME");
@@ -1942,6 +1946,13 @@ int serve(const std::vector<std::string> & args_in) {
         }
     }).detach();
 
+    if (idle_unload > 0 && preload) {  // --preload (a restart from the Settings page): load now, not on the first request
+        std::thread([sp] {
+            Turn turn(*sp, true);
+            std::string e;
+            if (!sp->model && !sp->load(0, e)) fprintf(stderr, "preload: %s\n", e.c_str());
+        }).detach();
+    }
     std::thread idle;
     if (idle_unload > 0) {  // free the model after idle_unload seconds without requests
         idle = std::thread([sp, idle_unload] {
@@ -2232,7 +2243,7 @@ int serve(const std::vector<std::string> & args_in) {
             std::this_thread::sleep_for(std::chrono::milliseconds(400));
             std::vector<std::string> a = { sys::self_exe() };
             a.insert(a.end(), sp->cmdline.begin() + 1, sp->cmdline.end());  // [0] is the program name
-            a.insert(a.end(), { "--wait-pid", std::to_string(sys::self_pid()) });
+            a.insert(a.end(), { "--wait-pid", std::to_string(sys::self_pid()), "--preload" });
             std::string err;
             if (!sys::spawn_detached(a, err)) {
                 fprintf(stderr, "restart: %s\n", err.c_str());
@@ -2271,6 +2282,111 @@ int serve(const std::vector<std::string> & args_in) {
         resp.set_content(json{ { "success", true } }.dump(), "application/json");
         restart();
     });
+    auto start_job = [&](const std::string & kind, const std::string & title, const std::string & dir) {
+        auto j = std::make_shared<ModelJob>();
+        std::lock_guard<std::mutex> lk(S->jobs_mu);
+        j->id      = S->next_job++;
+        j->kind    = kind;
+        j->title   = title;
+        j->dir     = dir;
+        j->started = now_s();
+        std::error_code ec;  // job output goes next to the model list file, not into the download folder
+        const std::filesystem::path logs = S->models_file.empty() ? std::filesystem::temp_directory_path(ec)
+                                                                  : std::filesystem::path(S->models_file).parent_path() / "logs";
+        std::filesystem::create_directories(logs, ec);
+        std::filesystem::create_directories(dir, ec);
+        j->log = (logs / (kind + "-" + std::to_string(j->id) + "-" + std::to_string((long long) j->started) + ".log")).string();
+        S->jobs.push_back(j);
+        return j;
+    };
+    // ---- speed check: the bench prompts (bench/prompts/make-prompts.ps1) through this server's own API, greedy so runs
+    // compare, then one long uncached prompt for prefill; results kept in bench.json next to the model list
+    auto bench_file = [&]() {
+        return S->models_file.empty() ? std::string() : (std::filesystem::path(S->models_file).parent_path() / "bench.json").string();
+    };
+    http.Get("/bench/state", [&](const httplib::Request &, httplib::Response & resp) {
+        json out = { { "runs", json::array() }, { "job", nullptr } };
+        try {
+            const std::string t = read_file(bench_file());
+            if (!t.empty()) out["runs"] = json::parse(t);
+        } catch (...) {}
+        std::lock_guard<std::mutex> lk(S->jobs_mu);
+        for (auto it = S->jobs.rbegin(); it != S->jobs.rend(); ++it)
+            if ((*it)->kind == "bench") { out["job"] = job_json(**it); break; }
+        resp.set_header("Cache-Control", "no-store");
+        resp.set_content(out.dump(), "application/json");
+    });
+    http.Post("/bench/run", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        {
+            std::lock_guard<std::mutex> lk(S->jobs_mu);
+            for (auto & j : S->jobs) {
+                std::lock_guard<std::mutex> jl(j->mu);
+                if (j->kind == "bench" && j->status == "running") return fail(resp, "a speed check is running already");
+            }
+        }
+        const std::string model = S->model && S->active >= 0 ? S->entries[(size_t) S->active].alias : S->entries[0].alias;
+        auto j = start_job("bench", "Speed check: " + model, std::filesystem::temp_directory_path().string());
+        j->total_n = 5;
+        std::thread([j, sp = S.get(), model, file = bench_file()] {
+            static const char * const kTests[][2] = {
+                { "code", "Write a Python function that parses an ISO 8601 duration string like \"P3DT4H12M\" into a datetime.timedelta. Handle years and months by raising ValueError, and include a few doctest examples." },
+                { "reasoning", "A train leaves city A at 9:00 traveling at 80 km/h toward city B, 300 km away. Another train leaves city B at 9:30 traveling at 100 km/h toward city A. At what time do they meet, and how far from city A? Explain step by step." },
+                { "prose", "Write a short, vivid paragraph describing a thunderstorm rolling over a mountain village at dusk, from the point of view of an old shepherd." },
+                { "explain", "Explain how a hash map handles collisions, comparing separate chaining and open addressing, and when you would choose each one." },
+            };
+            httplib::Client c("127.0.0.1", sp->port);
+            c.set_read_timeout(900, 0);
+            httplib::Headers hd;
+            if (!sp->api_key.empty()) hd.emplace("Authorization", "Bearer " + sp->api_key);
+            json results = json::array();
+            auto call = [&](const std::string & name, const std::string & text, int max_tokens, std::string & err) -> json {
+                json body = { { "model", model }, { "messages", json::array({ { { "role", "user" }, { "content", text } } }) },
+                              { "max_tokens", max_tokens }, { "temperature", 0 }, { "seed", 1 } };
+                auto r = c.Post("/v1/chat/completions", hd, body.dump(), "application/json");
+                if (!r || r->status != 200) {
+                    err = name + ": " + (r ? "HTTP " + std::to_string(r->status) + " " + r->body.substr(0, 200) : httplib::to_string(r.error()));
+                    return json();
+                }
+                return json::parse(r->body).value("timings", json::object());
+            };
+            std::string err;
+            // warm-up, not recorded: right after a load the first answer pays one-time costs (measured: code 46.0
+            // tok/s cold, 52.8 warm, the same greedy text). Decode still varies up to about 10% between fresh starts.
+            call("warm-up", "Count from one to twenty in words.", 64, err);
+            if (!err.empty()) return j->finish("failed", err);
+            for (const auto & t : kTests) {
+                if (j->cancel) return j->finish("cancelled", "");
+                const json tm = call(t[0], t[1], 512, err);
+                if (!err.empty()) return j->finish("failed", err);
+                results.push_back({ { "test", t[0] }, { "kind", "decode" }, { "tok_s", tm.value("predicted_per_second", 0.0) },
+                                    { "tokens", tm.value("predicted_n", 0) } });
+                j->done_n++;
+            }
+            // prefill: about 6K tokens nobody has sent before (a fresh number up front defeats every prompt cache)
+            std::string longp = "Run " + std::to_string((long long) (now_s() * 1000)) + ". Summarize the log below in one line.\n";
+            for (int i = 0; i < 300; i++)
+                longp += "entry " + std::to_string(i) + ": worker " + std::to_string(i * 7 % 13) + " finished batch " + std::to_string(i * 31 % 97) +
+                         " in " + std::to_string(100 + i * 17 % 400) + " ms with status ok\n";
+            const json tm = call("prefill", longp, 1, err);
+            if (!err.empty()) return j->finish("failed", err);
+            results.push_back({ { "test", "prefill" }, { "kind", "prefill" }, { "tok_s", tm.value("prompt_per_second", 0.0) },
+                                { "tokens", tm.value("prompt_n", 0) } });
+            j->done_n++;
+            const json run = { { "t", now_s() }, { "model", model }, { "results", results } };
+            json runs = json::array();
+            try {
+                const std::string txt = read_file(file);
+                if (!txt.empty()) runs = json::parse(txt);
+            } catch (...) {}
+            runs.push_back(run);
+            while (runs.size() > 30) runs.erase(runs.begin());
+            std::ofstream f(file, std::ios::binary | std::ios::trunc);
+            f << runs.dump(1);
+            j->finish("done", "", run);
+        }).detach();
+        resp.set_content(json{ { "success", true }, { "id", j->id } }.dump(), "application/json");
+    });
     // the system's folder / file picker, shown on this machine's desktop (so only for pages opened on this machine)
     http.Post("/models/pick", [&](const httplib::Request & req, httplib::Response & resp) {
         if (!local(req)) return fail(resp, "the picker opens on the server's screen: use it there, or type the path", 403);
@@ -2308,23 +2424,6 @@ int serve(const std::vector<std::string> & args_in) {
         save_models(*S);
         resp.set_content(json{ { "success", true } }.dump(), "application/json");
     });
-    auto start_job = [&](const std::string & kind, const std::string & title, const std::string & dir) {
-        auto j = std::make_shared<ModelJob>();
-        std::lock_guard<std::mutex> lk(S->jobs_mu);
-        j->id      = S->next_job++;
-        j->kind    = kind;
-        j->title   = title;
-        j->dir     = dir;
-        j->started = now_s();
-        std::error_code ec;  // job output goes next to the model list file, not into the download folder
-        const std::filesystem::path logs = S->models_file.empty() ? std::filesystem::temp_directory_path(ec)
-                                                                  : std::filesystem::path(S->models_file).parent_path() / "logs";
-        std::filesystem::create_directories(logs, ec);
-        std::filesystem::create_directories(dir, ec);
-        j->log = (logs / (kind + "-" + std::to_string(j->id) + "-" + std::to_string((long long) j->started) + ".log")).string();
-        S->jobs.push_back(j);
-        return j;
-    };
     // Hugging Face download: each file with curl.exe (resumable), into DIR\<owner>__<repo>\; HF_TOKEN in the server's
     // environment opens gated repos
     http.Post("/models/pull", [&](const httplib::Request & req, httplib::Response & resp) {

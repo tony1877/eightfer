@@ -91,6 +91,11 @@ cd C:\src\shoehorn
    `/settings` edits the serve flags that can change without cutting off clients (context, KV types, idle unload,
    prompt cache, speed and sampling defaults); they are saved to `~/.shoehorn/settings.json`, applied over the start
    command, and take effect by restarting the server from the page (a new process with the same command line).
+   The dashboard's **Speed check** runs the bench prompts (greedy) and one 6K-token prompt and compares tok/s with the
+   last run on the same model; decode varies up to about 10% between fresh starts, prefill about 1.5%.
+
+`scripts/watchdog.ps1 -Start <your start script> -Ports 8090,3080` restarts whatever is down for 30 s (it waits while
+`scripts/build.ps1` runs); register it as a logon task to keep the server up across crashes and driver updates.
 
 Flash-Next needs no packing: serve its GGUF directly (experts stay memory-mapped, a GPU expert cache takes free VRAM).
 Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` picks one, the other is unloaded.
