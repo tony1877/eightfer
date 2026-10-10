@@ -27,6 +27,13 @@ header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding
 .word { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
 .word svg { width: 18px; height: 18px; }
 header .sp { flex: 1; }
+.status { display: inline-flex; align-items: center; gap: 7px; font: 12px var(--f-mono); color: var(--ink2); padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.status.writing { color: var(--ink); } .status.writing i { background: var(--accent); box-shadow: 0 0 0 3px rgba(217,165,74,.14); animation: beat 1.2s ease-in-out infinite; }
+.status.reading i { background: #6cb6e0; animation: beat .7s ease-in-out infinite; }
+.status.off i { background: var(--bad); }
+@keyframes beat { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 nav { display: flex; gap: 4px; }
 nav a { font: 12px var(--f-mono); color: var(--ink2); text-decoration: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
 nav a.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
@@ -44,7 +51,8 @@ nav a:hover { color: var(--ink); }
 .temp .v small { font: 400 12px var(--f-mono); color: var(--ink2); margin-left: 2px; }
 .temp.warm .v { color: var(--warn); } .temp.hot .v { color: var(--bad); }
 .note { color: var(--muted); font-size: 12px; }
-footer { color: var(--muted); font: 11.5px var(--f-mono); }
+footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px 24px; flex-wrap: wrap; }
+footer .about { font: 12px var(--f-ui); max-width: 640px; }
 </style>
 </head>
 <body>
@@ -56,11 +64,16 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); }
     </div>
     <span class="sp"></span>
     <nav><a href="/dashboard">Dashboard</a><a href="/sensors" class="on">Sensors</a></nav>
+    <span class="status" id="status"><i></i><span id="statusText">connecting</span></span>
   </header>
   <section class="panel" id="temps"></section>
   <section class="panel" id="volts"></section>
   <section class="panel" id="power"></section>
-  <footer id="foot">connecting</footer>
+  <footer>
+    <span class="about">NVIDIA's driver reports only the GPU core voltage; the memory modules' own voltages (their PMIC) are
+      not read. CPU VDDIO is the memory supply on the CPU side.</span>
+    <span id="foot">connecting</span>
+  </footer>
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -102,10 +115,8 @@ function render(hw) {
   const VB = rails("lpc", [[/^Chipset 1 VDD$/, "Chipset 1"], [/^Chipset 2 VDD$/, "Chipset 2"], [/^\+12V$/, "+12 V rail"], [/^\+5V$/, "+5 V rail"],
     [/^\+3\.3V$/, "+3.3 V rail"]]);
   const vt = x => tile(x.n, fmt(x.v, x.v < 2 ? 3 : 2), "V");
-  set("volts", `<div class="mhead"><b>Voltages</b><span class="mono">VRAM and DIMM voltages not reported</span></div>
-    ${VA.length + VB.length ? grid(VA, vt) + grid(VB, vt) : `<div class="note">No voltage sensors: start shoehorn-hwmon (tools/hwmon).</div>`}
-    <div class="note">NVIDIA's driver reports only the GPU core voltage; the memory modules' own voltages (their PMIC) are
-      not read. CPU VDDIO is the memory supply on the CPU side.</div>`);
+  set("volts", `<div class="mhead"><b>Voltages</b></div>
+    ${VA.length + VB.length ? grid(VA, vt) + grid(VB, vt) : `<div class="note">No voltage sensors: start shoehorn-hwmon (tools/hwmon).</div>`}`);
   const P = [];
   if (g.power_w != null && g.power_w >= 0) P.push(tile("GPU power", fmt(g.power_w, 0), "W"));
   if (g.mem_util != null && g.mem_util >= 0) P.push(tile("VRAM busy", fmt(g.mem_util, 0), "%"));
@@ -115,8 +126,11 @@ async function poll() {
   try {
     const d = await (await fetch("/stats?since=1e12", { cache: "no-store" })).json();
     render(d.hw || {});
+    const live = d.live || {}, writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+    $("status").className = "status" + (writing ? " writing" : reading ? " reading" : "");
+    $("statusText").textContent = writing ? "writing" : reading ? "reading prompt" : d.loaded ? "idle" : "idle, model unloaded";
     $("foot").textContent = "live, updated every second (the sensors themselves refresh every 2 s)";
-  } catch (e) { $("foot").textContent = "offline"; }
+  } catch (e) { $("foot").textContent = "offline"; $("status").className = "status off"; $("statusText").textContent = "offline"; }
 }
 poll(); setInterval(poll, 1000);
 </script>
