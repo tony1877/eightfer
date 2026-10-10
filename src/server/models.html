@@ -160,6 +160,8 @@ pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg);
 </div>
 <script>
 const $ = id => document.getElementById(id);
+// inside the dsh popup, which has its own tabs: no second row of page links
+if (window.top !== window) document.querySelector("nav").style.display = "none";
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const GB = b => fmt(b / 1e9, b >= 1e10 ? 0 : 1) + " GB";

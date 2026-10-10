@@ -153,6 +153,8 @@ footer { color: var(--muted); font: 11.5px var(--f-mono); display: flex; justify
 </div>
 <script>
 const $ = id => document.getElementById(id);
+// inside the dsh popup, which has its own tabs: no second row of page links
+if (window.top !== window) document.querySelector("nav").style.display = "none";
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const k = v => v == null ? "-" : v >= 1e6 ? fmt(v / 1e6, 1) + "M" : v >= 1e4 ? fmt(v / 1e3) + "K" : v >= 1e3 ? fmt(v / 1e3, 1) + "K" : fmt(v);
 const GiB = 1073741824, gb = b => b == null ? "-" : fmt(b / GiB, 1);

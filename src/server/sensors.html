@@ -80,6 +80,8 @@ footer .about { font: 12px var(--f-ui); max-width: 640px; }
 </div>
 <script>
 const $ = id => document.getElementById(id);
+// inside the dsh popup, which has its own tabs: no second row of page links
+if (window.top !== window) document.querySelector("nav").style.display = "none";
 const fmt = (v, d = 0) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
 const set = (id, h) => { if ($(id).dataset.h !== h) { $(id).innerHTML = h; $(id).dataset.h = h; } };
 // tiles in even rows: up to 5 columns, a count that divides the tile count (6 -> 3, 4 -> 4, 5 -> 5), else balanced rows

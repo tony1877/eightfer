@@ -3,12 +3,33 @@
 // server: root > computer > hardware > sensors, each sensor with SensorId, Type, Text and Value. Sub-hardware sensors
 // are listed under their hardware. Only temperatures and voltages are served; nothing listens beyond this machine.
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using LibreHardwareMonitor.Hardware;
 
-int port = args.Length > 0 && int.TryParse(args[0], out var p) ? p : 8085;
+// A driver update or reset can fault inside the sensor libraries (NVML), which .NET cannot catch. So this process is
+// a supervisor: it runs itself with --worker as a child and starts it again when it exits. No crash dialog for either
+// (the error mode is inherited).
+SetErrorMode(0x0001 | 0x0002);  // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX
+if (!args.Contains("--worker"))
+{
+    string self = Environment.ProcessPath!;
+    while (true)
+    {
+        var psi = new ProcessStartInfo(self) { UseShellExecute = false };
+        psi.ArgumentList.Add("--worker");
+        foreach (string a in args) psi.ArgumentList.Add(a);
+        using var child = Process.Start(psi);
+        child?.WaitForExit();
+        Thread.Sleep(3000);
+    }
+}
+
+string? portArg = args.FirstOrDefault(a => a != "--worker");
+int port = portArg != null && int.TryParse(portArg, out var p) ? p : 8085;
 
 var computer = new Computer
 {
@@ -121,3 +142,6 @@ while (true)
     catch { }
     finally { ctx.Response.Close(); }
 }
+
+[DllImport("kernel32.dll")]
+static extern uint SetErrorMode(uint mode);

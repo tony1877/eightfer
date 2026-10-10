@@ -1,5 +1,6 @@
 #include "sys/sysinfo.h"
 
+#include <cstdio>
 #include <cstring>
 #include <thread>
 
@@ -229,48 +230,93 @@ std::vector<DriveTemp> drive_temps() {
     return out;
 }
 
+// NVML from the driver (System32\nvml.dll). A driver update or reset invalidates it under us (calls then fault inside
+// nvml.dll), so every call is guarded: after a fault the library is dropped and loaded again 30 s later, which picks
+// up the new driver's copy.
+namespace {
+using nvml_init_t  = int (*)();
+using nvml_dev_t   = int (*)(unsigned, void **);
+using nvml_temp_t  = int (*)(void *, int, unsigned *);
+using nvml_power_t = int (*)(void *, unsigned *);
+struct NvmlUtil {
+    unsigned gpu, memory;
+};
+using nvml_util_t = int (*)(void *, NvmlUtil *);
+struct Nvml {
+    HMODULE      lib   = nullptr;
+    void *       dev   = nullptr;
+    nvml_temp_t  temp  = nullptr;
+    nvml_power_t power = nullptr;
+    nvml_util_t  util  = nullptr;
+    ULONGLONG    retry = 0;  // GetTickCount64 time of the next load attempt
+};
+
+// 1 = opened, 0 = no NVIDIA driver, -1 = faulted (plain C: an SEH frame needs a function without destructors)
+int nvml_open(Nvml * n) {
+#ifdef _MSC_VER
+    __try {
+#endif
+        n->lib = LoadLibraryW(L"nvml.dll");
+        if (!n->lib) return 0;
+        auto init = reinterpret_cast<nvml_init_t>(GetProcAddress(n->lib, "nvmlInit_v2"));
+        auto get  = reinterpret_cast<nvml_dev_t>(GetProcAddress(n->lib, "nvmlDeviceGetHandleByIndex_v2"));
+        n->temp   = reinterpret_cast<nvml_temp_t>(GetProcAddress(n->lib, "nvmlDeviceGetTemperature"));
+        n->power  = reinterpret_cast<nvml_power_t>(GetProcAddress(n->lib, "nvmlDeviceGetPowerUsage"));
+        n->util   = reinterpret_cast<nvml_util_t>(GetProcAddress(n->lib, "nvmlDeviceGetUtilizationRates"));
+        if (!init || !get || init() != 0 || get(0, &n->dev) != 0) {
+            n->dev = nullptr;
+            return 0;
+        }
+        return 1;
+#ifdef _MSC_VER
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        n->dev = nullptr;
+        return -1;
+    }
+#endif
+}
+
+int nvml_read(Nvml * n, GpuSensors * s) {
+#ifdef _MSC_VER
+    __try {
+#endif
+        unsigned v = 0;
+        if (n->temp && n->temp(n->dev, 0 /* NVML_TEMPERATURE_GPU */, &v) == 0) s->temp_c = (int) v;
+        if (n->power && n->power(n->dev, &v) == 0) s->power_w = v / 1000.0;
+        NvmlUtil u{};
+        if (n->util && n->util(n->dev, &u) == 0) s->mem_util = (int) u.memory;
+        return 1;
+#ifdef _MSC_VER
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+#endif
+}
+} // namespace
+
 GpuSensors gpu_sensors() {
-    // NVML from the driver (System32\nvml.dll); the handles are resolved once
-    using init_t  = int (*)();
-    using dev_t   = int (*)(unsigned, void **);
-    using temp_t  = int (*)(void *, int, unsigned *);
-    using power_t = int (*)(void *, unsigned *);
-    struct Util { unsigned gpu, memory; };
-    using util_t  = int (*)(void *, Util *);
-    static void *  dev   = nullptr;
-    static temp_t  temp  = nullptr;
-    static power_t power = nullptr;
-    static util_t  util  = nullptr;
-    static bool    tried = false;
-    if (!tried) {
-        tried = true;
-        if (HMODULE lib = LoadLibraryW(L"nvml.dll")) {
-            auto init = reinterpret_cast<init_t>(GetProcAddress(lib, "nvmlInit_v2"));
-            auto get  = reinterpret_cast<dev_t>(GetProcAddress(lib, "nvmlDeviceGetHandleByIndex_v2"));
-            temp      = reinterpret_cast<temp_t>(GetProcAddress(lib, "nvmlDeviceGetTemperature"));
-            power     = reinterpret_cast<power_t>(GetProcAddress(lib, "nvmlDeviceGetPowerUsage"));
-            util      = reinterpret_cast<util_t>(GetProcAddress(lib, "nvmlDeviceGetUtilizationRates"));
-            if (!init || !get || init() != 0 || get(0, &dev) != 0) {
-                dev = nullptr;
-            }
+    static Nvml n;
+    static bool loaded = false;
+    GpuSensors  s;
+    if (!loaded) {
+        if (GetTickCount64() < n.retry) return s;
+        loaded = true;
+        if (nvml_open(&n) < 0) {
+            fprintf(stderr, "nvml: faulted while loading (driver changing?); retrying in 30 s\n");
+            loaded = false;
+            n      = Nvml{ nullptr, nullptr, nullptr, nullptr, nullptr, GetTickCount64() + 30000 };
+            return s;
         }
     }
-    GpuSensors s;
-    if (!dev) {
-        return s;
+    if (!n.dev) return s;
+    if (nvml_read(&n, &s) < 0) {  // the driver went away: forget this copy of the library and load it again later
+        fprintf(stderr, "nvml: faulted (driver update or reset?); reloading in 30 s\n");
+        if (n.lib) FreeLibrary(n.lib);
+        loaded = false;
+        n      = Nvml{ nullptr, nullptr, nullptr, nullptr, nullptr, GetTickCount64() + 30000 };
+        return GpuSensors{};
     }
     s.ok = true;
-    unsigned v = 0;
-    if (temp && temp(dev, 0 /* NVML_TEMPERATURE_GPU */, &v) == 0) {
-        s.temp_c = (int) v;
-    }
-    if (power && power(dev, &v) == 0) {
-        s.power_w = v / 1000.0;
-    }
-    Util u{};
-    if (util && util(dev, &u) == 0) {
-        s.mem_util = (int) u.memory;
-    }
     return s;
 }
 
