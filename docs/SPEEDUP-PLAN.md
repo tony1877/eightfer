@@ -196,3 +196,27 @@ once a multi-sequence base pass costs about as much as one sequence with the sam
 - **Regression:**
   - `tests/server_smoke.ps1` and `tests/concurrent_smoke.ps1`;
   - the `tests/agent_reliability` hard set (34/34).
+
+## 6. Coupled (Gumbel-max) sampling to reuse drafts after a rejection (prose)
+
+**Idea.** Sample every token as argmax(log p + Gumbel noise keyed by (seed, position, token)), in the drafts and the
+verify alike. This is exact, and a position's noise is the same whatever its prefix. After a rejection, the discarded
+drafts, and the verify's own picks under the old prefix, might come back at the same positions and be re-proposed
+almost for free.
+
+**Result 2026-10-10: gate failed, dropped.** Measured through the server (`coupled_sampling` per request), on 4 prose
+prompts x 2 seeds, 500 tokens, thinking off, temp 1.0 / top_k 20 / top_p 0.95:
+
+| | Standard | Coupled |
+|---|---|---|
+| tok/s | 21.2 | 19.2 |
+| tokens/cycle | 14.3 | 13.0 |
+| verify acceptance | 0.428 | 0.393 |
+| MTP kept | 0.410 | 0.387 |
+| tokens re-aligned per rejection (gate >= 3) | 0.26 | 0.46 (old drafts), 0.39 (verify picks) |
+| first position after the correction matches | 17% | 13% |
+
+After a different word, the next token's distribution moves enough that even the same noise picks a different token
+87% of the time, so prose does not fall back onto the old path. Gumbel coupling also agrees slightly less than
+speculative sampling's 1 - TV (unit test: 0.950 vs 0.960), which costs acceptance at every position. The pick itself
+is exact (chi-squared 8.35 on 5 dof).
