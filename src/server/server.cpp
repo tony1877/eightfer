@@ -69,6 +69,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -183,6 +184,22 @@ struct Entry {
     common_chat_templates_ptr tmpls;
 };
 
+// A download or a pack started from the Models page; runs on its own thread, its output goes to `log`.
+struct ModelJob {
+    int               id = 0;
+    std::string       kind, title, log;            // kind: "pull" or "pack"
+    std::string       status = "running", error;   // running, done, failed, cancelled
+    std::string       dir;                         // pull: where the files go
+    uint64_t          total = 0;                   // pull: bytes expected
+    std::atomic<int>  done_n{ 0 }, total_n{ 0 };   // pack: tensors written / all (from its [n/m] lines)
+    double            started = 0, ended = 0;
+    std::atomic<bool> cancel{ false };
+    json              result = json::object();     // the entry it added: {alias, path, res}
+    mutable std::mutex mu;                         // guards status, error, ended and result (set by the job's thread)
+
+    void finish(const std::string & st, const std::string & e, const json & r = json::object());
+};
+
 struct Server {
     std::unique_ptr<model::CausalLM> model;
     model::Qwen35 *                  q35 = nullptr;  // speculative decoding when it has a residual
@@ -271,6 +288,14 @@ struct Server {
     std::mutex                       hw_mu;
     json                             hw = json::object();
     std::string                      hw_url = "http://127.0.0.1:8085";  // LibreHardwareMonitor's web server ("" = off)
+    // model management (the Models page): the list file, the jobs, and what an entry added later needs
+    std::string                      models_file;                 // --models-file (default ~/.shoehorn/models.json)
+    json                             models_cfg = json::object();  // {"dirs": {"download", "pack"}, "models": [...]}
+    std::string                      tmpl_file;                   // --chat-template-file, for entries added later
+    std::mutex                       jobs_mu;                     // guards jobs, models_cfg and the list file
+    std::vector<std::shared_ptr<ModelJob>> jobs;
+    int                              next_job = 1;
+    size_t                           fixed_entries = 0;            // entries from the command line (not removable)
     std::string                      live_model;
     std::chrono::system_clock::time_point last_end{};  // end of the previous request (idle time = tools / user)
     // sampling defaults for requests that do not set them (llama-server's --temperature/--top-k/... ; Qwen's thinking set)
@@ -411,6 +436,103 @@ void unload_model(Server & S) {
     S.active = -1;
     S.slots.clear();
     fprintf(stderr, "model unloaded\n");
+}
+
+// the tokenizer and chat templates of an entry (llama.cpp, vocab only)
+bool load_vocab(Entry & e, const std::string & tmpl_file, std::string & err) {
+    llama_model_params mp = llama_model_default_params();
+    mp.vocab_only         = true;
+    e.vocab_model         = llama_model_load_from_file(e.path.c_str(), mp);
+    if (!e.vocab_model) {
+        err = "cannot load the vocabulary from " + e.path;
+        return false;
+    }
+    e.vocab = llama_model_get_vocab(e.vocab_model);
+    e.tmpls = common_chat_templates_init(e.vocab_model, tmpl_file.empty() ? "" : read_file(tmpl_file));
+    return true;
+}
+
+// the model list file: dirs the Models page last used and the models added from it; caller holds jobs_mu
+void save_models(Server & S) {
+    if (S.models_file.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(S.models_file).parent_path(), ec);
+    std::ofstream f(S.models_file, std::ios::binary | std::ios::trunc);
+    f << S.models_cfg.dump(2);
+}
+
+// adds a model while serving: its vocabulary first, then the entry under an exclusive turn (requests read entries
+// without a lock, so entries has room reserved and only grows); listed in the model file
+bool add_entry(Server & S, const std::string & alias, const std::string & path, const std::string & res, std::string & err) {
+    Entry e;
+    e.alias = alias;
+    e.path  = path;
+    e.res   = res;
+    if (!load_vocab(e, S.tmpl_file, err)) return false;
+    {
+        Turn turn(S, true);
+        if (std::any_of(S.entries.begin(), S.entries.end(), [&](const Entry & x) { return x.alias == alias; })) {
+            err = "a model named " + alias + " exists already";
+            return false;
+        }
+        if (S.entries.size() >= S.entries.capacity()) {
+            err = "too many models";
+            return false;
+        }
+        S.entries.push_back(std::move(e));
+    }
+    std::lock_guard<std::mutex> lk(S.jobs_mu);
+    if (!S.models_cfg["models"].is_array()) S.models_cfg["models"] = json::array();
+    S.models_cfg["models"].push_back({ { "alias", alias }, { "path", path }, { "res", res } });
+    save_models(S);
+    fprintf(stderr, "model added: %s (%s)\n", alias.c_str(), path.c_str());
+    return true;
+}
+
+double now_s();
+
+void ModelJob::finish(const std::string & st, const std::string & e, const json & r) {
+    std::lock_guard<std::mutex> lk(mu);
+    status = st;
+    error  = e;
+    result = r;
+    ended  = now_s();
+}
+
+json job_json(const ModelJob & j) {
+    json o;
+    {
+        std::lock_guard<std::mutex> lk(j.mu);
+        o = { { "id", j.id }, { "kind", j.kind }, { "title", j.title }, { "status", j.status }, { "error", j.error },
+              { "started", j.started }, { "ended", j.ended }, { "result", j.result } };
+    }
+    if (j.kind == "pull") {
+        std::error_code ec;
+        uint64_t        have = 0;
+        for (auto it = std::filesystem::recursive_directory_iterator(j.dir, ec); !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+            if (it->is_regular_file(ec)) have += it->file_size(ec);
+        o["bytes"] = have;
+        o["total"] = j.total;
+    } else {
+        o["done_n"]  = j.done_n.load();
+        o["total_n"] = j.total_n.load();
+    }
+    // the last lines of the output
+    std::ifstream f(j.log, std::ios::binary);
+    if (f) {
+        f.seekg(0, std::ios::end);
+        const std::streamoff n = f.tellg(), take = std::min<std::streamoff>(n, 4000);
+        std::string tail((size_t) take, '\0');
+        f.seekg(n - take);
+        f.read(tail.data(), take);
+        for (char & c : tail) if (c == '\r') c = '\n';
+        o["log"] = tail;
+    }
+    return o;
+}
+
+double now_s() {
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 json to_nl(const common_json & j) {
@@ -1502,6 +1624,7 @@ int serve(const std::vector<std::string> & args) {
         else if (a == "--presence-penalty") S->defaults.presence_penalty = (float) std::atof(val().c_str());
         else if (a == "--unload-router") router_url = val();
         else if (a == "--hw-monitor") S->hw_url = val();
+        else if (a == "--models-file") S->models_file = val();
         else if (a == "--timing-log") S->timing_log = val();
         else if (a == "--tool-temp") S->tool_temp = (float) std::atof(val().c_str());
         else if (a == "--spec") {
@@ -1528,6 +1651,7 @@ int serve(const std::vector<std::string> & args) {
                         "         [--idle-unload SEC (load on demand, free after SEC idle)] [--unload-router URL]\n"
                         "         [--hw-monitor URL (LibreHardwareMonitor web server, for CPU / RAM temperatures;\n"
                         "          default http://127.0.0.1:8085, \"\" = off)]\n"
+                        "         [--models-file PATH (models added from the Models page, default ~/.shoehorn/models.json)]\n"
                         "         [--temperature 1.0] [--top-p 0.95] [--top-k 20] [--min-p 0] [--presence-penalty 0] (request defaults)\n"
                         "         [--fast-prefill N (read all but the last N prompt tokens without the residual: ~2x prefill)]\n"
                         "         [--tool-temp 0.6 (temperature inside <tool_call> blocks; 0 = the request's)]\n"
@@ -1549,6 +1673,8 @@ int serve(const std::vector<std::string> & args) {
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.vocab_only         = true;
+    S->entries.reserve(64);  // entries added while serving never move the existing ones (see add_entry)
+    S->tmpl_file = tmpl_file;
     {
         Entry main;
         main.alias = S->alias;
@@ -1565,6 +1691,36 @@ int serve(const std::vector<std::string> & args) {
         }
         e.vocab = llama_model_get_vocab(e.vocab_model);
         e.tmpls = common_chat_templates_init(e.vocab_model, tmpl_file.empty() ? "" : read_file(tmpl_file));
+    }
+    S->fixed_entries = S->entries.size();
+    // the models added from the Models page earlier (a missing file only skips that model)
+    if (S->models_file.empty()) {
+        const char * home = std::getenv("USERPROFILE") ? std::getenv("USERPROFILE") : std::getenv("HOME");
+        if (home) S->models_file = sys::join_path(sys::join_path(home, ".shoehorn"), "models.json");
+    }
+    if (!S->models_file.empty()) {
+        try {
+            const std::string txt = read_file(S->models_file);
+            if (!txt.empty()) S->models_cfg = json::parse(txt);
+        } catch (const std::exception & ex) {
+            fprintf(stderr, "%s: %s\n", S->models_file.c_str(), ex.what());
+        }
+        if (S->models_cfg.contains("models") && S->models_cfg["models"].is_array()) {
+            for (const auto & m : S->models_cfg["models"]) {
+                Entry e;
+                e.alias = m.value("alias", std::string());
+                e.path  = m.value("path", std::string());
+                e.res   = m.value("res", std::string());
+                std::string err;
+                if (e.alias.empty() || std::any_of(S->entries.begin(), S->entries.end(), [&](const Entry & x) { return x.alias == e.alias; }))
+                    continue;
+                if (!load_vocab(e, tmpl_file, err)) {
+                    fprintf(stderr, "%s: skipped %s: %s\n", S->models_file.c_str(), e.alias.c_str(), err.c_str());
+                    continue;
+                }
+                S->entries.push_back(std::move(e));
+            }
+        }
     }
 
     model::LoadOptions o;
@@ -1875,6 +2031,244 @@ int serve(const std::vector<std::string> & args) {
             }
         }
         resp.set_content(json{ { "object", "list" }, { "data", data } }.dump(), "application/json");
+    });
+    // ---- the Models page: list, load / unload, add, Hugging Face downloads and packs. Changes are allowed from this
+    // machine, or from the LAN with the API key (when the server has one)
+    auto local = [](const httplib::Request & req) { return req.remote_addr == "127.0.0.1" || req.remote_addr == "::1"; };
+    auto may_change = [&](const httplib::Request & req, httplib::Response & resp) {
+        if (local(req) || S->api_key.empty() || req.get_header_value("Authorization") == "Bearer " + S->api_key) return true;
+        resp.status = 401;
+        resp.set_content(json{ { "error", "from another device, changes need the API key" } }.dump(), "application/json");
+        return false;
+    };
+    auto body_of = [](const httplib::Request & req) {
+        try {
+            return json::parse(req.body);
+        } catch (...) {
+            return json::object();
+        }
+    };
+    auto fail = [](httplib::Response & resp, const std::string & e, int status = 400) {
+        resp.status = status;
+        resp.set_content(json{ { "error", e } }.dump(), "application/json");
+    };
+    http.Get("/models", [](const httplib::Request &, httplib::Response & resp) {
+        static const char * page =
+#include "models.inc"
+            ;
+        resp.set_content(page, "text/html; charset=utf-8");
+    });
+    http.Get("/models/state", [&](const httplib::Request & req, httplib::Response & resp) {
+        json out = { { "models", json::array() }, { "jobs", json::array() } };
+        for (size_t i = 0; i < S->entries.size(); i++) {
+            const Entry & e = S->entries[i];
+            std::error_code ec;
+            const uint64_t  sz = std::filesystem::file_size(e.path, ec) + (e.res.empty() ? 0 : std::filesystem::file_size(e.res, ec));
+            out["models"].push_back({ { "alias", e.alias }, { "path", e.path }, { "res", e.res }, { "bytes", sz },
+                                      { "loaded", S->model && S->active == (int) i }, { "removable", i >= S->fixed_entries } });
+        }
+        {
+            std::lock_guard<std::mutex> lk(S->jobs_mu);
+            for (auto it = S->jobs.rbegin(); it != S->jobs.rend(); ++it) out["jobs"].push_back(job_json(**it));
+            out["dirs"] = S->models_cfg.value("dirs", json::object());
+        }
+        out["can_change"] = local(req) || S->api_key.empty() || req.get_header_value("Authorization") == "Bearer " + S->api_key;
+        out["key_needed"] = !local(req) && !S->api_key.empty();
+        resp.set_header("Cache-Control", "no-store");
+        resp.set_content(out.dump(), "application/json");
+    });
+    http.Post("/models/load", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        const std::string alias = body_of(req).value("alias", std::string());
+        int idx = -1;
+        for (size_t i = 0; i < S->entries.size(); i++) if (S->entries[i].alias == alias) idx = (int) i;
+        if (idx < 0) return fail(resp, "no model named " + alias, 404);
+        Turn turn(*S, true);
+        std::string err;
+        if (!(S->model && S->active == idx)) {
+            unload_model(*S);
+            if (!S->load(idx, err)) return fail(resp, err, 500);
+            S->active = idx;
+        }
+        resp.set_content(json{ { "success", true }, { "loaded", alias } }.dump(), "application/json");
+    });
+    http.Post("/models/unload", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        Turn turn(*S, true);
+        const bool was = S->model != nullptr;
+        unload_model(*S);
+        resp.set_content(json{ { "success", true }, { "unloaded", was } }.dump(), "application/json");
+    });
+    http.Post("/models/add", [&](const httplib::Request & req, httplib::Response & resp) {  // a GGUF already on disk
+        if (!may_change(req, resp)) return;
+        const json        b     = body_of(req);
+        const std::string alias = b.value("alias", std::string()), path = b.value("path", std::string()), res = b.value("res", std::string());
+        std::error_code   ec;
+        if (alias.empty() || !std::filesystem::is_regular_file(path, ec)) return fail(resp, "need a name and an existing .gguf file");
+        if (!res.empty() && !std::filesystem::is_regular_file(res, ec)) return fail(resp, "the residual file does not exist");
+        std::string err;
+        if (!add_entry(*S, alias, path, res, err)) return fail(resp, err);
+        resp.set_content(json{ { "success", true } }.dump(), "application/json");
+    });
+    http.Post("/models/remove", [&](const httplib::Request & req, httplib::Response & resp) {  // from the list; files stay
+        if (!may_change(req, resp)) return;
+        const std::string alias = body_of(req).value("alias", std::string());
+        {
+            Turn turn(*S, true);
+            size_t i = S->fixed_entries;
+            while (i < S->entries.size() && S->entries[i].alias != alias) i++;
+            if (i >= S->entries.size()) return fail(resp, "only models added from this page can be removed");
+            if (S->model && S->active == (int) i) return fail(resp, "unload it first");
+            if (S->active > (int) i) S->active--;
+            llama_model_free(S->entries[i].vocab_model);
+            S->entries.erase(S->entries.begin() + (long long) i);
+        }
+        std::lock_guard<std::mutex> lk(S->jobs_mu);
+        json & ms = S->models_cfg["models"];
+        if (ms.is_array())
+            for (size_t k = 0; k < ms.size(); k++)
+                if (ms[k].value("alias", std::string()) == alias) ms.erase(k--);
+        save_models(*S);
+        resp.set_content(json{ { "success", true } }.dump(), "application/json");
+    });
+    http.Post("/models/dirs", [&](const httplib::Request & req, httplib::Response & resp) {  // remembered folders
+        if (!may_change(req, resp)) return;
+        const json b = body_of(req);
+        std::lock_guard<std::mutex> lk(S->jobs_mu);
+        for (const char * k : { "download", "pack" })
+            if (b.contains(k) && b[k].is_string()) S->models_cfg["dirs"][k] = b[k];
+        save_models(*S);
+        resp.set_content(json{ { "success", true } }.dump(), "application/json");
+    });
+    auto start_job = [&](const std::string & kind, const std::string & title, const std::string & dir) {
+        auto j = std::make_shared<ModelJob>();
+        std::lock_guard<std::mutex> lk(S->jobs_mu);
+        j->id      = S->next_job++;
+        j->kind    = kind;
+        j->title   = title;
+        j->dir     = dir;
+        j->started = now_s();
+        std::error_code ec;  // job output goes next to the model list file, not into the download folder
+        const std::filesystem::path logs = S->models_file.empty() ? std::filesystem::temp_directory_path(ec)
+                                                                  : std::filesystem::path(S->models_file).parent_path() / "logs";
+        std::filesystem::create_directories(logs, ec);
+        std::filesystem::create_directories(dir, ec);
+        j->log = (logs / (kind + "-" + std::to_string(j->id) + "-" + std::to_string((long long) j->started) + ".log")).string();
+        S->jobs.push_back(j);
+        return j;
+    };
+    // Hugging Face download: each file with curl.exe (resumable), into DIR\<owner>__<repo>\; HF_TOKEN in the server's
+    // environment opens gated repos
+    http.Post("/models/pull", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        const json        b    = body_of(req);
+        const std::string repo = b.value("repo", std::string()), dir = b.value("dir", std::string());
+        if (repo.empty() || repo.find("..") != std::string::npos || dir.empty() || !b.contains("files") || !b["files"].is_array() || b["files"].empty())
+            return fail(resp, "need a repo, a folder and at least one file");
+        std::string sub = repo;
+        std::replace(sub.begin(), sub.end(), '/', '_');
+        const std::string dest = (std::filesystem::path(dir) / (sub.substr(0, sub.find('_')) + "__" + sub.substr(sub.find('_') + 1))).string();
+        std::vector<std::pair<std::string, uint64_t>> files;
+        for (const auto & f : b["files"]) {
+            const std::string path = f.value("path", std::string());
+            if (path.empty() || path.find("..") != std::string::npos) return fail(resp, "bad file name " + path);
+            files.push_back({ path, f.value("size", (uint64_t) 0) });
+        }
+        auto j = start_job("pull", repo + " (" + std::to_string(files.size()) + " files)", dest);
+        for (auto & f : files) j->total += f.second;
+        {
+            std::lock_guard<std::mutex> lk(S->jobs_mu);
+            S->models_cfg["dirs"]["download"] = dir;
+            save_models(*S);
+        }
+        std::thread([j, files, repo, dest] {
+            const char * tok = std::getenv("HF_TOKEN");
+            for (const auto & f : files) {
+                const std::string out = (std::filesystem::path(dest) / std::filesystem::path(f.first)).string();
+                std::error_code   ec;
+                std::filesystem::create_directories(std::filesystem::path(out).parent_path(), ec);
+                std::vector<std::string> a = { "curl.exe", "-L", "--fail", "-sS", "-C", "-", "--retry", "3", "-o", out,
+                                               "https://huggingface.co/" + repo + "/resolve/main/" + f.first };
+                if (tok && *tok) a.insert(a.begin() + 1, { "-H", std::string("Authorization: Bearer ") + tok });
+                std::string err;
+                const int   rc = sys::run_process(a, j->log, j->cancel, err);
+                if (rc != 0) {
+                    j->finish(rc == -2 ? "cancelled" : "failed",
+                              rc == -1 ? err : rc == -2 ? "" : "curl exited with " + std::to_string(rc) + " on " + f.first);
+                    return;
+                }
+            }
+            j->finish("done", "", { { "dir", dest } });
+        }).detach();
+        resp.set_content(json{ { "success", true }, { "id", j->id }, { "dir", dest } }.dump(), "application/json");
+    });
+    // pack: `shoehorn pack` on a downloaded safetensors folder; on success the pair becomes a model of this server
+    http.Post("/models/pack", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        const json        b = body_of(req);
+        const std::string src = b.value("src", std::string()), tmpl = b.value("template", std::string()), out = b.value("out", std::string()),
+                          alias = b.value("alias", std::string()), base = b.value("base", std::string("iq4_xs")), res = b.value("res", std::string("q4_K")),
+                          imat = b.value("imatrix", std::string());
+        std::error_code ec;
+        if (!std::filesystem::is_directory(src, ec)) return fail(resp, "the source folder does not exist");
+        if (!std::filesystem::is_regular_file(tmpl, ec)) return fail(resp, "the template GGUF does not exist");
+        if (out.empty() || alias.empty()) return fail(resp, "need an output name and a model name");
+        if (!imat.empty() && !std::filesystem::is_regular_file(imat, ec)) return fail(resp, "the imatrix file does not exist");
+        const std::string exe = sys::self_exe();
+        if (exe.empty()) return fail(resp, "cannot find shoehorn.exe", 500);
+        const bool unload_first = b.value("unload", true);
+        auto       j            = start_job("pack", alias + " from " + std::filesystem::path(src).filename().string(),
+                                            std::filesystem::path(out).parent_path().string());
+        {
+            std::lock_guard<std::mutex> lk(S->jobs_mu);
+            S->models_cfg["dirs"]["pack"] = std::filesystem::path(out).parent_path().string();
+            save_models(*S);
+        }
+        Server * sp = S.get();
+        std::thread([j, sp, exe, src, tmpl, out, alias, base, res, imat, unload_first] {
+            if (unload_first) {  // packing reads tens of GB: give it the RAM the residual holds
+                Turn turn(*sp, true);
+                unload_model(*sp);
+            }
+            std::vector<std::string> a = { exe, "pack", "--src", src, "--template", tmpl, "--out", out, "--base", base, "--res", res };
+            if (!imat.empty()) a.insert(a.end(), { "--imatrix", imat });
+            std::atomic<bool> stop{ false };
+            std::thread       watch([&] {  // progress from the [n/m] lines
+                while (!stop) {
+                    std::ifstream f(j->log, std::ios::binary);
+                    std::string   all((std::istreambuf_iterator<char>(f)), {});
+                    const size_t  p = all.rfind("\n[");
+                    if (p != std::string::npos) {
+                        int n = 0, m = 0;
+                        if (sscanf(all.c_str() + p + 2, "%d/%d", &n, &m) == 2) {
+                            j->done_n  = n;
+                            j->total_n = m;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            });
+            std::string err;
+            const int   rc = sys::run_process(a, j->log, j->cancel, err);
+            stop = true;
+            watch.join();
+            if (rc != 0) {
+                j->finish(rc == -2 ? "cancelled" : "failed", rc == -1 ? err : rc == -2 ? "" : "pack exited with " + std::to_string(rc));
+            } else {
+                const std::string bp = out + ".base.gguf", rp = res == "none" ? std::string() : out + ".res.gguf";
+                if (!add_entry(*sp, alias, bp, rp, err)) j->finish("failed", "packed, but adding the model failed: " + err);
+                else j->finish("done", "", { { "alias", alias }, { "path", bp }, { "res", rp } });
+            }
+        }).detach();
+        resp.set_content(json{ { "success", true }, { "id", j->id } }.dump(), "application/json");
+    });
+    http.Post("/models/cancel", [&](const httplib::Request & req, httplib::Response & resp) {
+        if (!may_change(req, resp)) return;
+        const int                   id = body_of(req).value("id", 0);
+        std::lock_guard<std::mutex> lk(S->jobs_mu);
+        for (auto & j : S->jobs)
+            if (j->id == id) j->cancel = true;
+        resp.set_content(json{ { "success", true } }.dump(), "application/json");
     });
     http.Post("/unload", [&](const httplib::Request & req, httplib::Response & resp) {  // free the GPU now
         if (!authorized(req, resp)) return;

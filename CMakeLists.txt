@@ -84,7 +84,7 @@ if (WIN32)
     target_link_libraries(shoehorn PRIVATE shell32)  # CommandLineToArgvW
 endif()
 
-# shoehorn serve /dashboard and /sensors: the pages are embedded in the binary (regenerated when the HTML changes).
+# shoehorn serve /dashboard, /sensors and /models: the pages are embedded in the binary (regenerated when the HTML changes).
 # MSVC caps one string literal at ~16 KB: adjacent raw literals of 8000 characters
 function(e8_embed_html name)
   file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/server/${name}.html html)
@@ -101,4 +101,5 @@ function(e8_embed_html name)
 endfunction()
 e8_embed_html(dashboard)
 e8_embed_html(sensors)
+e8_embed_html(models)
 target_include_directories(shoehorn PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -44,6 +45,15 @@ GpuSensors gpu_sensors();
 
 // Windows 11 parks cores and throttles "background" threads; opt the calling thread out. No-op elsewhere.
 void set_thread_high_perf();
+
+// Runs args[0] with args[1..] (no shell), stdout and stderr appended to log_path, and waits for it. Polls `cancel`
+// every 200 ms and kills the process when it turns true. Returns the exit code, -1 if it could not start
+// (err says why), -2 when cancelled. Windows only (elsewhere: -1).
+int run_process(const std::vector<std::string> & args, const std::string & log_path, const std::atomic<bool> & cancel,
+                std::string & err);
+
+// Full path of the running executable (empty if unknown).
+std::string self_exe();
 
 // Command-line arguments as UTF-8 (on Windows, re-read via GetCommandLineW).
 std::vector<std::string> utf8_args(int argc, char ** argv);

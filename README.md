@@ -85,6 +85,9 @@ cd C:\src\shoehorn
 
 3. Point any OpenAI-compatible client at `http://127.0.0.1:8090/v1`. Open `http://127.0.0.1:8090/` for the
    dashboard (decode and prefill speed, accepted drafts, memory, PCIe traffic, per-request history).
+   `/sensors` shows temperatures, voltages and GPU power; `/models` loads and unloads models, searches and downloads
+   from Hugging Face (supported architectures only), packs a download into a base + residual pair and adds it without
+   a restart. Changes there are allowed from the server's machine, or from the LAN with the API key.
 
 Flash-Next needs no packing: serve its GGUF directly (experts stay memory-mapped, a GPU expert cache takes free VRAM).
 Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` picks one, the other is unloaded.
@@ -113,6 +116,7 @@ Both models from one server: `--also ALIAS=PATH[,RES]`; the request's `model` pi
 | `--think-budget N`, `--think-after-tool 0\|1`, `--drop-reasoning 0\|1` | 32768 | reasoning cap and handling; a request's own `enable_thinking` or `think_after_tool` overrides `--think-after-tool` |
 | `--sys-cache N`, `--sys-cache-gb G` | 4, 3 | system prompts kept in RAM for new conversations (one per client or agent persona) |
 | `--hw-monitor URL` | http://127.0.0.1:8085 | sensor server for the dashboard's CPU, RAM, VRAM and board temperatures: [`tools/hwmon`](tools/hwmon) or LibreHardwareMonitor's web server (`""` = off) |
+| `--models-file PATH` | ~/.shoehorn/models.json | models added from the Models page, and the folders it last used |
 | `--threads N` | auto | CPU threads |
 | `--timing-log FILE` | off | per-request JSONL with a decode time breakdown |
 

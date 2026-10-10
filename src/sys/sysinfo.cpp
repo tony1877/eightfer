@@ -288,6 +288,80 @@ std::vector<std::string> fixed_drives() {
     return out;
 }
 
+int run_process(const std::vector<std::string> & args, const std::string & log_path, const std::atomic<bool> & cancel,
+                std::string & err) {
+    if (args.empty()) {
+        err = "no program";
+        return -1;
+    }
+    // command line with the usual quoting rules (backslashes before a quote doubled)
+    std::wstring cmd;
+    for (const auto & a : args) {
+        const std::wstring w = widen(a);
+        if (!cmd.empty()) cmd += L' ';
+        if (!w.empty() && w.find_first_of(L" \t\"") == std::wstring::npos) {
+            cmd += w;
+            continue;
+        }
+        cmd += L'"';
+        size_t bs = 0;
+        for (wchar_t c : w) {
+            if (c == L'\\') { bs++; continue; }
+            cmd.append(c == L'"' ? bs * 2 + 1 : bs, L'\\');
+            bs = 0;
+            cmd += c;
+        }
+        cmd.append(bs * 2, L'\\');
+        cmd += L'"';
+    }
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE log = CreateFileW(widen(log_path).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (log == INVALID_HANDLE_VALUE) {
+        err = "cannot open the log " + log_path;
+        return -1;
+    }
+    STARTUPINFOW si{};
+    si.cb         = sizeof(si);
+    si.dwFlags    = STARTF_USESTDHANDLES;
+    si.hStdInput  = nullptr;
+    si.hStdOutput = log;
+    si.hStdError  = log;
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(0);
+    const BOOL ok = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(log);
+    if (!ok) {
+        err = "cannot start " + args[0] + " (error " + std::to_string(GetLastError()) + ")";
+        return -1;
+    }
+    CloseHandle(pi.hThread);
+    int code = 0;
+    for (;;) {
+        if (WaitForSingleObject(pi.hProcess, 200) == WAIT_OBJECT_0) {
+            DWORD c = 0;
+            GetExitCodeProcess(pi.hProcess, &c);
+            code = (int) c;
+            break;
+        }
+        if (cancel.load()) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);
+            code = -2;
+            break;
+        }
+    }
+    CloseHandle(pi.hProcess);
+    return code;
+}
+
+std::string self_exe() {
+    wchar_t p[MAX_PATH * 4];
+    const DWORD n = GetModuleFileNameW(nullptr, p, (DWORD) (sizeof(p) / sizeof(p[0])));
+    return n ? narrow(p) : std::string();
+}
+
 void set_thread_high_perf() {
 #if defined(THREAD_POWER_THROTTLING_CURRENT_VERSION)
     THREAD_POWER_THROTTLING_STATE t{};
@@ -421,6 +495,15 @@ std::vector<DriveTemp> drive_temps() {
 }
 
 GpuSensors gpu_sensors() {
+    return {};
+}
+
+int run_process(const std::vector<std::string> &, const std::string &, const std::atomic<bool> &, std::string & err) {
+    err = "running programs is implemented on Windows only";
+    return -1;
+}
+
+std::string self_exe() {
     return {};
 }
 

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>shoehorn models</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2308090a'/%3E%3Cpath d='M13.2 4h5.6a2 2 0 0 1 2 2v5c0 2.5 3.2 5.7 3.2 10.8 0 4.2-3.8 6.7-8 6.7s-8-2.5-8-6.7c0-5.1 3.2-8.3 3.2-10.8V6a2 2 0 0 1 2-2z' fill='%23d9a54a'/%3E%3Ccircle cx='16' cy='7.6' r='1.5' fill='%2308090a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Models: what this server serves (load / unload / add), the downloads and packs running, Hugging Face search and
+   pull (supported architectures only), and packing a downloaded model into shoehorn's base + residual pair. */
+:root {
+  color-scheme: dark;
+  --bg: #08090a; --panel: #0e0f11; --raise: #141518; --line: #1d1f23; --line2: #2a2d32;
+  --ink: #f2f3f5; --ink2: #9ba1ab; --muted: #5f6570;
+  --accent: #d9a54a; --read: #6cb6e0; --good: #4cc38a; --warn: #e2b04a; --bad: #ec6a5e;
+  --f-ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.5 var(--f-ui); padding: 0 24px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 18px 48px; display: grid; gap: 16px; }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.word { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.word svg { width: 18px; height: 18px; }
+header .sp { flex: 1; }
+.crumbs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; color: var(--ink2); font: 12px var(--f-mono); }
+.crumbs span + span::before { content: "/"; color: var(--line2); margin-right: 6px; }
+nav { display: flex; gap: 4px; }
+nav a { font: 12px var(--f-mono); color: var(--ink2); text-decoration: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 6px; }
+nav a.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+nav a:hover { color: var(--ink); }
+.status { display: inline-flex; align-items: center; gap: 7px; font: 12px var(--f-mono); color: var(--ink2); padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.status.writing { color: var(--ink); } .status.writing i { background: var(--accent); animation: beat 1.2s ease-in-out infinite; }
+.status.reading i { background: var(--read); animation: beat .7s ease-in-out infinite; }
+.status.off i { background: var(--bad); }
+@keyframes beat { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 12px; min-width: 0; }
+.mhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mhead b { font-weight: 500; font-size: 13px; }
+.mhead .mono { font-size: 12px; color: var(--ink2); }
+.note { color: var(--muted); font-size: 12px; }
+.err { color: var(--bad); font-size: 12px; }
+.rows { display: grid; }
+.row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 70px 86px auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.row:first-child { border-top: 0; }
+.row .p { color: var(--ink2); font: 11.5px var(--f-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .nm { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) { .row { grid-template-columns: minmax(0, 1fr) auto; } .row .p, .row .sz { display: none; } }
+.tag { font: 11px var(--f-mono); color: var(--ink2); border: 1px solid var(--line2); border-radius: 4px; padding: 0 6px; white-space: nowrap; justify-self: start; }
+.tag.good { color: var(--good); border-color: rgba(76,195,138,.35); } .tag.warn { color: var(--warn); border-color: rgba(226,176,74,.35); }
+.tag.bad { color: var(--bad); border-color: rgba(236,106,94,.35); } .tag.acc { color: var(--accent); border-color: rgba(217,165,74,.35); }
+button, .btn { font: 12px var(--f-mono); color: var(--ink); background: var(--raise); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
+button:hover:not(:disabled) { border-color: var(--ink2); }
+button:disabled { color: var(--muted); cursor: default; }
+button.pri { background: var(--accent); color: #08090a; border-color: var(--accent); }
+button.pri:disabled { background: var(--raise); color: var(--muted); border-color: var(--line2); }
+input, select { font: 12.5px var(--f-mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line2); border-radius: 6px; padding: 6px 9px; min-width: 0; width: 100%; }
+input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: 0; }
+input.need { border-color: var(--warn); }
+label { display: grid; gap: 4px; color: var(--ink2); font-size: 12px; min-width: 0; }
+.form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+.form .wide { grid-column: 1 / -1; }
+@media (max-width: 640px) { .form { grid-template-columns: 1fr; } }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prog { height: 6px; border-radius: 3px; background: var(--raise); overflow: hidden; }
+.prog i { display: block; height: 100%; background: var(--read); transition: width .4s linear; }
+.job { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
+.job:first-child { border-top: 0; padding-top: 0; }
+.job .top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.job .top .t { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details summary { cursor: pointer; color: var(--ink2); font-size: 12px; }
+pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: 11.5px/1.45 var(--f-mono); color: var(--ink2); white-space: pre-wrap; word-break: break-all; }
+.res { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 12px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
+.res:first-child { border-top: 0; }
+.res .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res .dl { color: var(--muted); font: 11.5px var(--f-mono); }
+.files { display: grid; gap: 2px; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+.files label { display: flex; gap: 8px; align-items: center; color: var(--ink); font: 12px var(--f-mono); }
+.files label input { width: auto; }
+.files label .s { color: var(--muted); margin-left: auto; }
+.keybar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.keybar input { max-width: 340px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="word">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.2 2h3.6c.7 0 1.2.5 1.2 1.2v3.4c0 1.6 2.1 3.8 2.1 7.1 0 2.8-2.5 4.3-5.1 4.3s-5.1-1.5-5.1-4.3c0-3.3 2.1-5.5 2.1-7.1V3.2C7 2.5 7.5 2 8.2 2z" fill="none" stroke="var(--accent)" stroke-width="1.4"/><circle cx="10" cy="4.6" r=".9" fill="var(--accent)"/></svg>
+      shoehorn
+    </div>
+    <div class="crumbs" id="crumbs"></div>
+    <span class="sp"></span>
+    <nav><a href="/dashboard">Dashboard</a><a href="/sensors">Sensors</a><a href="/models" class="on">Models</a></nav>
+    <span class="status" id="status"><i></i><span id="statusText">connecting</span></span>
+  </header>
+
+  <section class="panel" id="keyPanel" hidden>
+    <div class="mhead"><b>API key</b><span class="mono">needed for changes from another device</span></div>
+    <div class="keybar"><input id="key" type="password" placeholder="shoehorn's API key" autocomplete="off"><button id="keySave">Save on this device</button><span class="note" id="keyNote"></span></div>
+  </section>
+
+  <section class="panel">
+    <div class="mhead"><b>Models on this server</b><span class="mono" id="modelsNote"></span></div>
+    <div class="rows" id="models"></div>
+    <div class="err" id="modelsErr"></div>
+    <details id="addBox"><summary>Add a GGUF already on disk</summary>
+      <div class="form" style="margin-top:10px">
+        <label>Name (what clients ask for)<input id="addAlias" placeholder="my-model"></label>
+        <label>GGUF file<input id="addPath" placeholder="E:\models\model.gguf"></label>
+        <label class="wide">Residual file (optional, for a packed pair)<input id="addRes" placeholder="E:\models\model.res.gguf"></label>
+      </div>
+      <div class="actions" style="margin-top:10px"><button class="pri" id="addGo">Add</button><span class="err" id="addErr"></span></div>
+    </details>
+  </section>
+
+  <section class="panel" id="jobsPanel" hidden>
+    <div class="mhead"><b>Downloads and packs</b><span class="mono" id="jobsNote"></span></div>
+    <div id="jobs"></div>
+  </section>
+
+  <section class="panel">
+    <div class="mhead"><b>Hugging Face</b><span class="mono">qwen35 / qwen4exp GGUF serve as is; qwen3_5 safetensors can be packed</span></div>
+    <div class="keybar"><input id="q" placeholder="search, e.g. Qwen3.8 27B" style="max-width:none;flex:1"><button id="qGo">Search</button></div>
+    <div class="rows" id="results"></div>
+    <div class="note" id="resNote"></div>
+    <div id="pick" hidden>
+      <div class="mhead" style="margin-top:6px"><b id="pickTitle"></b><span class="mono" id="pickNote"></span></div>
+      <div class="files" id="pickFiles"></div>
+      <div class="form" style="margin-top:10px">
+        <label class="wide">Download folder (a subfolder per repo is made inside)<input id="dlDir" placeholder="choose a folder, e.g. E:\hf"></label>
+      </div>
+      <div class="actions" style="margin-top:10px"><button class="pri" id="pullGo">Download</button><span class="mono note" id="pickSum"></span><span class="err" id="pullErr"></span></div>
+    </div>
+  </section>
+
+  <section class="panel" id="packPanel">
+    <div class="mhead"><b>Pack for shoehorn</b><span class="mono">safetensors (qwen3_5) to a 4-bit base + residual pair</span></div>
+    <div class="form">
+      <label class="wide">Source folder (the downloaded safetensors)<input id="pkSrc" placeholder="E:\hf\Qwen__Qwen3.8-27B"></label>
+      <label class="wide">Template GGUF (any qwen35 GGUF of the same model: tokenizer and metadata)<input id="pkTmpl" placeholder="E:\gguf\qwen3.8-27b-Q4_K_M.gguf"></label>
+      <label>Output folder<input id="pkDir" placeholder="choose a folder, e.g. E:\shoehorn"></label>
+      <label>Output name<input id="pkName" placeholder="qwen27"></label>
+      <label>Base type<select id="pkBase"><option>iq4_xs</option><option>q4_K</option><option>q3_K</option></select></label>
+      <label>Residual type<select id="pkRes"><option>q4_K</option><option>q3_K</option><option>q5_K</option><option>q6_K</option><option>none</option></select></label>
+      <label>Model name (what clients ask for)<input id="pkAlias" placeholder="qwen3.8-27b-shoehorn"></label>
+      <label>imatrix (optional, improves the base)<input id="pkImat" placeholder="E:\gguf\imatrix.gguf"></label>
+      <label class="wide" style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="pkUnload" checked style="width:auto"> Unload the model while packing (packing reads tens of GB)</label>
+    </div>
+    <div class="actions"><button class="pri" id="packGo">Pack</button><span class="err" id="packErr"></span></div>
+    <div class="note">The new model is added to this server when packing finishes; no restart needed.</div>
+  </section>
+  <footer class="note" id="foot"></footer>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt = (v, d = 0) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const GB = b => fmt(b / 1e9, b >= 1e10 ? 0 : 1) + " GB";
+const set = (id, h) => { if ($(id).dataset.h !== h) { $(id).innerHTML = h; $(id).dataset.h = h; } };
+const KEY = "shoehorn-api-key";
+const key = () => { try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; } };
+async function api(path, body) {
+  const h = { "Content-Type": "application/json" };
+  if (key()) h.Authorization = "Bearer " + key();
+  const r = await fetch(path, body === undefined ? { headers: h, cache: "no-store" } : { method: "POST", headers: h, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof j.error === "string" ? j.error : j.error?.message || `HTTP ${r.status}`);
+  return j;
+}
+let state = { models: [], jobs: [], dirs: {} }, busy = {};
+
+// ---- header: the model line and status, as on the dashboard
+async function pollStats() {
+  try {
+    const d = await (await fetch("/stats?since=1e12", { cache: "no-store" })).json();
+    const cfg = d.config || {}, k = v => v >= 1e3 ? Math.round(v / 1e3) + "K" : String(v), c = [];
+    c.push(`<span>${d.loaded ? esc(d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")) : "no model loaded"}</span>`);
+    if (cfg.ctx) c.push(`<span>ctx ${k(cfg.ctx)}</span>`);
+    if (cfg.kv) c.push(`<span>kv ${cfg.kv}${cfg.kv_v && cfg.kv_v !== cfg.kv ? "/" + cfg.kv_v : ""}</span>`);
+    if (cfg.window && d.loaded) c.push(`<span>vram window ${k(cfg.window)}</span>`);
+    set("crumbs", c.join(""));
+    const live = d.live || {}, writing = live.busy && live.gen > 0, reading = live.busy && !writing;
+    $("status").className = "status" + (writing ? " writing" : reading ? " reading" : "");
+    $("statusText").textContent = writing ? "writing" : reading ? "reading prompt" : d.loaded ? "idle" : "idle, model unloaded";
+  } catch (e) { $("status").className = "status off"; $("statusText").textContent = "offline"; }
+}
+
+// ---- models and jobs
+async function pollState() {
+  try { state = await api("/models/state"); } catch (e) { $("foot").textContent = "offline: " + e.message; return; }
+  $("foot").textContent = "";
+  $("keyPanel").hidden = !state.key_needed;
+  $("keyNote").textContent = state.key_needed ? (state.can_change ? "key accepted" : key() ? "this key is not accepted" : "") : "";
+  const can = state.can_change;
+  set("modelsNote", `${state.models.length} ${state.models.length === 1 ? "model" : "models"}${can ? "" : ", read only from this device"}`);
+  set("models", state.models.map(m => `<div class="row">
+      <span class="nm" title="${esc(m.alias)}">${esc(m.alias)}</span>
+      <span class="p" title="${esc(m.path)}${m.res ? "\n" + esc(m.res) : ""}">${esc(m.path)}${m.res ? " + residual" : ""}</span>
+      <span class="mono sz" style="color:var(--ink2)">${m.bytes ? GB(m.bytes) : "-"}</span>
+      ${m.loaded ? `<span class="tag good">loaded</span>` : `<span class="tag">on disk</span>`}
+      <span class="actions" style="justify-content:flex-end">${m.removable && !m.loaded ? `<button data-remove="${esc(m.alias)}" title="Remove from this list (the files stay)" ${can ? "" : "disabled"}>Remove</button>` : ""}
+      ${m.loaded ? `<button data-unload ${can && !busy.load ? "" : "disabled"}>Unload</button>`
+                 : `<button data-load="${esc(m.alias)}" ${can && !busy.load ? "" : "disabled"}>${busy.load === m.alias ? "Loading..." : "Load"}</button>`}</span>
+    </div>`).join(""));
+  // jobs
+  $("jobsPanel").hidden = !state.jobs.length;
+  set("jobsNote", state.jobs.filter(j => j.status === "running").length + " running");
+  set("jobs", state.jobs.map(j => {
+    const pct = j.kind === "pull" ? (j.total ? 100 * j.bytes / j.total : 0) : (j.total_n ? 100 * j.done_n / j.total_n : 0);
+    const what = j.kind === "pull" ? `${GB(j.bytes || 0)} of ${j.total ? GB(j.total) : "?"}` : j.total_n ? `${j.done_n} of ${j.total_n} tensors` : "starting";
+    const st = { running: "acc", done: "good", failed: "bad", cancelled: "warn" }[j.status] || "";
+    const extra = j.status === "done" && j.kind === "pull" && j.result?.dir
+      ? `<button data-packsrc="${esc(j.result.dir)}">Pack this</button><button data-addgguf="${esc(j.result.dir)}">Add a GGUF from it</button>` : "";
+    return `<div class="job"><div class="top"><span class="tag">${j.kind === "pull" ? "download" : "pack"}</span><span class="t" title="${esc(j.title)}">${esc(j.title)}</span>
+        <span class="tag ${st}">${j.status}</span><span class="mono note">${j.status === "running" ? what : ""}</span>
+        ${j.status === "running" ? `<button data-cancel="${j.id}" ${can ? "" : "disabled"}>Cancel</button>` : extra}</div>
+      ${j.status === "running" ? `<div class="prog"><i style="width:${fmt(Math.min(100, pct), 1)}%"></i></div>` : ""}
+      ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}
+      ${j.status === "done" && j.result?.alias ? `<div class="note">Added as <b style="color:var(--ink)">${esc(j.result.alias)}</b>.</div>` : ""}
+      ${j.log ? `<details${j.status === "failed" ? " open" : ""}><summary>Output</summary><pre>${esc(j.log.trim().split("\n").slice(-30).join("\n"))}</pre></details>` : ""}</div>`;
+  }).join(""));
+  // remembered folders fill empty fields once
+  for (const [id, k] of [["dlDir", "download"], ["pkDir", "pack"]]) {
+    if (!$(id).value && state.dirs?.[k]) $(id).value = state.dirs[k];
+    $(id).classList.toggle("need", !$(id).value);
+  }
+  for (const id of ["addGo", "pullGo", "packGo"]) $(id).disabled = !can;
+}
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  try {
+    if (b.dataset.load) { busy.load = b.dataset.load; pollState(); $("modelsErr").textContent = ""; await api("/models/load", { alias: b.dataset.load }); }
+    else if (b.hasAttribute("data-unload")) { busy.load = "-"; await api("/models/unload", {}); }
+    else if (b.dataset.remove) { if (confirm(`Remove ${b.dataset.remove} from the list? The files stay on disk.`)) await api("/models/remove", { alias: b.dataset.remove }); }
+    else if (b.dataset.cancel) await api("/models/cancel", { id: +b.dataset.cancel });
+    else if (b.dataset.packsrc) { $("pkSrc").value = b.dataset.packsrc; $("pkName").value ||= b.dataset.packsrc.split(/[\\/]/).pop().replace(/^.*__/, ""); $("packPanel").scrollIntoView({ behavior: "smooth" }); }
+    else if (b.dataset.addgguf) { $("addBox").open = true; $("addPath").value = b.dataset.addgguf + "\\"; $("addPath").focus(); }
+    else return;
+  } catch (err) { $("modelsErr").textContent = err.message; }
+  busy.load = null; pollState();
+});
+$("addGo").onclick = async () => {
+  $("addErr").textContent = "";
+  try { await api("/models/add", { alias: $("addAlias").value.trim(), path: $("addPath").value.trim(), res: $("addRes").value.trim() }); $("addAlias").value = $("addPath").value = $("addRes").value = ""; pollState(); }
+  catch (err) { $("addErr").textContent = err.message; }
+};
+$("keySave").onclick = () => { try { localStorage.setItem(KEY, $("key").value.trim()); } catch (e) {} $("key").value = ""; pollState(); };
+
+// ---- Hugging Face: search (supported architectures only), then files and a folder to download into
+const HF = "https://huggingface.co";
+function kindOf(m) {
+  const g = m.gguf?.architecture, t = m.config?.model_type;
+  if (g === "qwen35" || g === "qwen4exp") return { ok: true, gguf: true, tag: `GGUF ${g}, serves as is`, cls: "good" };
+  // packing needs the original BF16 weights: FP8 / GPTQ / AWQ / MLX conversions carry a quantization_config or the mlx tag
+  if (t === "qwen3_5" && !m.config?.quantization_config && !(m.tags || []).includes("mlx"))
+    return { ok: true, gguf: false, tag: "safetensors, can be packed", cls: "acc" };
+  return { ok: false };
+}
+async function search() {
+  const q = $("q").value.trim(); if (!q) return;
+  $("resNote").textContent = "searching..."; $("pick").hidden = true;
+  try {
+    const u = `${HF}/api/models?search=${encodeURIComponent(q)}&limit=60&sort=downloads&direction=-1&expand[]=gguf&expand[]=config&expand[]=downloads&expand[]=gated&expand[]=tags`;
+    const all = await (await fetch(u)).json();
+    const ok = all.map(m => ({ m, k: kindOf(m) })).filter(x => x.k.ok);
+    set("results", ok.map(({ m, k }) => `<div class="res"><span class="id" title="${esc(m.id)}">${esc(m.id)}</span>
+        <span class="tag ${k.cls}">${k.tag}</span><span class="dl">${fmt(m.downloads)} downloads${m.gated ? ", gated" : ""}</span>
+        <button data-repo="${esc(m.id)}" data-gguf="${k.gguf ? 1 : ""}">Files</button></div>`).join(""));
+    $("resNote").textContent = `${ok.length} supported of ${all.length} results${all.length - ok.length ? " (other architectures hidden)" : ""}.`;
+  } catch (e) { $("resNote").textContent = "search failed: " + e.message; }
+}
+$("qGo").onclick = search;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+let pick = null;
+$("results").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-repo]"); if (!b) return;
+  const repo = b.dataset.repo, gguf = !!b.dataset.gguf;
+  $("pick").hidden = false; $("pickTitle").textContent = repo; $("pickNote").textContent = "listing files..."; $("pickFiles").innerHTML = ""; $("pullErr").textContent = "";
+  try {
+    const tree = (await (await fetch(`${HF}/api/models/${repo}/tree/main?recursive=true`)).json()).filter(f => f.type === "file");
+    // GGUF repos: pick the files (a quant, plus an mmproj only if you want it); safetensors: weights, configs, tokenizer
+    const need = f => !gguf && (/\.safetensors$/.test(f.path) || /\.json$/.test(f.path) || /^(tokenizer|vocab|merges)/.test(f.path.split("/").pop()));
+    const list = tree.filter(f => gguf ? /\.gguf$/i.test(f.path) : need(f) || /\.(md|txt|py|jinja)$/.test(f.path));
+    pick = { repo, files: list };
+    $("pickFiles").innerHTML = list.map((f, i) => `<label><input type="checkbox" data-i="${i}" ${need(f) ? "checked" : ""}>${esc(f.path)}<span class="s">${GB(f.lfs?.size ?? f.size)}</span></label>`).join("");
+    $("pickNote").textContent = gguf ? "choose the GGUF file(s) to download" : "the weights, configs and tokenizer are selected";
+    sumPick();
+  } catch (err) { $("pickNote").textContent = "cannot list files: " + err.message; }
+});
+function chosen() { return pick ? [...$("pickFiles").querySelectorAll("input:checked")].map(c => pick.files[+c.dataset.i]) : []; }
+function sumPick() { const c = chosen(); $("pickSum").textContent = c.length ? `${c.length} files, ${GB(c.reduce((s, f) => s + (f.lfs?.size ?? f.size), 0))}` : "nothing selected"; }
+$("pickFiles").addEventListener("change", sumPick);
+$("dlDir").addEventListener("input", () => $("dlDir").classList.toggle("need", !$("dlDir").value));
+$("pullGo").onclick = async () => {
+  $("pullErr").textContent = "";
+  const files = chosen().map(f => ({ path: f.path, size: f.lfs?.size ?? f.size }));
+  if (!$("dlDir").value.trim()) { $("pullErr").textContent = "choose a download folder"; $("dlDir").focus(); return; }
+  if (!files.length) { $("pullErr").textContent = "select at least one file"; return; }
+  try { await api("/models/pull", { repo: pick.repo, files, dir: $("dlDir").value.trim() }); $("pick").hidden = true; pollState(); }
+  catch (err) { $("pullErr").textContent = err.message; }
+};
+
+// ---- pack
+$("packGo").onclick = async () => {
+  $("packErr").textContent = "";
+  const dir = $("pkDir").value.trim(), name = $("pkName").value.trim();
+  if (!dir) { $("packErr").textContent = "choose an output folder"; $("pkDir").focus(); return; }
+  if (!name) { $("packErr").textContent = "give the output a name"; return; }
+  const sep = dir.includes("/") && !dir.includes("\\") ? "/" : "\\";
+  try {
+    await api("/models/pack", { src: $("pkSrc").value.trim(), template: $("pkTmpl").value.trim(), out: dir.replace(/[\\/]+$/, "") + sep + name,
+      base: $("pkBase").value, res: $("pkRes").value, alias: $("pkAlias").value.trim() || name, imatrix: $("pkImat").value.trim(), unload: $("pkUnload").checked });
+    pollState();
+  } catch (err) { $("packErr").textContent = err.message; }
+};
+
+pollStats(); pollState();
+setInterval(pollStats, 1000); setInterval(pollState, 1500);
+</script>
+</body>
+</html>

@@ -84,8 +84,8 @@ export function ShoehornFooterButton({ wide }: { wide?: boolean }) {
   )
 }
 
-/** shoehorn's two pages: the model dashboard and the hardware sensors. */
-const PAGES = [{ path: '/dashboard', label: 'Dashboard' }, { path: '/sensors', label: 'Sensors' }] as const
+/** shoehorn's pages: the model dashboard, the hardware sensors and model management. */
+const PAGES = [{ path: '/dashboard', label: 'Dashboard' }, { path: '/sensors', label: 'Sensors' }, { path: '/models', label: 'Models' }] as const
 
 /** Frame-wide overlay with the shoehorn dashboard and sensors pages, opened from the chip or the sidebar. */
 export function ShoehornOverlay() {

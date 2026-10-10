@@ -215,6 +215,7 @@ struct Stats {
 } // namespace
 
 int pack(const std::vector<std::string> & args) {
+    setvbuf(stdout, nullptr, _IONBF, 0);  // progress lines reach a log file (the server's pack job) as they happen
     std::string src_dir, tmpl_path, out, imatrix_path;
     std::string base_s = "iq4_xs", res_s = "q4_K";
     int         threads = (int) std::max(1u, std::thread::hardware_concurrency());
