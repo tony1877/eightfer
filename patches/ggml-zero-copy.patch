@@ -1,0 +1,107 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index e337e5230..3fef728ef 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -723,16 +723,26 @@ struct ggml_backend_cuda_buffer_context {
+     void * dev_ptr = nullptr;
+     std::string name;
+ 
++    void * host_ptr = nullptr;  // eightfer: mapped pinned RAM behind dev_ptr (zero-copy), freed with cudaFreeHost
++
+     ggml_backend_cuda_buffer_context(int device, void * dev_ptr) :
+         device(device), dev_ptr(dev_ptr),
+         name(GGML_CUDA_NAME + std::to_string(device)) {
+     }
+ 
+     ~ggml_backend_cuda_buffer_context() {
+-        CUDA_CHECK(cudaFree(dev_ptr));
++        if (host_ptr) {
++            CUDA_CHECK(cudaFreeHost(host_ptr));
++        } else {
++            CUDA_CHECK(cudaFree(dev_ptr));
++        }
+     }
+ };
+ 
++// eightfer: while set, CUDA buffers are allocated in mapped pinned RAM and kernels read them over PCIe (zero-copy)
++static bool g_e8_alloc_mapped = false;
++void ggml_backend_cuda_e8_alloc_mapped(bool on) { g_e8_alloc_mapped = on; }
++
+ static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+     delete ctx;
+@@ -940,6 +950,19 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_bac
+     ggml_cuda_set_device(buft_ctx->device);
+ 
+     void * dev_ptr;
++    if (g_e8_alloc_mapped) {
++        void * host_ptr = nullptr;
++        if (cudaHostAlloc(&host_ptr, size, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
++            cudaHostGetDevicePointer(&dev_ptr, host_ptr, 0) != cudaSuccess) {
++            (void)cudaGetLastError();
++            if (host_ptr) cudaFreeHost(host_ptr);
++            GGML_LOG_ERROR("%s: mapped pinned allocation of %.2f MiB failed\n", __func__, size / 1024.0 / 1024.0);
++            return nullptr;
++        }
++        ggml_backend_cuda_buffer_context * ctx = new ggml_backend_cuda_buffer_context(buft_ctx->device, dev_ptr);
++        ctx->host_ptr = host_ptr;
++        return ggml_backend_buffer_init(buft, ggml_backend_cuda_buffer_interface, ctx, size);
++    }
+     cudaError_t err = ggml_cuda_device_malloc(&dev_ptr, size, buft_ctx->device);
+     if (err != cudaSuccess) {
+         // clear the error
+@@ -2556,12 +2579,44 @@ static void ggml_backend_cuda_free(ggml_backend_t backend) {
+     delete backend;
+ }
+ 
++// eightfer: E8_SM_STAGE=G: big async uploads from mapped pinned RAM (the staged residual) are copied by G blocks of 256
++// threads reading over PCIe instead of the copy engine; a few blocks saturate PCIe and barely slow other kernels
++// (experiments/zerocopy)
++static __global__ void k_e8_sm_copy(const uint4 * __restrict__ src, uint4 * __restrict__ dst, size_t n16) {
++    const size_t span = (n16 + gridDim.x - 1) / gridDim.x;
++    const size_t b0 = (size_t) blockIdx.x * span, b1 = min(n16, b0 + span);
++    size_t i = b0 + threadIdx.x;
++    for (; i + 7 * blockDim.x < b1; i += 8 * blockDim.x) {
++        uint4 v[8];
++#pragma unroll
++        for (int u = 0; u < 8; u++) v[u] = __ldcs(src + i + (size_t) u * blockDim.x);
++#pragma unroll
++        for (int u = 0; u < 8; u++) dst[i + (size_t) u * blockDim.x] = v[u];
++    }
++    for (; i < b1; i += blockDim.x) dst[i] = __ldcs(src + i);
++}
++
++static bool ggml_cuda_e8_sm_upload(void * dst, const void * data, size_t size, cudaStream_t stream) {
++    static const int g = getenv("E8_SM_STAGE") ? atoi(getenv("E8_SM_STAGE")) : 0;
++    if (g <= 0 || size < ((size_t) 4 << 20) || size % 16 || ((uintptr_t) dst % 16) || ((uintptr_t) data % 16)) return false;
++    void * src = nullptr;
++    if (cudaHostGetDevicePointer(&src, (void *) data, 0) != cudaSuccess) {
++        (void) cudaGetLastError();
++        return false;
++    }
++    k_e8_sm_copy<<<g, 256, 0, stream>>>((const uint4 *) src, (uint4 *) dst, size / 16);
++    CUDA_CHECK(cudaGetLastError());
++    return true;
++}
++
+ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+ 
+     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
+ 
++    if (ggml_cuda_e8_sm_upload((char *) tensor->data + offset, data, size, cuda_ctx->stream())) return;
++
+     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+ }
+ 
+@@ -5941,6 +5996,9 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
+ 
+ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+     GGML_UNUSED(reg);
++    if (strcmp(name, "ggml_backend_cuda_e8_alloc_mapped") == 0) {
++        return (void *)ggml_backend_cuda_e8_alloc_mapped;
++    }
+     if (strcmp(name, "ggml_backend_comm_init") == 0) {
+         return (void *)ggml_backend_cuda_comm_init;
+     }

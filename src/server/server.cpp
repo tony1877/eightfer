@@ -1915,7 +1915,17 @@ int serve(const std::vector<std::string> & args_in) {
         for (;;) {
             json h = json::object();
             const sys::GpuSensors g = sys::gpu_sensors();
-            if (g.ok) h["gpu"] = { { "temp_c", g.temp_c }, { "power_w", g.power_w }, { "mem_util", g.mem_util } };
+            if (g.ok) {
+                h["gpu"] = { { "temp_c", g.temp_c }, { "power_w", g.power_w }, { "mem_util", g.mem_util } };
+                if (g.vram_total) {
+                    h["gpu"]["vram_total"] = g.vram_total;
+                    h["gpu"]["vram_used"]  = g.vram_used;
+                }
+                if (g.pcie_rx_gbs >= 0) {
+                    h["gpu"]["pcie_rx_gbs"] = g.pcie_rx_gbs;
+                    h["gpu"]["pcie_tx_gbs"] = g.pcie_tx_gbs;
+                }
+            }
             h["drives"] = json::array();
             for (const auto & d : sys::drive_temps()) h["drives"].push_back({ { "name", d.name }, { "temp_c", d.temp_c } });
             if (!sp->hw_url.empty()) {
@@ -2055,6 +2065,13 @@ int serve(const std::vector<std::string> & args_in) {
             size_t fr = 0, tot = 0;
             if (ggml_backend_dev_t g = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) ggml_backend_dev_memory(g, &fr, &tot);
             const auto si = sys::query();
+            {  // NVML sees every process's VRAM; cudaMemGetInfo under WDDM only this one's
+                std::lock_guard<std::mutex> lk(S->hw_mu);
+                if (S->hw.contains("gpu") && S->hw["gpu"].contains("vram_total")) {
+                    tot = S->hw["gpu"]["vram_total"].get<unsigned long long>();
+                    fr  = tot - std::min<unsigned long long>(tot, S->hw["gpu"]["vram_used"].get<unsigned long long>());
+                }
+            }
             mem["vram_total"] = tot;
             mem["vram_free"]  = fr;
             mem["ram_total"]  = si.ram_total;

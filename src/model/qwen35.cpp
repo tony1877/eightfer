@@ -1547,7 +1547,20 @@ bool Qwen35::load_residual(const std::string & path, std::string & err) {
     }
     const bool any_host = ggml_get_first_tensor(rctx_) != nullptr;
     if (!any_host) buft = nullptr;
-    if (buft) {
+    // E8_ZERO_COPY=1: the residual sits in mapped pinned RAM behind a CUDA buffer, so GPU kernels read it over PCIe
+    // in place (no VRAM staging, no graph splits around it); see docs/SPEEDUP-PLAN.md idea 1
+    static const bool zero_copy = std::getenv("E8_ZERO_COPY") && std::atoi(std::getenv("E8_ZERO_COPY")) != 0;
+    if (buft && zero_copy) {
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(gpu_));
+        auto set_mapped = (void (*)(bool)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_e8_alloc_mapped");
+        if (set_mapped) {
+            set_mapped(true);
+            rbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(rctx_, ggml_backend_get_default_buffer_type(gpu_));
+            set_mapped(false);
+        }
+        if (rbuf_) fprintf(stderr, "residual: zero-copy (mapped pinned RAM read by GPU kernels)\n");
+    }
+    if (buft && !rbuf_) {
         rbuf_ = ggml_backend_alloc_ctx_tensors_from_buft(rctx_, buft);
         if (!rbuf_) {
             fprintf(stderr, "warning: pinned allocation for the residual failed, using pageable RAM\n");

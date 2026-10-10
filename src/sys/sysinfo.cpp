@@ -246,12 +246,19 @@ struct NvmlUtil {
     unsigned gpu, memory;
 };
 using nvml_util_t = int (*)(void *, NvmlUtil *);
+struct NvmlMem {
+    unsigned long long total, free, used;
+};
+using nvml_mem_t  = int (*)(void *, NvmlMem *);
+using nvml_pcie_t = int (*)(void *, int, unsigned *);
 struct Nvml {
     HMODULE      lib   = nullptr;
     void *       dev   = nullptr;
     nvml_temp_t  temp  = nullptr;
     nvml_power_t power = nullptr;
     nvml_util_t  util  = nullptr;
+    nvml_mem_t   mem   = nullptr;
+    nvml_pcie_t  pcie  = nullptr;
     ULONGLONG    retry = 0;  // GetTickCount64 time of the next load attempt
 };
 
@@ -267,6 +274,8 @@ int nvml_open(Nvml * n) {
         n->temp   = reinterpret_cast<nvml_temp_t>(GetProcAddress(n->lib, "nvmlDeviceGetTemperature"));
         n->power  = reinterpret_cast<nvml_power_t>(GetProcAddress(n->lib, "nvmlDeviceGetPowerUsage"));
         n->util   = reinterpret_cast<nvml_util_t>(GetProcAddress(n->lib, "nvmlDeviceGetUtilizationRates"));
+        n->mem    = reinterpret_cast<nvml_mem_t>(GetProcAddress(n->lib, "nvmlDeviceGetMemoryInfo"));
+        n->pcie   = reinterpret_cast<nvml_pcie_t>(GetProcAddress(n->lib, "nvmlDeviceGetPcieThroughput"));
         if (!init || !get || init() != 0 || get(0, &n->dev) != 0) {
             n->dev = nullptr;
             return 0;
@@ -289,6 +298,13 @@ int nvml_read(Nvml * n, GpuSensors * s) {
         if (n->power && n->power(n->dev, &v) == 0) s->power_w = v / 1000.0;
         NvmlUtil u{};
         if (n->util && n->util(n->dev, &u) == 0) s->mem_util = (int) u.memory;
+        NvmlMem m{};
+        if (n->mem && n->mem(n->dev, &m) == 0) {
+            s->vram_total = m.total;
+            s->vram_used  = m.used;
+        }
+        if (n->pcie && n->pcie(n->dev, 1 /* NVML_PCIE_UTIL_RX_BYTES */, &v) == 0) s->pcie_rx_gbs = v * 1024.0 / 1e9;  // KB/s
+        if (n->pcie && n->pcie(n->dev, 0 /* NVML_PCIE_UTIL_TX_BYTES */, &v) == 0) s->pcie_tx_gbs = v * 1024.0 / 1e9;
         return 1;
 #ifdef _MSC_VER
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -308,7 +324,8 @@ GpuSensors gpu_sensors() {
         if (nvml_open(&n) < 0) {
             fprintf(stderr, "nvml: faulted while loading (driver changing?); retrying in 30 s\n");
             loaded = false;
-            n      = Nvml{ nullptr, nullptr, nullptr, nullptr, nullptr, GetTickCount64() + 30000 };
+            n       = Nvml{};
+            n.retry = GetTickCount64() + 30000;
             return s;
         }
     }
@@ -317,7 +334,8 @@ GpuSensors gpu_sensors() {
         fprintf(stderr, "nvml: faulted (driver update or reset?); reloading in 30 s\n");
         if (n.lib) FreeLibrary(n.lib);
         loaded = false;
-        n      = Nvml{ nullptr, nullptr, nullptr, nullptr, nullptr, GetTickCount64() + 30000 };
+        n       = Nvml{};
+        n.retry = GetTickCount64() + 30000;
         return GpuSensors{};
     }
     s.ok = true;

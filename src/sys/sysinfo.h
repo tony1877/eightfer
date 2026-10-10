@@ -40,6 +40,9 @@ struct GpuSensors {
     int    temp_c   = -1;
     double power_w  = -1;
     int    mem_util = -1;  // % of time the memory was busy over the driver's last sample period
+    // device-wide VRAM (all processes; cudaMemGetInfo under WDDM sees only the calling process's allocations)
+    unsigned long long vram_total = 0, vram_used = 0;
+    double             pcie_rx_gbs = -1, pcie_tx_gbs = -1;  // PCIe throughput into / out of the GPU, last ~20 ms sample
 };
 GpuSensors gpu_sensors();
 

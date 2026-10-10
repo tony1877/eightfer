@@ -1,3 +1,4 @@
+#include "llama.h"
 #include "bench/bench.h"
 #include "cli/commands.h"
 #include "sys/sysinfo.h"
@@ -95,6 +96,7 @@ static bool parse_bench(const std::vector<std::string> & a, e8::bench::Options &
 
 int main(int argc, char ** argv) {
     ggml_log_set(log_filter, nullptr);
+    llama_log_set(log_filter, nullptr);  // libllama (tokenizer loads) logs on its own callback
     const std::vector<std::string> args = e8::sys::utf8_args(argc, argv);
     if (args.size() < 2 || args[1] == "-h" || args[1] == "--help") {
         usage();

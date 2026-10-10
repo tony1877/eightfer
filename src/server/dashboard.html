@@ -358,8 +358,11 @@ function renderMem() {
   const ls = lastSpec(), res = m.residual || 0;
   const perCheckS = ls ? ls.spec.verify_s / ls.spec.cycles : null, bw = perCheckS && res ? res / perCheckS : null;
   const writing = live.busy && live.gen > 0;
-  const p = `<div class="mhead"><b>PCIe link</b><span class="mono">${writing ? "streaming" : live.busy ? "prompt" : "quiet"}</span></div>
-    <div class="mval">${bw ? fmt(bw / 1e9, 0) : "-"}<small>GB/s during a check</small></div>
+  // NVML's live link rate (any process, both directions) when there is no check to compute it from
+  const g = hw.gpu || {}, nv = g.pcie_rx_gbs != null ? g.pcie_rx_gbs + (g.pcie_tx_gbs || 0) : null;
+  const useNv = !(writing && bw) && nv != null;
+  const p = `<div class="mhead"><b>PCIe link</b><span class="mono">${writing ? "streaming" : live.busy ? "prompt" : nv > 1 ? "busy" : "quiet"}</span></div>
+    <div class="mval">${useNv ? fmt(nv, 1) : bw ? fmt(bw / 1e9, 0) : "-"}<small>${useNv ? "GB/s now (NVML link counter, overstates data)" : "GB/s during a check"}</small></div>
     <canvas id="link"></canvas>
     <div class="legend"><div><span>Residual sent per check</span><span class="mono">${res ? gb(res) + " GB" : "-"}</span></div>
       <div><span>Check takes</span><span class="mono">${perCheckS ? fmt(perCheckS * 1000, 0) + " ms" : "-"}</span></div></div>`;
