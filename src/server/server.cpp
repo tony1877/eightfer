@@ -2131,6 +2131,26 @@ int serve(const std::vector<std::string> & args) {
         save_models(*S);
         resp.set_content(json{ { "success", true } }.dump(), "application/json");
     });
+    http.Get("/models/inspect", [&](const httplib::Request & req, httplib::Response & resp) {  // a pack source's size
+        const std::string dir = req.get_param_value("path");
+        std::error_code   ec;
+        uint64_t          bytes = 0;
+        int               files = 0;
+        if (std::filesystem::is_directory(dir, ec))
+            for (const auto & f : std::filesystem::directory_iterator(dir, ec))
+                if (f.path().extension() == ".safetensors") {
+                    bytes += f.file_size(ec);
+                    files++;
+                }
+        json out = { { "exists", std::filesystem::is_directory(dir, ec) }, { "safetensors_bytes", bytes }, { "files", files } };
+        try {  // the token embedding stays in RAM at BF16: the page needs its size (vocab x hidden) to estimate VRAM
+            json c = json::parse(read_file((std::filesystem::path(dir) / "config.json").string()));
+            if (c.contains("text_config") && c["text_config"].is_object()) c = c["text_config"];
+            out["vocab_size"]  = c.value("vocab_size", 0);
+            out["hidden_size"] = c.value("hidden_size", 0);
+        } catch (...) {}
+        resp.set_content(out.dump(), "application/json");
+    });
     http.Post("/models/dirs", [&](const httplib::Request & req, httplib::Response & resp) {  // remembered folders
         if (!may_change(req, resp)) return;
         const json b = body_of(req);

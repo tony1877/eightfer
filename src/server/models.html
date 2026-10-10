@@ -147,8 +147,9 @@ pre { margin: 6px 0 0; max-height: 180px; overflow: auto; background: var(--bg);
       <label class="wide">Template GGUF (any qwen35 GGUF of the same model: tokenizer and metadata)<input id="pkTmpl" placeholder="E:\gguf\qwen3.8-27b-Q4_K_M.gguf"></label>
       <label>Output folder<input id="pkDir" placeholder="choose a folder, e.g. E:\shoehorn"></label>
       <label>Output name<input id="pkName" placeholder="qwen27"></label>
-      <label>Base type<select id="pkBase"><option>iq4_xs</option><option>q4_K</option><option>q3_K</option></select></label>
-      <label>Residual type<select id="pkRes"><option>q4_K</option><option>q3_K</option><option>q5_K</option><option>q6_K</option><option>none</option></select></label>
+      <label>Base type (in VRAM)<select id="pkBase"></select></label>
+      <label>Residual type (in RAM)<select id="pkRes"></select></label>
+      <div class="wide note" id="pkFit">Pick a source folder to see how big the pair will be.</div>
       <label>Model name (what clients ask for)<input id="pkAlias" placeholder="qwen3.8-27b-shoehorn"></label>
       <label>imatrix (optional, improves the base)<input id="pkImat" placeholder="E:\gguf\imatrix.gguf"></label>
       <label class="wide" style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="pkUnload" checked style="width:auto"> Unload the model while packing (packing reads tens of GB)</label>
@@ -182,6 +183,7 @@ let state = { models: [], jobs: [], dirs: {} }, busy = {};
 async function pollStats() {
   try {
     const d = await (await fetch("/stats?since=1e12", { cache: "no-store" })).json();
+    memInfo = d.mem || {};
     const cfg = d.config || {}, k = v => v >= 1e3 ? Math.round(v / 1e3) + "K" : String(v), c = [];
     c.push(`<span>${d.loaded ? esc(d.loaded.replace(/^qwen3\.8-/, "").replace(/-shoehorn$/, "")) : "no model loaded"}</span>`);
     if (cfg.ctx) c.push(`<span>ctx ${k(cfg.ctx)}</span>`);
@@ -242,7 +244,7 @@ document.addEventListener("click", async e => {
     else if (b.hasAttribute("data-unload")) { busy.load = "-"; await api("/models/unload", {}); }
     else if (b.dataset.remove) { if (confirm(`Remove ${b.dataset.remove} from the list? The files stay on disk.`)) await api("/models/remove", { alias: b.dataset.remove }); }
     else if (b.dataset.cancel) await api("/models/cancel", { id: +b.dataset.cancel });
-    else if (b.dataset.packsrc) { $("pkSrc").value = b.dataset.packsrc; $("pkName").value ||= b.dataset.packsrc.split(/[\\/]/).pop().replace(/^.*__/, ""); $("packPanel").scrollIntoView({ behavior: "smooth" }); }
+    else if (b.dataset.packsrc) { $("pkSrc").value = b.dataset.packsrc; inspectSrc(); $("pkName").value ||= b.dataset.packsrc.split(/[\\/]/).pop().replace(/^.*__/, ""); $("packPanel").scrollIntoView({ behavior: "smooth" }); }
     else if (b.dataset.addgguf) { $("addBox").open = true; $("addPath").value = b.dataset.addgguf + "\\"; $("addPath").focus(); }
     else return;
   } catch (err) { $("modelsErr").textContent = err.message; }
@@ -309,7 +311,41 @@ $("pullGo").onclick = async () => {
   catch (err) { $("pullErr").textContent = err.message; }
 };
 
-// ---- pack
+// ---- pack: types and what they cost. Bits per weight are ggml's block sizes. The token embedding stays in RAM at
+// BF16; everything else is quantized to the base type in VRAM, and the big matrices also get a residual in RAM. On the
+// 27B (iq4_xs + q4_K) this estimates 13.1 GiB of VRAM weights and 13.9 GiB of residual, against 13.0 and 13.6 GiB
+// measured. VRAM headroom (context window, MTP, buffers) is taken from the loaded model, else 3 GiB.
+const BPW = { iq3_xxs: 3.0625, iq3_s: 3.4375, q3_K: 3.4375, iq4_xs: 4.25, q4_K: 4.5, q5_K: 5.5, q6_K: 6.5625, q8_0: 8.5 };
+const fill = (id, list, def) => { $(id).innerHTML = list.map(t => `<option value="${t}"${t === def ? " selected" : ""}>${t}${BPW[t] ? ` (${BPW[t]} bits)` : ""}</option>`).join(""); };
+fill("pkBase", ["iq3_xxs", "iq3_s", "q3_K", "iq4_xs", "q4_K", "q5_K", "q6_K", "q8_0"], "iq4_xs");
+fill("pkRes", ["q3_K", "q4_K", "q5_K", "q6_K", "q8_0", "none"], "q4_K");
+let srcBytes = 0, srcEmbed = 0, memInfo = {};
+async function inspectSrc() {
+  const v = $("pkSrc").value.trim();
+  srcBytes = srcEmbed = 0;
+  if (v) try {
+    const r = await (await fetch("/models/inspect?path=" + encodeURIComponent(v))).json();
+    srcBytes = r.safetensors_bytes || 0; srcEmbed = (r.vocab_size || 0) * (r.hidden_size || 0);
+  } catch (e) {}
+  fit();
+}
+function fit() {
+  const GiB = 1073741824, g = b => fmt(b / GiB, 1) + " GiB";
+  if (!srcBytes) { $("pkFit").innerHTML = $("pkSrc").value.trim() ? "No .safetensors files in that folder." : "Pick a source folder to see how big the pair will be."; return; }
+  const params = srcBytes / 2, big = params - srcEmbed;
+  const base = big * BPW[$("pkBase").value] / 8, res = $("pkRes").value === "none" ? 0 : big * BPW[$("pkRes").value] / 8;
+  const head = memInfo.weights_gpu && memInfo.vram_free != null ? memInfo.vram_total - memInfo.vram_free - memInfo.weights_gpu : 3 * GiB;
+  const vram = memInfo.vram_total ? memInfo.vram_total - head : 0, ram = memInfo.ram_total || 0;
+  const vOk = !vram || base <= vram, rOk = !ram || res <= ram * 0.6;
+  const iq = /^iq/.test($("pkBase").value) && !$("pkImat").value.trim() ? " iq types are best with an imatrix." : "";
+  $("pkFit").innerHTML = `${fmt(params / 1e9, 1)}B parameters. Base about <b style="color:${vOk ? "var(--ink)" : "var(--bad)"}">${g(base)}</b>`
+    + (vram ? ` of ${g(vram)} usable VRAM` : "") + (vOk ? "" : " (does not fit this GPU)")
+    + (res ? `, residual about <b style="color:${rOk ? "var(--ink)" : "var(--warn)"}">${g(res)}</b> in RAM${ram ? ` (${g(ram)} installed)` : ""}${rOk ? "" : " (leaves little RAM for the context)"}` : ", no residual: the base alone, not lossless")
+    + "." + iq;
+}
+$("pkSrc").addEventListener("change", inspectSrc);
+for (const id of ["pkBase", "pkRes", "pkImat"]) $(id).addEventListener("change", fit);
+
 $("packGo").onclick = async () => {
   $("packErr").textContent = "";
   const dir = $("pkDir").value.trim(), name = $("pkName").value.trim();
