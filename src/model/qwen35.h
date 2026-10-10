@@ -170,6 +170,8 @@ public:
     bool can_tree(int n) const { return n_past_ + n <= W_ && n <= opt_.max_record && n <= opt_.n_ubatch; }
 
     bool has_mtp() const { return mtp_on_; }
+    // the trunk's final normed hidden states of the last eval's first n rows (what the MTP layer reads), F32 [n, n_embd]
+    bool hidden_rows(int n, float * out, std::string & err) const;
     // row of the last eval's hidden states that belongs to position n_past() - 1, or -1 when unknown
     int  hidden_row() const { return hid_row_; }
     // One MTP draft step at position `pos`: reads `tok` (the token at pos + 1) and the hidden state at pos, which is

@@ -67,6 +67,7 @@ add_executable(shoehorn
     src/cli/dump.cpp
     src/cli/multitest.cpp
     src/cli/decode.cpp
+    src/cli/mtpdump.cpp
     src/server/server.cpp
     src/cli/ppl.cpp
     src/cli/selftest.cpp

@@ -2090,6 +2090,19 @@ void Qwen35::embed(const int32_t * tokens, int n, std::vector<float> & out) cons
     }
 }
 
+bool Qwen35::hidden_rows(int n, float * out, std::string & err) const {
+    if (!mtp_on_ || !mtp_hid_) {
+        err = "hidden_rows: hidden states are kept only with the MTP block loaded";
+        return false;
+    }
+    if (n < 0 || n > (int) mtp_hid_->ne[1]) {
+        err = "hidden_rows: more rows than the last batch holds";
+        return false;
+    }
+    ggml_backend_tensor_get(mtp_hid_, out, 0, (size_t) n * (size_t) hp_.n_embd * sizeof(float));
+    return true;
+}
+
 ggml_tensor * Qwen35::mtp_input(ggml_context * ctx, ggml_tensor * emb, ggml_tensor * hid) {
     const float eps = hp_.rms_eps;
     ggml_tensor * e = ggml_mul(ctx, ggml_rms_norm(ctx, emb, eps), mtp_enorm_);

@@ -83,26 +83,58 @@ It also gives back:
 4. **Turn pipelining back on** (`gen --pipe`, the shadow model) and confirm the verify no longer slows while drafting.
    Then make it the default if tok/s improves.
 
-## 2. Self-distilled MTP drafter
+## 2. Self-distilled MTP drafter (in progress, resume here)
 
-**Idea.** Fine-tune only the MTP layer, about 0.35B parameters with the trunk frozen, so that it predicts the
-**IQ4_XS base's** distribution from **base** hidden states. Train it EAGLE-style over 3 chained steps.
+**Why this is the one left for prose.** Measured through the server (prose, temp 1.0, top_k 20, top_p 0.95):
+- drafting is 60% of each cycle (404 ms against 259 ms of verify);
+- the MTP head's proposals are kept 41.6% of the time.
 
-**Why.** Prose is limited by MTP acceptance (42-44%, against 77% on code). The MTP head was trained on BF16 hidden
-states against the data distribution. Here it receives IQ4_XS hidden states, and B judges it. A drafter change can
-never change the output.
+Running the head at ~8 bits (base + its residual, `E8_MTP_RES`, removed again) only lifted that to 44.8%, and the
+heavier head made drafting 5% slower: 21.95 -> 21.43 tok/s. So precision is not the gap: what the head predicts
+is. It was trained on BF16 hidden states to predict the data; here it reads the 4-bit base's hidden states and is
+judged by the base's distribution.
 
-**Steps.**
-1. **Data.** Add `gen --dump-mtp-data`, which writes base hidden states, next tokens and B's top-64 logits, taken
-   from base passes on the user's prompts and `bench/prompts`.
-   - About 20-50M tokens. Store hidden states in fp16 on NVMe.
-2. **Trainer.** A PyTorch script under `experiments/mtp_distill/`.
-   - Loss: KL(B ‖ MTP) over steps 1-3, each step fed the previous step's own output (training-time test).
-   - Optimizer: bf16 with 8-bit Adam, about 3 GB of VRAM. Run it with the server stopped.
-3. **Export.** Write the tuned layer back into the base GGUF as a new pack, so the original is untouched.
-4. **Measure.**
-   - MTP acceptance per step and tok/s with `gen --repeat 6` on held-out prompts.
-   - Greedy output must stay identical to plain decoding.
+**Done (2026-10-10, not committed):**
+- `shoehorn mtpdump <base.gguf> --in conv.jsonl --out data.bin [--topk 32] [--batch 512] [--ctx 8192]`
+  (`src/cli/mtpdump.cpp`, `Qwen35::hidden_rows`).
+  - Input: each JSONL line is {"text": conversation in Qwen chat format}.
+  - Process: the base alone reads each conversation.
+  - Output per position: the token, the trunk's final normed hidden state (f16, what the MTP layer reads) and the
+    base's top-k logits. Format in the file header comment.
+  - Built in `build-zc/`; not run yet.
+- `experiments/mtp_distill/make_corpus.py out.jsonl N [seed]`: asks the server (B+R) for answers to mixed prompts
+  (stories, letters, descriptions, explanations; 25% with thinking on). The answers are the target's own text, which
+  is what the drafter sees at inference.
+- Pilot corpus: `experiments/mtp_distill/pilot.jsonl` (40 conversations).
+
+**Next steps:**
+1. **Dump the pilot.** Run `build-zc/bin/shoehorn.exe mtpdump E:/shoehorn/orca27b.base.gguf --in
+   experiments/mtp_distill/pilot.jsonl --out <data>/pilot.bin`, with the server unloaded (it needs the GPU). Check
+   that the hidden values are finite and that the top-1 logit's token matches the next token often (sanity).
+2. **Full corpus.** Generate 300-500 conversations (about 150-250K tokens, 2-3 h through the server, in the
+   background), then dump them. About 10.5 KB per token, 2-3 GB in total.
+3. **PyTorch** (cu128 wheels for Blackwell) in `experiments/mtp_distill/.venv` (gitignored).
+4. **MTP layer in PyTorch.** Use `third_party/llama.cpp/gguf-py` (`dequantize` works for IQ4_XS and Q4_K). Start
+   from base + residual of `blk.64.*`, the ~8-bit head. Match `Qwen35::mtp_input` / `mtp_layer` exactly:
+   - x = eh_proj([rms(emb(x_{t+1})) * enorm | rms(h_t) * hnorm]); emb is `token_embd` (BF16), and the concat order is
+     embedding first.
+   - Gated attention: q proj gives [Q | gate] per head (hd 256, 24 heads, 4 KV heads); q_norm / k_norm per head; IMROPE
+     on the first 64 dims, freq base 1e7, sections [11, 11, 10, 0] (all equal positions for text); causal over the
+     MTP's own K/V of earlier positions; out = wo(attn * sigmoid(gate)).
+   - SwiGLU FFN with post_attention_norm; then hn = rms(.) * shared_head_norm; logits = output.weight (IQ4_XS,
+     frozen; dequantize to bf16, 2.5 GB) @ hn.
+   - Verify the port first: its logits should match `mtp_step` on the same inputs (top-1 equal, KLD near 0).
+5. **Train** only the MTP layer (about 0.37B params), with the trunk and head frozen:
+   - loss = KL(base's sampler distribution (top_k 20 / top_p 0.95 of the stored top-32, at temp 1) at t + 1 ||
+     MTP softmax at (h_t, x_{t+1}));
+   - bf16 with 8-bit Adam, about 8-10 GB of VRAM, with the server unloaded;
+   - later, chained steps 2-3 (feed the head's own `hn` as the next h), as the drafter does.
+6. **Export.** Quantize the trained layer back to IQ4_XS (or Q8_0 if VRAM allows: +0.2 GB, at the cost seen above)
+   and write a copy of the base GGUF with only `blk.64.*` replaced. Never overwrite the original.
+7. **Measure through the server.** The same 8 prose requests as the A/B above, comparing MTP kept and tok/s. Then
+   check that greedy output is unchanged with `--spec 16` (the drafter must never change output).
+
+**Gate:** MTP kept 41.6% -> at least 50% on held-out prompts, and prose tok/s up at least 8%.
 
 ## 3. Fused base pass (megakernel-lite)
 
