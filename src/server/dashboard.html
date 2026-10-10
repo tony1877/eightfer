@@ -58,7 +58,9 @@ canvas { display: block; width: 100%; }
 @media (max-width: 900px) { .hw { grid-template-columns: 1fr; } }
 .hw .mcell + .mcell { border-left: 1px solid var(--line); }
 @media (max-width: 900px) { .hw .mcell + .mcell { border-left: 0; border-top: 1px solid var(--line); } }
-.temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 16px; }
+.temps { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 10px 16px; }
+@media (max-width: 520px) { .temps { --cols: 2 !important; } }
+.temps + .temps { padding-top: 10px; border-top: 1px solid var(--line); }
 .temp { display: grid; gap: 2px; min-width: 0; }
 .temp .n { color: var(--ink2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .temp .v { font: 500 20px var(--f-ui); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
@@ -375,11 +377,15 @@ function renderHw() {
   if (vram.length) T.push({ n: "VRAM", c: Math.max(...vram.map(x => x.c)) });
   const ram = S.filter(x => x.kind === "memory" && /^DIMM/i.test(x.name));  // not the limit / resolution entries
   ram.forEach((x, i) => T.push({ n: ram.length > 1 ? `RAM ${i + 1}` : "RAM", c: x.c, title: `${x.hw} ${x.name}` }));
-  for (const d of hw.drives || []) T.push({ n: d.name.replace(/\s*\[.*\]$/, ""), c: d.temp_c, title: d.name });
+  const D = (hw.drives || []).map(d => ({ n: d.name.replace(/\s*\[.*\]$/, "").replace(/_/g, " "), c: d.temp_c, title: d.name }));
   const cls = c => c >= 85 ? " hot" : c >= 70 ? " warm" : "";
+  // tiles in even rows: up to 5 columns, a count that divides the tile count (6 -> 3, 4 -> 4, 5 -> 5), else balanced rows
+  const cols = n => { for (let c = Math.min(n, 5); c >= 3; c--) if (n % c === 0) return c; return Math.ceil(n / Math.ceil(n / 5)); };
+  const grid = (A, f) => A.length ? `<div class="temps" style="--cols:${cols(A.length)}">${A.map(f).join("")}</div>` : "";
+  const tc = x => `<div class="temp${cls(x.c)}" title="${x.title || x.n}"><span class="n">${x.n}</span><span class="v">${fmt(x.c, 0)}<small>C</small></span></div>`;
   const missing = [cpu.length ? null : "CPU", vram.length ? null : "VRAM", ram.length ? null : "RAM"].filter(Boolean);
   let t = `<div class="mhead"><b>Temperatures</b><span class="mono">${S.length ? "all sensors" : "GPU and drives"}</span></div>
-    <div class="temps">${T.map(x => `<div class="temp${cls(x.c)}" title="${x.title || x.n}"><span class="n">${x.n}</span><span class="v">${fmt(x.c, 0)}<small>C</small></span></div>`).join("")}</div>
+    ${grid(T, tc)}${grid(D, tc)}
     ${missing.length ? `<div class="note">${missing.join(", ")}: ${S.length ? "not reported by LibreHardwareMonitor" : "start shoehorn-hwmon (tools/hwmon) or LibreHardwareMonitor's web server on port 8085"}.</div>` : ""}`;
   // voltages: the readings that are labeled and plausible (this board's Vcore channel reads ~2.2 V, so the CPU's own
   // requested voltage is shown instead); none are reported for VRAM or the memory modules
@@ -391,7 +397,7 @@ function renderHw() {
     const r = pickV("lpc", re); if (r.length) VV.push({ n, v: r[0].v });
   }
   if (VV.length) t += `<div class="mhead" style="margin-top:6px"><b>Voltages</b><span class="mono">VRAM and RAM not reported</span></div>
-    <div class="temps">${VV.map(x => `<div class="temp"><span class="n">${x.n}</span><span class="v">${fmt(x.v, x.v < 2 ? 3 : 2)}<small>V</small></span></div>`).join("")}</div>`;
+    ${grid(VV, x => `<div class="temp"><span class="n">${x.n}</span><span class="v">${fmt(x.v, x.v < 2 ? 3 : 2)}<small>V</small></span></div>`)}`;
   if ($("temps").dataset.h !== t) { $("temps").innerHTML = t; $("temps").dataset.h = t; }
 }
 function renderList() {
