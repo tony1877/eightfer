@@ -247,8 +247,10 @@ function drawLink(nowS) {
   g.strokeStyle = C.line2; g.lineWidth = 1; g.beginPath(); g.moveTo(0, y + .5); g.lineTo(W, y + .5); g.stroke();
   g.fillStyle = C.muted; g.font = "10px 'Geist Mono', monospace"; g.textAlign = "left"; g.fillText("RAM", 0, y - 7); g.textAlign = "right"; g.fillText("GPU", W, y - 7);
   const writing = live.busy && live.gen > 0, reading = live.busy && !writing;
-  if (!writing && !reading) return;
-  const speed = writing ? 1.6 : .8, col = writing ? "217,165,74" : "108,182,224";
+  // traffic NVML sees on the link while this server is idle (another program, e.g. a benchmark run)
+  const gp = hw.gpu || {}, other = !writing && !reading && (gp.pcie_rx_gbs || 0) + (gp.pcie_tx_gbs || 0) > 1;
+  if (!writing && !reading && !other) return;
+  const speed = writing ? 1.6 : other ? 1.2 : .8, col = writing ? "217,165,74" : other ? "150,150,160" : "108,182,224";
   for (let i = 0; i < 3; i++) {
     const p = ((nowS * speed + i / 3) % 1), x = p * W;
     const grd = g.createLinearGradient(x - 70, 0, x, 0); grd.addColorStop(0, `rgba(${col},0)`); grd.addColorStop(1, `rgba(${col},.95)`);
@@ -360,8 +362,8 @@ function renderMem() {
   const writing = live.busy && live.gen > 0;
   // NVML's live link rate (any process, both directions) when there is no check to compute it from
   const g = hw.gpu || {}, nv = g.pcie_rx_gbs != null ? g.pcie_rx_gbs + (g.pcie_tx_gbs || 0) : null;
-  const useNv = !(writing && bw) && nv != null;
-  const p = `<div class="mhead"><b>PCIe link</b><span class="mono">${writing ? "streaming" : live.busy ? "prompt" : nv > 1 ? "busy" : "quiet"}</span></div>
+  const useNv = !(writing && bw) && nv != null && (nv > 1 || !bw);  // idle: the last check's speed, as before
+  const p = `<div class="mhead"><b>PCIe link</b><span class="mono">${writing ? "streaming" : live.busy ? "prompt" : nv > 1 ? "another program" : "quiet"}</span></div>
     <div class="mval">${useNv ? fmt(nv, 1) : bw ? fmt(bw / 1e9, 0) : "-"}<small>${useNv ? "GB/s now (NVML link counter, overstates data)" : "GB/s during a check"}</small></div>
     <canvas id="link"></canvas>
     <div class="legend"><div><span>Residual sent per check</span><span class="mono">${res ? gb(res) + " GB" : "-"}</span></div>
