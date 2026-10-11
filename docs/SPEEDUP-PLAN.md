@@ -155,11 +155,38 @@ judged by the base's distribution.
 
   So no gain can be seen at this data size.
 
-**Next:**
-1. A 1M-token corpus (H100 session), then retrain.
-2. Train the chained steps 2-3: feed the head's own `hn` as the next h, the training-time test. The first step is
-   already at 0.75; most of the gap to the engine's 41.6% is in steps 2-3.
-3. Only then export and measure through the server.
+**1.5M-token run (2026-10-11): gate missed, not exported.**
+- Corpus: `make_corpus.py` against stock vLLM 0.31.0 serving `orcarouter/Qwen3.8-27B-Uncensored` at BF16 with the
+  server's chat template, on one RunPod H100 (128 parallel requests): 2,300 conversations (26% with thinking, 1,394
+  distinct prompts) in about 8 min, about $1.50 with setup. `E:\shoehorn\mtp\corpus.jsonl`.
+- `mtpdump`: 1,495,443 tokens at 1,900 tok/s, `E:\shoehorn\mtp\corpus.bin` (15.7 GB). The base's top-1 equals the next
+  token 71.5% of the time, and the next token is in its top 20 99.1% of the time (the pilot: 71.9%, 98.7%).
+- `mtp.py` now trains the chain the way `Qwen35::mtp_step` runs it. Step k reads step k-1's `hn` and x_{t+k}, and is
+  judged against the base at t + k. A later step's row attends to the real positions' K/V (from step 1) plus its own
+  chain's entries. The loss is weighted 1 / 0.8 / 0.6, with full backprop through the chain.
+  - Memory: per-step activation checkpointing and one autocast region for the whole chain. This peaks at 11.6 GiB
+    on 16 GB; without it, a 3-step chain of about 1K rows runs out.
+- Held-out: the last 100 conversations, with every training conversation that shares their prompt removed.
+  Training: 2,067 conversations (1.32M tokens), 3 epochs, lr 3e-5 (warmup 30, cosine to 10%), 4 conversations per
+  step, 33 min.
+
+  | Held-out acceptance | Step 1 | Step 2 | Step 3 | Kept, 3-step chain |
+  |---|---|---|---|---|
+  | Stock 4-bit head (what the engine runs) | 0.7386 | 0.6055 | 0.5337 | 0.4748 |
+  | Base + residual (the training start) | 0.7419 | 0.6107 | 0.5410 | 0.4800 |
+  | Trained, epoch 1 | 0.7514 | 0.6247 | 0.5575 | 0.4942 |
+  | Trained, epoch 2 | 0.7598 | 0.6420 | 0.5796 | 0.5101 |
+  | Trained, epoch 3 | 0.7622 | 0.6473 | 0.5858 | 0.5148 |
+
+  "Kept, 3-step chain" = (a1 + a1 a2 + a1 a2 a3) / 3, assuming each step's acceptance is independent. The pilot's
+  earlier held-out gain shared prompts with its training set; this held-out set does not.
+- Against the stock 4-bit head the trained layer is x1.084: +3.2% on step 1, +6.9% on step 2, +9.8% on step 3.
+  Scaled to the engine, that gives 41.6% -> about 45%, before quantizing the layer back. The gate needs 50% (x1.2).
+  At epoch 3, training (0.650) and held-out (0.515) have already diverged. Held-out gains shrank each epoch (+0.014,
+  +0.016, +0.005), so 2-3x more data would plausibly add only another 0.01-0.02.
+- Ready if needed: `export.py` (a copy of the base with `blk.64.*` replaced, as Q8_0 since gguf-py cannot write
+  IQ4_XS; `--deq-pt` measures what the quantization costs offline) and `bench_prose.py` (8 prose requests through
+  the server, reading MTP kept and tok/s from the timing log). The trained layer: `E:\shoehorn\mtp\mtp_chain.pt` (bf16).
 
 ## 3. Fused base pass (megakernel-lite)
 
@@ -277,3 +304,54 @@ After a different word, the next token's distribution moves enough that even the
 87% of the time, so prose does not fall back onto the old path. Gumbel coupling also agrees slightly less than
 speculative sampling's 1 - TV (unit test: 0.950 vs 0.960), which costs acceptance at every position. The pick itself
 is exact (chi-squared 8.35 on 5 dof).
+
+## 7. Base calibration and residual width (2026-10-11)
+
+Prose cycle today (`experiments/mtp_distill/bench_prose.py`: 4 prompts that are not in any corpus x 2 seeds, 500
+tokens, thinking off, temp 1.0 / top_k 20 / top_p 0.95, through the server): 21.68 tok/s; per cycle, draft 404 ms,
+verify 257 ms, 14.4 tokens.
+
+**Prose-calibrated imatrix: no gain, dropped.**
+- The production base's imatrix is 96 x 512 tokens of Python stdlib source. The 2026-10-04 sampled acceptance was
+  lowest on prose (0.81, against 0.90-0.94 for code and reasoning), which suggested a calibration mismatch.
+- New imatrix: llama-imatrix (build 11541) on the F16 GGUF, on one H100, about 30 min and $2.20. Input: 1,000 corpus
+  conversations plus the same stdlib code, 73% prose and chat, 886K tokens (`E:\shoehorn\imatrix-prose-mix.gguf`).
+  Re-packed from the BF16 safetensors (`E:\shoehorn\bf16`) as `orca27b-pm.*`.
+- Base KLD against base + residual on held-out prose: 0.0262 -> 0.0254, same top-1 93.1% -> 93.0%. Against Q8_0 on
+  the llama.cpp docs it got worse: 0.0577 -> 0.0610. The prose reference is `E:\shoehorn\mtp\prose-br.kld`: 64 x
+  512 tokens of held-out corpus scored by the production base + residual.
+- So IQ4_XS's error does not come from where the imatrix puts it.
+
+**Q3_K residual: +7.5%, pending a quality decision.**
+- `pack --res q3_K` with the production imatrix: the base's weights are byte-identical to production; only the
+  residual changes, 14.64 -> 11.18 GB (`orca27b-r3.*`).
+- Quality: KLD against Q8_0 0.0020 -> 0.0031 (same top-1 97.7% -> 97.4%). Against the Q4_K pair on prose: 0.0015.
+  The base alone is 0.058.
+
+  | | Verify per cycle | Draft per cycle | Tokens per cycle | tok/s |
+  |---|---|---|---|---|
+  | Q4_K residual | 257 ms | 404 ms | 14.4 | 21.68 |
+  | Q3_K residual | 206 ms | 396 ms | 14.1 | 23.31 |
+
+- The verify scales with the bytes streamed (0.80 against 0.76). Drafting is now two thirds of a cycle.
+
+**Small standalone drafter (Qwen3.5-0.8B / 2B) in place of the MTP head: below the MTP head even after
+distillation, dropped.**
+- Both models have the 27B's tokenizer: the same 248,044 base tokens and merges. The 27B only adds 7 audio/TTS
+  tokens. Both are the same `qwen35` architecture.
+- Offline acceptance against the 4-bit base on the same 100 held-out conversations (`small_accept.py`;
+  `distill_small.py` for the KD probe: the base's sampler distribution as target, embeddings frozen, 1 epoch, 1.32M
+  tokens, 37 min locally):
+
+  | Drafter | Per-token acceptance | Kept for 3 proposals |
+  |---|---|---|
+  | 0.8B, stock | 0.521 | 0.97 |
+  | 2B, stock | 0.584 | 1.16 |
+  | 0.8B, distilled | 0.588 | 1.18 |
+  | MTP head, stock | 0.739 / 0.606 / 0.534 per step | 1.43 |
+
+- Break-even with the MTP head is a flat acceptance of about 0.68. Distillation gains were shrinking (+0.028,
+  +0.015, +0.014, +0.008 per 330K tokens), so 30-50x more data plausibly reaches 0.65-0.68. That is break-even, at a
+  higher cost per step, with ~0.5 GB more VRAM than the head, and with a second model to roll back on rejections.
+- The MTP head wins because it reads the 27B's own hidden state. A better trained drafter should keep that input and
+  add capacity: an EAGLE-3-style head on features from several layers, not a separate small model.
